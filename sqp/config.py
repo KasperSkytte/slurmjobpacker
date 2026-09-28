@@ -39,8 +39,9 @@ DEFAULTS: dict = {
         "default_speed": 1.0,
     },
     "policy": {
-        # Demand mix: (MB per CPU, weight). Fitted from sacct history by
-        # `sqp-fit`; these are biocloud's, allocation-hour weighted.
+        # Demand mix: (MB per CPU, weight) -- how much memory per CPU arriving
+        # jobs ask for. The defaults are one cluster's; fit your own with
+        # `python3 -m sqp.fit --since <date>`.
         "demand": [[800, 0.10], [1280, 0.15], [4267, 0.25],
                    [7680, 0.25], [14178, 0.15], [30720, 0.10]],
         "demand_median": 4267,        # for the stranding metric only

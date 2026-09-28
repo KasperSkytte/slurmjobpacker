@@ -16,7 +16,7 @@ class SlurmError(RuntimeError):
 # The only commands that may run while actuation is off. Every process sqp
 # starts goes through _run, so this is the last line of defence for a dry run
 # under an account that Slurm would otherwise let change anything.
-_READ_ONLY = {("scontrol", "show"), ("squeue",), ("sacctmgr", "-nP", "show")}
+_READ_ONLY = {("scontrol", "show"), ("squeue",), ("sacctmgr", "-nP", "show"), ("sacct",)}
 
 
 def _read_only(args) -> bool:
