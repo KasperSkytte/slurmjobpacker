@@ -179,7 +179,7 @@ footer{margin-top:72px;padding-top:26px;border-top:1px solid var(--rule);
     partitions a job is <em class="term">allowed</em> to land in, and it decides that from what the
     cluster looks like right now.</p>
     <div class="meta">
-      <span><b>Cluster</b> biocloud &middot; 17 nodes &middot; 3,872 CPUs &middot; 22.8 TB</span>
+      <span><b>Worked example</b> a production cluster &middot; 17 nodes &middot; 3,872 CPUs &middot; 22.8 TB</span>
       <span><b>Evidence</b> 2,387,825 jobs, Nov 2023 &ndash; Sep 2026</span>
       <span><b>Slurm</b> 24.11.4</span>
     </div>
@@ -204,9 +204,9 @@ footer{margin-top:72px;padding-top:26px;border-top:1px solid var(--rule);
   </div>
 
 <pre><code>if job_desc.min_mem_per_node / job_desc.min_cpus &lt; 6000 then
-    job_desc.partition = "zen5,zen3"      -- slim
+    job_desc.partition = "slim1,slim2"      -- slim
 else
-    job_desc.partition = "zen5x,zen3x"    -- fat
+    job_desc.partition = "fat1,fat2"    -- fat
 end</code></pre>
 
   <div class="col">
@@ -217,7 +217,7 @@ end</code></pre>
     the cluster.</p>
 
     <p>Among the 38,342 that waited: <strong>47.2% asked for a single CPU</strong> and 45.6% asked
-    for 16&ndash;64 GB. Only 0.3% requested more than 1 TB, the point at which a zen3 node genuinely
+    for 16&ndash;64 GB. Only 0.3% requested more than 1 TB, the point at which a slim2 node genuinely
     cannot hold them.</p>
 
     <div class="note">
@@ -234,7 +234,7 @@ end</code></pre>
   <div class="col">
     <h2><span class="n">02</span> Diagnosis</h2>
     <h3>Right on average, wrong at every individual moment</h3>
-    <p>Over the 329 days since the zen* partition layout went in (571,248 jobs), demand above the
+    <p>Over the 329 days since the current partition layout went in (571,248 jobs), demand above the
     6,000 MB/CPU threshold accounts for <strong>28.5% of CPU-hours</strong>. The two high-memory
     partitions hold <strong>29.1% of batch CPUs</strong>. The static split is almost exactly right
     as a long-run average &mdash; and it still fails, because the mismatch is temporal, not
@@ -246,7 +246,7 @@ end</code></pre>
       <p class="ctitle">Where the waiting jobs would actually have fit</p>
       <p class="csub">Total memory requested by the 38,342 high-ratio jobs that waited more than 5 minutes</p>
       <div class="legend">
-        <span><i class="sw" style="background:var(--s1)"></i> Fits a zen3 node (1.0 TB)</span>
+        <span><i class="sw" style="background:var(--s1)"></i> Fits a slim2 node (1.0 TB)</span>
         <span><i class="sw" style="background:var(--s2)"></i> Genuinely needs a high-memory node</span>
       </div>
       <div class="cols">
@@ -264,7 +264,7 @@ end</code></pre>
         <div>256–512 GB</div><div>512 GB–1 TB</div><div>1–1.5 TB</div><div>&gt; 1.5 TB</div>
       </div>
     </div>
-    <figcaption><b>99.7% of them fit inside a single zen3 node.</b> They were routed to the
+    <figcaption><b>99.7% of them fit inside a single slim2 node.</b> They were routed to the
     high-memory partitions purely because their memory-per-CPU ratio exceeded 6,000 MB/CPU.</figcaption>
   </figure>
 
@@ -279,24 +279,24 @@ end</code></pre>
         <span><i class="sw" style="background:var(--s3)"></i> Idle and usable</span>
         <span><i class="sw" style="background:var(--s2)"></i> Idle but stranded</span>
       </div>
-      <div class="srow"><div class="lab">zen3</div><div class="bar">
+      <div class="srow"><div class="lab">slim2</div><div class="bar">
         <div class="seg" style="background:var(--s1);flex:42.39" title="Allocated 4,712,948 CPU-h">42.4%</div>
         <div class="seg dk" style="background:var(--s3);flex:49.33" title="Idle and usable 5,484,539 CPU-h">49.3%</div>
         <div class="seg" style="background:var(--s2);flex:8.28" title="Stranded 920,081 CPU-h">8.3%</div></div></div>
-      <div class="srow"><div class="lab">zen5</div><div class="bar">
+      <div class="srow"><div class="lab">slim1</div><div class="bar">
         <div class="seg" style="background:var(--s1);flex:55.77" title="Allocated 4,791,319 CPU-h">55.8%</div>
         <div class="seg dk" style="background:var(--s3);flex:42.31" title="Idle and usable 3,634,720 CPU-h">42.3%</div>
         <div class="seg" style="background:var(--s2);flex:1.92" title="Stranded 164,809 CPU-h">1.9%</div></div></div>
-      <div class="srow"><div class="lab">zen3x</div><div class="bar">
+      <div class="srow"><div class="lab">fat2</div><div class="bar">
         <div class="seg" style="background:var(--s1);flex:40.72" title="Allocated 1,440,532 CPU-h">40.7%</div>
         <div class="seg dk" style="background:var(--s3);flex:46.80" title="Idle and usable 1,655,314 CPU-h">46.8%</div>
         <div class="seg" style="background:var(--s2);flex:12.48" title="Stranded 441,562 CPU-h">12.5%</div></div></div>
-      <div class="srow"><div class="lab">zen5x</div><div class="bar">
+      <div class="srow"><div class="lab">fat1</div><div class="bar">
         <div class="seg" style="background:var(--s1);flex:48.83" title="Allocated 2,220,884 CPU-h">48.8%</div>
         <div class="seg dk" style="background:var(--s3);flex:36.67" title="Idle and usable 1,668,005 CPU-h">36.7%</div>
         <div class="seg" style="background:var(--s2);flex:14.49" title="Stranded 659,207 CPU-h">14.5%</div></div></div>
     </div>
-    <figcaption>The high-memory partitions strand three to seven times the share that zen5 does:
+    <figcaption>The high-memory partitions strand three to seven times the share that slim1 does:
     their CPUs sit idle because their memory is gone. <b>2.23 million allocation-hours stranded in total &mdash;
     7.3% of cluster capacity</b> at median demand, 18.9% if measured against p75 demand.</figcaption>
   </figure>
@@ -304,7 +304,7 @@ end</code></pre>
   <figure>
     <div class="chart">
       <p class="ctitle">Requested memory per CPU</p>
-      <p class="csub">Share of the 571,248 jobs in the zen* era, by requested MB per CPU</p>
+      <p class="csub">Share of the 571,248 jobs in the period since the current partition layout, by requested MB per CPU</p>
       <div class="legend">
         <span><i class="sw" style="background:var(--s1)"></i> Routed to slim partitions</span>
         <span><i class="sw" style="background:var(--s2)"></i> Routed to high-memory partitions</span>
@@ -361,7 +361,7 @@ end</code></pre>
     genuinely unavailable to anyone else, so allocation is the right unit for scheduling &mdash; but
     it is the wrong unit for throughput. A job that allocates 400 CPU-hours at 25% efficiency
     delivered 100 CPU-hours of work.</p>
-    <p>Measured over the zen* era, on the 345,350 jobs with usable step accounting:</p>
+    <p>Measured over the period since the current partition layout, on the 345,350 jobs with usable step accounting:</p>
   </div>
 
   <div class="tw">
@@ -416,7 +416,7 @@ end</code></pre>
 
     <p>Three consequences follow immediately, and the third is the interesting one.</p>
 
-    <p><strong>A CPU is not a CPU.</strong> A zen5 core does more work per second than a zen3 core,
+    <p><strong>A CPU is not a CPU.</strong> A slim1 core does more work per second than a slim2 core,
     so stranding one costs more. This is already expressed in the PriorityTier ordering and the
     packer should not fight it.</p>
 
@@ -427,7 +427,7 @@ end</code></pre>
     <h4>The idle-cluster case, and why it needs no special rule</h4>
 
     <p>When the cluster is empty, any placement is free right now, and yet placing carelessly is
-    still wrong: a 1-CPU/900 GB job dropped on an empty zen3 node destroys that node&rsquo;s ability
+    still wrong: a 1-CPU/900 GB job dropped on an empty slim2 node destroys that node&rsquo;s ability
     to host anything else for the duration. The cost is not present waste, it is
     <strong>lost option value</strong>.</p>
 
@@ -508,7 +508,7 @@ end</code></pre>
 
         <rect x="602" y="58" width="150" height="46" rx="3" fill="none" stroke="currentColor" stroke-width="1.2"/>
         <text x="677" y="80" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11" fill="currentColor">partition=</text>
-        <text x="677" y="95" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11" fill="currentColor">zen3,zen5x</text>
+        <text x="677" y="95" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11" fill="currentColor">slim2,fat1</text>
 
         <line x1="758" y1="81" x2="820" y2="81" stroke="currentColor" stroke-width="1.2" marker-end="url(#ah)"/>
         <text x="838" y="85" text-anchor="middle" font-family="IBM Plex Sans, sans-serif" font-size="11" fill="currentColor">queue</text>
@@ -589,9 +589,9 @@ end</code></pre>
       not list order</strong>. The packer therefore cannot rank partitions per job &mdash; it can
       only choose the feasible <em class="term">set</em>, and must prune to a single partition when
       it needs to override the tier. <b>Tiers order; the packer gates.</b></p>
-      <p style="margin-top:10px">Worth noting that biocloud&rsquo;s tiers are
-      <code>zen5=10, zen3=9, zen5x=8, zen3x=7</code>. Pure hardware speed would put zen5x level with
-      zen5, since both are Zen 5. Placing zen3 above zen5x means the tiers already encode
+      <p style="margin-top:10px">Worth noting that the example cluster&rsquo;s tiers are
+      <code>slim1=10, slim2=9, fat1=8, fat2=7</code>. Pure hardware speed would put fat1 level with
+      slim1, since both are Zen 5. Placing slim2 above fat1 means the tiers already encode
       &ldquo;save the high-memory nodes for jobs that need them&rdquo; &mdash; a placement policy, not
       just a speed ordering.</p>
     </div>
@@ -746,7 +746,7 @@ end</code></pre>
 
   <div class="col">
     <h4>Cohorts are 39% of the workload</h4>
-    <p>Grouping the zen* era on <code>(user, job_name, cpus_req, mem_mb, timelimit)</code>, 228,331 of
+    <p>Grouping the period since the current partition layout on <code>(user, job_name, cpus_req, mem_mb, timelimit)</code>, 228,331 of
     581,931 jobs belong to a cohort with 50 or more members. The largest single cohort is
     <strong>69,589 individually-submitted jobs</strong> of 1 CPU and 4 GB from one user &mdash; not a
     job array, and therefore invisible to <code>arraytaskthrottle</code>. Cohort identity is that
@@ -768,7 +768,7 @@ end</code></pre>
       declared reservation horizons moves allocation by at most 0.1%, at both EASY and conservative
       reservation depth. The reason is the table above: once placement is fixed there are only ~300
       job-hours of resource-blocking left in a fortnight, so there is nothing for a tighter horizon to
-      unblock. Pessimistic time limits are not what is costing biocloud its throughput. This would not
+      unblock. Pessimistic time limits are not what is costing the example cluster its throughput. This would not
       hold on a cluster that is genuinely reservation-bound.</p>
     </div>
 
@@ -820,7 +820,7 @@ end</code></pre>
   <div class="col">
     <h2><span class="n">07</span> Scheduler configuration</h2>
     <h3>Worth doing before any of this ships</h3>
-    <p><code>bf_max_job_test</code> is unset on biocloud, so it sits at its default of <strong>500</strong>,
+    <p><code>bf_max_job_test</code> is unset on the example cluster, so it sits at its default of <strong>500</strong>,
     while <code>bf_max_job_user=100</code>, <code>default_queue_depth=2000</code> and
     <code>MaxSubmitPU=2000</code>. The manual is explicit that <code>bf_max_job_test</code> should be
     set much higher than <code>bf_max_job_user</code>. Backfill therefore never looks past the first
@@ -1042,9 +1042,9 @@ sched_min_interval=1000000</code></pre>
       <li><strong>The static fallback reproduces the current rule exactly</strong>, including
       routing a 1-CPU/32 GB job to the high-memory partitions &mdash; the behaviour this project
       exists to fix.</li>
-      <li><strong>Decisions track cluster state.</strong> Draining zen5x and five of seven zen3
-      nodes changed a 16-CPU/64 GB job from <code>zen5,zen5x,zen3</code> to <code>zen5,zen3</code>
-      and a 1-CPU/32 GB job from <code>zen5x,zen3x</code> to <code>zen3x</code> &mdash; same shape
+      <li><strong>Decisions track cluster state.</strong> Draining fat1 and five of seven slim2
+      nodes changed a 16-CPU/64 GB job from <code>slim1,fat1,slim2</code> to <code>slim1,slim2</code>
+      and a 1-CPU/32 GB job from <code>fat1,fat2</code> to <code>fat2</code> &mdash; same shape
       bucket, different answer.</li>
       <li><strong>Every failure path falls back and no submission is ever rejected.</strong> Table
       missing, table stale, table truncated mid-write, table replaced with non-Lua garbage, disable
@@ -1066,7 +1066,7 @@ sched_min_interval=1000000</code></pre>
       <p class="t">The third one was worse than the bug being fixed</p>
       <p>A 24-CPU / 2,200 GB job was <strong>rejected outright</strong>. Its shape bucket is
       open-ended &mdash; everything above 24,576 MB/CPU shares one bucket &mdash; so the table was
-      built from a representative of 864 GB and answered <code>zen3x</code>, whose largest node holds
+      built from a representative of 864 GB and answered <code>fat2</code>, whose largest node holds
       2,041,663 MB. The job needed 2,252,800 MB. <strong>The static rule this replaces would have
       accepted it</strong>, because it names both high-memory partitions unconditionally.</p>
       <p style="margin-top:10px">Bucketing had quietly discarded the absolute-footprint information
@@ -1092,7 +1092,7 @@ sched_min_interval=1000000</code></pre>
 <section>
   <div class="col">
     <h2><span class="n">10</span> Portability</h2>
-    <h3>Nothing above is specific to biocloud</h3>
+    <h3>Nothing above is specific to the example cluster</h3>
     <p>Node and partition topology is discovered from <code>scontrol show nodes --json</code> and
     <code>scontrol show partitions --json</code>; the demand distribution and the runtime predictor
     are fitted from the site&rsquo;s own <code>sacct</code> history. A site supplies one YAML file
@@ -1118,7 +1118,7 @@ sched_min_interval=1000000</code></pre>
 
 <footer>
   <div class="col">
-    Draft 1 &middot; measurements from <code>biocloud_job_table</code> and <code>biocloud_step_table</code>,
+    Draft 1 &middot; measurements from the cluster&rsquo;s <code>job_table</code> and <code>step_table</code>,
     2,387,825 jobs. Analysis code and the SQLite import live in the project&rsquo;s <code>tools/</code>
     directory; every figure here is reproducible from them.
   </div>
