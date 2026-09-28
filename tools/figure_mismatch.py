@@ -6,48 +6,26 @@ finds the high-memory jobs that were waiting then, and draws each node's CPU
 and memory allocation as paired bars, in a light and a dark SVG. Also prints
 the history-wide numbers the README quotes.
 
-  usage: figure_mismatch.py biocloud.sqlite "2026-07-20 13:12" docs/img/
+  usage: figure_mismatch.py accounting.sqlite "2026-07-20 13:12" docs/img/
+         (topology from ./site.toml, $SQP_SITE or --site PATH)
 
-Nodes out of service are not in the accounting data reliably (no events
-were recorded for a 10-day outage of two nodes in July 2026). A node that ran
-no job for more than OUT_OF_SERVICE seconds is treated as unavailable for that
-whole gap. The history count is a lower bound: an out-of-service slim node is
-never counted as room a waiting job could have had, while an idle fat node
-always counts as room it did have -- even when it may in fact have been down,
-or the waiting jobs held by a per-user cap instead.
+Out-of-service periods are often missing from the accounting data, so a node
+that ran no job for more than OUT_OF_SERVICE seconds is treated as unavailable
+for that whole gap. The history count is a lower bound: an out-of-service slim
+node is never counted as room a waiting job could have had, while an idle fat
+node always counts as room it did have -- even when it may in fact have been
+down, or the waiting jobs held by a per-user cap instead.
 
 Read-only on the database.
 """
-import collections, re, sqlite3, sys, time
+import collections, sqlite3, sys, time
+from sitefile import SITE, expand          # ./site.toml, $SQP_SITE or --site PATH
 
-PART_NODES = {'zen3': [1, 2, 3, 4, 5, 6, 7], 'zen5': [12, 13, 16, 17],
-              'zen3x': [8, 9], 'zen5x': [14, 15]}
-NODE_PART = {f'bio-node{n:02d}': p for p, ns in PART_NODES.items() for n in ns}
-SLIM, FAT = ('zen5', 'zen3'), ('zen5x', 'zen3x')          # each in PriorityTier order
-FAT_RATIO = 6000          # MB per CPU: the site's static rule sends jobs above this to FAT
-T0 = 1760000000           # zen* partition era begins
+NODE_PART = SITE.batch_node_part
+SLIM, FAT = SITE.slim, SITE.fat            # each in PriorityTier order
+FAT_RATIO = SITE.ratio_threshold           # MB per CPU above which jobs count as high-memory
+T0 = SITE.t0
 OUT_OF_SERVICE = 24 * 3600
-
-
-def expand(nl):
-    """'bio-node12' / 'bio-node[03-05,07]' / comma lists -> [names]"""
-    out = []
-    for tok in re.findall(r'[^,\[]+(?:\[[^\]]*\])?', nl or ''):
-        tok = tok.strip()
-        m = re.match(r'^(.*?)\[([0-9,\-]+)\]$', tok)
-        if not tok:
-            continue
-        if not m:
-            out.append(tok)
-            continue
-        pre, body = m.groups()
-        for seg in body.split(','):
-            if '-' in seg:
-                a, b = seg.split('-')
-                out += [f'{pre}{i:0{len(a)}d}' for i in range(int(a), int(b) + 1)]
-            else:
-                out.append(f'{pre}{seg}')
-    return out
 
 
 def capacities(db):
@@ -222,7 +200,7 @@ def draw(theme, cap, used, waiting, when, off):
                 break
     big = collections.Counter((jc, round(jm / 1024)) for _, jc, jm, _, _ in waiting)
     y = PAD + 16
-    out.append(text(PAD, y, f'Biocloud, {when}: memory ran out on the fat nodes, CPUs on the slim ones',
+    out.append(text(PAD, y, f'{SITE.name}, {when}: memory ran out on the fat nodes, CPUs on the slim ones',
                     c['ink'], 16, 600))
     out.append(text(PAD, y + 22, f'{len(waiting)} high-memory jobs were waiting for a fat node; some went on '
                     f'to wait {max(total) / 3600:.0f} hours. The slim nodes had room for {placed} of them.',
@@ -279,7 +257,7 @@ def main():
     h = history(db, cap, gaps)
     down_h = sum(b - a for g in gaps.values() for a, b in g) / 3600
     print(f'\nnode-hours treated as out of service (> {OUT_OF_SERVICE // 3600} h without a job): {down_h:,.0f}')
-    print(f'\nsince the zen* partitions: {h["jobs"]:,} high-memory single-node jobs waited > 1 h;'
+    print(f'\nsince the start date in the site file: {h["jobs"]:,} high-memory single-node jobs waited > 1 h;'
           f'\n  at least {h["hits"]:,} ({100 * h["hits"] / h["jobs"]:.1f}%) did so while every fat node was too full'
           f' and a slim node had room of their shape,'
           f'\n  accounting for {h["wait_hit"]:,.0f} of {h["wait_all"]:,.0f} wait-hours '

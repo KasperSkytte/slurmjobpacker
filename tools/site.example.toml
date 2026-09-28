@@ -1,0 +1,49 @@
+# The cluster the analysis tools in tools/ describe. Copy to site.toml (which
+# git ignores) and fill in your own; the tools read ./site.toml, $SQP_SITE or
+# --site PATH. This example matches tests/testcluster.sh.
+
+name = "example"            # shown in figure titles
+since = "2025-10-09"        # analyse jobs from this date, e.g. when the partitions were set up
+ratio_threshold = 6000      # MB per CPU at which your current rule switches slim -> fat
+# demand = [[800, 0.1], ...] # optional: `python3 -m sqp.fit` output; sqp's defaults otherwise
+# demand_median = 4267
+
+[qos]                       # the per-user and per-account CPU caps jobs run under
+max_cpu_per_user = 864
+max_cpu_per_account = 1760
+
+# One table per partition. class: "slim" (little memory per CPU), "fat", or
+# "other" (counted in cluster totals, never placed on: interactive, GPU, ...).
+# tier is the partition's PriorityTier; speed its relative throughput (1 = fastest).
+
+[partitions.slim1]
+nodes = "node[12-13,16-17]"
+class = "slim"
+tier = 10
+speed = 1.0
+
+[partitions.slim2]
+nodes = "node[01-07]"
+class = "slim"
+tier = 9
+speed = 0.8
+
+[partitions.fat1]
+nodes = "node[14-15]"
+class = "fat"
+tier = 8
+speed = 1.0
+
+[partitions.fat2]
+nodes = "node[08-09]"
+class = "fat"
+tier = 7
+speed = 0.8
+
+[partitions.interactive]
+nodes = "node11"
+class = "other"
+
+[partitions.gpu]
+nodes = "node10"
+class = "other"

@@ -10,40 +10,20 @@ Both are computed event-driven, no resampling.
 """
 import sqlite3, sys, re, bisect, collections
 
-DB = sys.argv[1] if len(sys.argv) > 1 else 'biocloud.sqlite'
-T0 = 1760000000                      # zen* partition era begins
+from sitefile import SITE, expand          # ./site.toml, $SQP_SITE or --site PATH
+
+DB = sys.argv[1] if len(sys.argv) > 1 else sys.exit('usage: stranding.py accounting.sqlite')
+T0 = SITE.t0
 db = sqlite3.connect(DB); db.row_factory = sqlite3.Row
 
-PART = {}
-for p, ns in {'zen3': [1, 2, 3, 4, 5, 6, 7], 'zen3x': [8, 9], 'zen5': [12, 13, 16, 17],
-              'zen5x': [14, 15], 'interactive': [11], 'gpu-a10': [10]}.items():
-    for n in ns: PART[f'bio-node{n:02d}'] = p
-SLIM, FAT = {'zen3', 'zen5'}, {'zen3x', 'zen5x'}
+PART = SITE.node_part
+SLIM, FAT = set(SITE.slim), set(SITE.fat)
 
 CAP = {}
 for r in db.execute("select node_name,tres from event_table"):
-    if not r['node_name'].startswith('bio-node'): continue
+    if r['node_name'] not in PART: continue
     t = dict(kv.split('=') for kv in r['tres'].split(',') if '=' in kv)
     CAP[r['node_name']] = (int(t.get('1', 0)), int(t.get('2', 0)))
-CAP = {k: v for k, v in CAP.items() if k in PART}
-
-def expand(nl):
-    """'bio-node12' / 'bio-node[03-05,07]' / comma lists -> [names]"""
-    out = []
-    for tok in re.findall(r'[^,\[]+(?:\[[^\]]*\])?', nl or ''):
-        tok = tok.strip()
-        if not tok: continue
-        m = re.match(r'^(.*?)\[([0-9,\-]+)\]$', tok)
-        if not m:
-            out.append(tok); continue
-        pre, body = m.groups()
-        for seg in body.split(','):
-            if '-' in seg:
-                a, b = seg.split('-'); w = len(a)
-                out += [f'{pre}{i:0{w}d}' for i in range(int(a), int(b) + 1)]
-            else:
-                out.append(f'{pre}{seg}')
-    return out
 
 # ---- events -------------------------------------------------------------
 ev = collections.defaultdict(list)          # time -> [(node, dcpu, dmem)]
@@ -59,7 +39,7 @@ for r in db.execute("""select nodelist,nodes_alloc,alloc_cpus,alloc_mem_mb,start
     for n in nodes:
         ev[r['start']].append((n, dc, dm)); ev[r['end']].append((n, -dc, -dm))
     nj += 1
-    if r['wait'] > 300 and r['cpus_req'] > 0 and r['mem_mb'] / r['cpus_req'] > 6000:
+    if r['wait'] > 300 and r['cpus_req'] > 0 and r['mem_mb'] / r['cpus_req'] > SITE.ratio_threshold:
         pend.append((r['eligible'] + 60, r['cpus_req'], r['mem_mb'],
                      r['mem_mb'] / r['cpus_req'], r['wait']))
 print(f'jobs placed on timeline: {nj:,}   fat jobs pending >5min: {len(pend):,}')
@@ -67,7 +47,7 @@ print(f'jobs placed on timeline: {nj:,}   fat jobs pending >5min: {len(pend):,}'
 times = sorted(ev)
 pend.sort()
 used = {n: [0.0, 0.0] for n in CAP}
-DEMAND = {'p50': 4267, 'p75': 7680}          # MB/CPU, cpu-hour weighted (measured)
+DEMAND = {'p50': SITE.demand_median, 'p75': SITE.demand[3][0]}   # MB/CPU
 
 acc = {k: collections.Counter() for k in DEMAND}
 busy_ch = idle_ch = 0.0
@@ -113,5 +93,5 @@ print(f'\ncross-class opportunities:')
 print(f'  fat jobs probed while pending >5 min : {probes:,}')
 print(f'  a SLIM node could have taken it now  : {hits["any"]:,} '
       f'({hits["any"]/probes*100:.1f}%)' if probes else '')
-for p in ('zen3', 'zen5'):
+for p in SITE.slim:
     print(f'    via {p}: {hits[p]:,}')

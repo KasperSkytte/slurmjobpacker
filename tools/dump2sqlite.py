@@ -5,7 +5,7 @@ Reads only the tables/columns needed for scheduling analysis, so the result is
 a fraction of the dump size and can be queried with plain SQL. Does not touch
 any live database.
 
-  usage: dump2sqlite.py <dump.sql> <out.sqlite> [--cluster biocloud]
+  usage: dump2sqlite.py <dump.sql> <out.sqlite> --cluster <ClusterName>
 """
 import re, sys, sqlite3, os
 
@@ -147,5 +147,7 @@ def main(dump, out, cluster):
 
 
 if __name__ == '__main__':
-    cl = sys.argv[sys.argv.index('--cluster') + 1] if '--cluster' in sys.argv else 'biocloud'
+    if '--cluster' not in sys.argv or len(sys.argv) < 5:
+        sys.exit('usage: dump2sqlite.py <dump.sql> <out.sqlite> --cluster <ClusterName>')
+    cl = sys.argv[sys.argv.index('--cluster') + 1]
     main(sys.argv[1], sys.argv[2], cl)

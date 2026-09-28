@@ -3,7 +3,7 @@
 import sqlite3, sys
 
 MEM_PER_CPU = 0x8000000000000000
-DB = sys.argv[1] if len(sys.argv) > 1 else 'biocloud.sqlite'
+DB = sys.argv[1] if len(sys.argv) > 1 else sys.exit('usage: normalize.py accounting.sqlite')
 db = sqlite3.connect(DB)
 db.execute('PRAGMA journal_mode=OFF'); db.execute('PRAGMA synchronous=OFF')
 

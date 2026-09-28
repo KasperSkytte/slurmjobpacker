@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Characterise the biocloud workload for queue-placement design.
+"""Characterise a cluster's workload for queue-placement design.
 
 Everything here is descriptive: no model is fit, nothing is written back.
 """
 import sqlite3, sys, math, datetime as dt, collections, statistics as st
 
-DB = sys.argv[1] if len(sys.argv) > 1 else 'biocloud.sqlite'
+DB = sys.argv[1] if len(sys.argv) > 1 else sys.exit('usage: analyze.py accounting.sqlite')
 db = sqlite3.connect(DB); db.row_factory = sqlite3.Row
 q = lambda s, *a: db.execute(s, a).fetchall()
 day = lambda x: dt.datetime.utcfromtimestamp(int(x)).strftime('%Y-%m-%d') if x else '-'

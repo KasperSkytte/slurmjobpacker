@@ -2,7 +2,7 @@
 """First-pass characterisation of the Slurm accounting history."""
 import sqlite3, sys, math, datetime as dt, collections
 
-db = sqlite3.connect(sys.argv[1] if len(sys.argv) > 1 else 'biocloud.sqlite')
+db = sqlite3.connect(sys.argv[1] if len(sys.argv) > 1 else sys.exit('usage: explore.py accounting.sqlite'))
 db.row_factory = sqlite3.Row
 q = lambda s, *a: db.execute(s, a).fetchall()
 

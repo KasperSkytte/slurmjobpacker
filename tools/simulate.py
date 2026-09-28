@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Trace-driven replay of the biocloud queue.
+"""Trace-driven replay of a cluster's queue, from its accounting history.
 
 Objective: minimise queue time, maximise CPU and memory *allocation* hours.
 Allocation is what denies hardware to other people, so allocation is the unit.
@@ -11,29 +11,27 @@ by ~7x, which makes Slurm's backfill reservations far too pessimistic. Replaying
 with reservation horizons taken from cohort history instead of declared limits
 measures how much room that leaves to pack better.
 
-  usage: simulate.py --start 2026-03-09 --days 14 [--jobs 8]
+  usage: simulate.py --db accounting.sqlite --start 2026-03-09 --days 14 [--jobs 8]
+         (topology from ./site.toml, $SQP_SITE or --site PATH)
 """
 import sqlite3, argparse, heapq, collections, os, sys, datetime as dt
 import multiprocessing as mp
 
 # ---------------------------------------------------------------- topology
-PART_NODES = {'zen3': [1, 2, 3, 4, 5, 6, 7], 'zen3x': [8, 9],
-              'zen5': [12, 13, 16, 17], 'zen5x': [14, 15]}
-NODE_PART = {f'bio-node{n:02d}': p for p, ns in PART_NODES.items() for n in ns}
-TIER = {'zen5': 10, 'zen3': 9, 'zen5x': 8, 'zen3x': 7}
-SPEED = {'zen5': 1.00, 'zen5x': 1.00, 'zen3': 0.80, 'zen3x': 0.80}
-SLIM, FAT = ('zen5', 'zen3'), ('zen5x', 'zen3x')
+from sitefile import SITE                  # ./site.toml, $SQP_SITE or --site PATH
+NODE_PART = SITE.batch_node_part
+TIER = SITE.tier
+SPEED = SITE.speed
+SLIM, FAT = SITE.slim, SITE.fat
 
-# demand ratio quantiles (MB/CPU), allocation-hour weighted, measured zen* era
-DEMAND = [(800, .10), (1280, .15), (4267, .25), (7680, .25),
-          (14178, .15), (30720, .10)]
-Q50 = 4267          # demand median, for the reported stranding metric
+DEMAND = SITE.demand   # memory per CPU arriving jobs ask for (MB/CPU, weight)
+Q50 = SITE.demand_median   # for the reported stranding metric
 TOL = 0.25          # partition-set tolerance, in CPUs of option value per job CPU
 
-# QOS 'normal' on biocloud: MaxTRESPU=cpu=864, MaxTRESPA=cpu=1760.
-# These, not resource exhaustion, are what actually holds most jobs in the queue.
-MAX_CPU_PER_USER = 864
-MAX_CPU_PER_ACCT = 1760
+# The per-user and per-account CPU caps (MaxTRESPU, MaxTRESPA). On a busy
+# cluster these, not resource exhaustion, often hold most jobs in the queue.
+MAX_CPU_PER_USER = SITE.max_cpu_per_user
+MAX_CPU_PER_ACCT = SITE.max_cpu_per_account
 
 # Elastic relief. The caps exist to stop one user swallowing the cluster in a
 # minute, not to ration it. When capacity is genuinely idle, individual PENDING
@@ -69,8 +67,8 @@ def load_caps(db):
 def phi_node(fc, fm):
     """Placeable capacity: free CPUs usable under the measured demand mix.
 
-    Marginal use only -- as an absolute quantity it charges ~25% of an idle
-    zen3 node as unusable, because the top demand deciles fit on no node.
+    Marginal use only -- as an absolute quantity it can charge part of an idle
+    node as unusable, when the top demand deciles fit on no node.
     """
     return sum(w * min(fc, fm / q) for q, w in DEMAND)
 
@@ -87,7 +85,7 @@ def pol_actual(job, st):
 
 def pol_static(job, st):
     """Reproduces the current job_submit.lua."""
-    return list(SLIM) if job.mem / job.cpus < 6000 else list(FAT)
+    return list(SLIM) if job.mem / job.cpus < SITE.ratio_threshold else list(FAT)
 
 
 def pol_feasible(job, st):
@@ -359,9 +357,9 @@ def add_resv(st, job, parts, resv, running, now):
 def build_runtime_pred(db, before, q=0.95, minn=20):
     """Reservation horizon from cohort history strictly before the window.
 
-    Cohort-p95 over (user, name, cpus, mem). Measured on the zen* era: shrinks
-    the horizon to 21.7% of declared limits, 6.3% of jobs outlive it, median
-    overrun 2 minutes.
+    Cohort-p95 over (user, name, cpus, mem). On one production cluster it shrank
+    the horizon to 21.7% of declared limits, with 6.3% of jobs outliving it by a
+    median of 2 minutes.
     """
     acc = collections.defaultdict(list)
     for u, nm, c, m, el in db.execute(
@@ -420,7 +418,7 @@ def main():
     global FLEX_CEILING, FLEX_RESERVE, FLEX_PHI_TOL
     global GL_RAISE_ABOVE, GL_LOWER_BELOW, GL_HYSTERESIS, GL_STEP
     ap = argparse.ArgumentParser()
-    ap.add_argument('--db', default='biocloud.sqlite')
+    ap.add_argument('--db', required=True, help='SQLite from dump2sqlite.py + normalize.py')
     ap.add_argument('--start', required=True)
     ap.add_argument('--days', type=int, default=14)
     ap.add_argument('--warmup', type=int, default=4)
