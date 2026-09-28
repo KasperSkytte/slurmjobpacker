@@ -83,7 +83,8 @@ DEFAULTS: dict = {
         #            caps are at base the rest of the time, and after a restart.
         #   perjob - move individual pending jobs to a flex QOS. NOT YET
         #            IMPLEMENTED: currently changes nothing.
-        "mode": "global",
+        # Off by default: it edits a QOS. Set the base caps to your QOS's values.
+        "mode": "off",
         "qos_name": "normal",         # the QOS whose MaxTRESPU/MaxTRESPA are pulsed
         "base_cpu_per_user": 864,
         "base_cpu_per_account": 1760,

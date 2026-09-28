@@ -1,4 +1,5 @@
-"""Behavioural tests for the placement core, on biocloud-shaped topology.
+"""Behavioural tests for the placement core, on an example topology: two slim
+and two fat partitions, each a faster and a slower generation.
 
 These are the claims the design rests on. If one of them fails, the argument in
 docs/design.html is wrong, not just the code.
@@ -22,12 +23,12 @@ from sqp import config, policy, daemon
 
 CFG = config.defaults()
 DEMAND = [tuple(x) for x in CFG['policy']['demand']]
-SPEED = {'zen5': 1.0, 'zen5x': 1.0, 'zen3': 0.8, 'zen3x': 0.8}
+SPEED = {'slim1': 1.0, 'fat1': 1.0, 'slim2': 0.8, 'fat2': 0.8}
 TOTAL = {
-    'zen3':  [(192, 1021567)] * 5 + [(256, 1021540), (192, 505529)],
-    'zen3x': [(192, 2041663), (256, 2041636)],
-    'zen5':  [(288, 1537338)] * 2 + [(256, 1537407)] * 2,
-    'zen5x': [(288, 2311479)] * 2,
+    'slim2':  [(192, 1021567)] * 5 + [(256, 1021540), (192, 505529)],
+    'fat2': [(192, 2041663), (256, 2041636)],
+    'slim1':  [(288, 1537338)] * 2 + [(256, 1537407)] * 2,
+    'fat1': [(288, 2311479)] * 2,
 }
 def scale(frac):
     """Free shapes with `frac` of every node already consumed, ratio-matched."""
@@ -44,15 +45,15 @@ tiny_fat = policy.feasible(1, 32768, TOTAL)          # 1 CPU, 32 GB -> 32k MB/CP
 check("a 1-CPU/32GB job is feasible everywhere", set(tiny_fat) == set(TOTAL),
       ",".join(sorted(tiny_fat)))
 huge = policy.feasible(24, 2252800, TOTAL)           # 24 CPU, 2.2 TB
-# zen3x tops out at 2,041,663 MB, so 2.2 TB fits on bio-node14/15 only:
+# fat2 tops out at 2,041,663 MB, so 2.2 TB fits on node14/15 only:
 # two nodes in the entire cluster.
-check("a 24-CPU/2.2TB job is feasible only on zen5x",
-      set(huge) == {'zen5x'}, ",".join(sorted(huge)))
+check("a 24-CPU/2.2TB job is feasible only on fat1",
+      set(huge) == {'fat1'}, ",".join(sorted(huge)))
 
 print("\n2. idle cluster packs by ratio (the cold-start case)")
 idle = policy.choose(1, 32768, TOTAL, scale(0.0), SPEED, DEMAND, 0.25)
 check("high-ratio job avoids slim nodes when everything is free",
-      not ({'zen3', 'zen5'} & set(idle)), ",".join(idle))
+      not ({'slim2', 'slim1'} & set(idle)), ",".join(idle))
 
 print("\n3. loaded cluster opens up (phi is spent, work term dominates)")
 loaded = policy.choose(1, 32768, TOTAL, scale(0.85), SPEED, DEMAND, 0.25)
@@ -78,9 +79,9 @@ check("different load -> different signature", len(set(sigs)) > 1,
 
 print("\n6. static fallback reproduces the site's current rule")
 check("low ratio -> slim",
-      policy.static_fallback(16, 64000, ['zen5','zen3'], ['zen5x','zen3x']) == ['zen5','zen3'])
+      policy.static_fallback(16, 64000, ['slim1','slim2'], ['fat1','fat2']) == ['slim1','slim2'])
 check("high ratio -> fat",
-      policy.static_fallback(1, 32768, ['zen5','zen3'], ['zen5x','zen3x']) == ['zen5x','zen3x'])
+      policy.static_fallback(1, 32768, ['slim1','slim2'], ['fat1','fat2']) == ['fat1','fat2'])
 
 print("\n7. rendered table is loadable and complete")
 tbl = policy.build_table(CFG, TOTAL, scale(0.3), SPEED)
@@ -95,25 +96,25 @@ lua2 = policy.render_lua(tbl, CFG, time.time(), 7, TOTAL)
 check("caps emitted for every partition",
       all(f'["{p}"]' in lua2.split("t = {")[0] for p in TOTAL))
 check("cap values are the largest node in each partition",
-      '["zen5x"] = {288, 2311479}' in lua2 and '["zen3x"] = {256, 2041663}' in lua2)
+      '["fat1"] = {288, 2311479}' in lua2 and '["fat2"] = {256, 2041663}' in lua2)
 
 print("\n8. bucketing must not discard feasibility")
-# 24 CPU x 2200 GB and 24 CPU x 800 GB share bucket (7,4); only zen5x holds the
+# 24 CPU x 2200 GB and 24 CPU x 800 GB share bucket (7,4); only fat1 holds the
 # first. The plugin filters by real size against the emitted caps.
 big = 2200 * 1024
 cap = {p: (max(c for c, _ in v), max(m for _, m in v)) for p, v in TOTAL.items()}
-setfor74 = "zen3x"                      # what the table actually held
+setfor74 = "fat2"                      # what the table actually held
 kept = [p for p in setfor74.split(",") if 24 <= cap[p][0] and big <= cap[p][1]]
 check("a 2.2TB job is not left with a partition that cannot hold it",
-      kept == [], "zen3x max mem is %d < %d" % (cap['zen3x'][1], big))
-check("zen5x can hold it", big <= cap['zen5x'][1])
+      kept == [], "fat2 max mem is %d < %d" % (cap['fat2'][1], big))
+check("fat1 can hold it", big <= cap['fat1'][1])
 
 print("\n9. plugin_lookup mirrors the plugin's refit")
 tbl = policy.build_table(CFG, TOTAL, scale(0.3), SPEED)
 cap = policy.caps(TOTAL)
 parts, key, refit = policy.plugin_lookup(tbl, cap, CFG, 24, 2200 * 1024, 60)
 check("a 2.2TB job is refit to the only partition that holds it",
-      parts == ['zen5x'], f"{key} -> {parts} refit={refit}")
+      parts == ['fat1'], f"{key} -> {parts} refit={refit}")
 parts, key, refit = policy.plugin_lookup(tbl, cap, CFG, 1, 2048, 60)
 check("an ordinary job is not refit", not refit and parts == tbl[key], ",".join(parts))
 
@@ -126,6 +127,7 @@ slurm._run = lambda args, timeout=10.0: ran.append(args) or ""
 try:
     cfg = config.defaults()
     cfg["general"]["mode"] = "observe"
+    cfg["limits"]["mode"] = "global"
     cfg["general"]["state_dir"] = tempfile.mkdtemp()
     cfg["general"]["disable_file"] = os.path.join(tempfile.mkdtemp(), "disable")
     d = daemon.Daemon(cfg)
@@ -135,7 +137,7 @@ try:
              for p, v in TOTAL.items() for i, (c, m) in enumerate(v)}
     d.sh.nodes, d.sh.parts = nodes, {p: dict(tier=1, state="UP") for p in TOTAL}
     d.sh.pending = [dict(jobid="1", user="u", cpus=4, mem=8192, req_mem=8192, qos="normal",
-                         reason="QOSMaxCpuPerUserLimit", partition="zen5", state="PD")]
+                         reason="QOSMaxCpuPerUserLimit", partition="slim1", state="PD")]
     d.score_once(d.sh.nodes, d.sh.parts, time.time())
     for _ in range(cfg["limits"]["hysteresis"]):
         d.act_once()                     # idle cluster, a capped job that fits: pulse
@@ -192,7 +194,7 @@ try:
     slurm.set_actuation(False)
     refused = 0
     for argv in (slurm.cmd_set_qos_cpu_limits("sqp-test-no-such-qos", 1, 1),
-                 slurm.cmd_set_job_partitions("1", ["zen3"]),
+                 slurm.cmd_set_job_partitions("1", ["slim2"]),
                  slurm.cmd_set_job_qos("1", "flex"), slurm.cmd_set_array_throttle("1", 5)):
         try:
             slurm._run(argv)
@@ -212,74 +214,74 @@ check("no GPU", not slurm._has_gpu("(null)", "cpu=64,mem=1M"))
 def node(parts, gpu=False):
     return dict(cpus=64, mem=256000, alloc_cpus=0, alloc_mem=0,
                 partitions=parts, up=True, gpu=gpu)
-nodes = {"a": node(["zen3"]), "b": node(["Interactive"]), "g": node(["gpu"], True),
+nodes = {"a": node(["slim2"]), "b": node(["Interactive"]), "g": node(["gpu"], True),
          "m1": node(["mixed"]), "m2": node(["mixed"], True)}
-parts = {p: dict(tier=1, state="UP") for p in ("zen3", "Interactive", "gpu", "mixed")}
+parts = {p: dict(tier=1, state="UP") for p in ("slim2", "Interactive", "gpu", "mixed")}
 cfg = config.defaults()
 d = daemon.Daemon(cfg)
 keep, dropped = d.partition_filter(parts, nodes)
-check("defaults keep only CPU batch partitions", sorted(keep) == ["mixed", "zen3"],
+check("defaults keep only CPU batch partitions", sorted(keep) == ["mixed", "slim2"],
       f"{keep} {dropped}")
 total, _ = d.shapes(nodes, parts)
 check("a mixed partition keeps only its CPU nodes", len(total["mixed"]) == 1)
 cfg["topology"].update(exclude_interactive=False, exclude_gpu_nodes=False,
-                       exclude_partitions=["zen3"])
+                       exclude_partitions=["slim2"])
 keep, dropped = d.partition_filter(parts, nodes)
 check("each exclusion can be turned off; names can be excluded",
-      sorted(keep) == ["Interactive", "gpu", "mixed"] and "zen3" in dropped, f"{keep}")
+      sorted(keep) == ["Interactive", "gpu", "mixed"] and "slim2" in dropped, f"{keep}")
 
 print("\n12. node pins follow PriorityTier, then shape")
-TIERS = {'zen5': 10, 'zen3': 9, 'zen5x': 8, 'zen3x': 7}
-# A zen5 node already filled with low-memory jobs has 8 CPUs and ~490 GB left:
-# 61 GB per CPU, the ratio of a high-memory job. The empty zen5 node would do too,
-# but a 4-CPU/200 GB job there wastes its CPUs for everyone else. zen3 has a
-# snug node as well, but ranks below zen5, and Slurm tries zen5 first.
-nf = {'n12': (8, 500000, ['zen5']), 'n16': (256, 1500000, ['zen5']),
-      'n03': (4, 204800, ['zen3']), 'n14': (288, 2300000, ['zen5x'])}
-node, parts, info = policy.pick_node(4, 204800, ['zen3', 'zen5'], nf, TIERS, DEMAND, 1.0)
+TIERS = {'slim1': 10, 'slim2': 9, 'fat1': 8, 'fat2': 7}
+# A slim1 node already filled with low-memory jobs has 8 CPUs and ~490 GB left:
+# 61 GB per CPU, the ratio of a high-memory job. The empty slim1 node would do too,
+# but a 4-CPU/200 GB job there wastes its CPUs for everyone else. slim2 has a
+# snug node as well, but ranks below slim1, and Slurm tries slim1 first.
+nf = {'n12': (8, 500000, ['slim1']), 'n16': (256, 1500000, ['slim1']),
+      'n03': (4, 204800, ['slim2']), 'n14': (288, 2300000, ['fat1'])}
+node, parts, info = policy.pick_node(4, 204800, ['slim2', 'slim1'], nf, TIERS, DEMAND, 1.0)
 check("pins inside the highest-ranked partition with room",
-      node in ('n12', 'n16') and parts == ['zen5'], f"{node} {parts} {info['why']}")
+      node in ('n12', 'n16') and parts == ['slim1'], f"{node} {parts} {info['why']}")
 check("there, on the slim node whose leftover memory suits the job",
       node == 'n12', info["why"])
-nf2 = dict(nf, n12=(0, 0, ['zen5']), n16=(0, 0, ['zen5']))
-node, parts, info = policy.pick_node(4, 204800, ['zen3', 'zen5'], nf2, TIERS, DEMAND, 1.0)
+nf2 = dict(nf, n12=(0, 0, ['slim1']), n16=(0, 0, ['slim1']))
+node, parts, info = policy.pick_node(4, 204800, ['slim2', 'slim1'], nf2, TIERS, DEMAND, 1.0)
 check("falls to the next rank only when the top one is full",
       node is None and "only n03" in info["why"], info["why"])
-nf3 = {'a': (64, 256000, ['zen5']), 'b': (64, 256000, ['zen5'])}
-node, _, info = policy.pick_node(4, 8192, ['zen5'], nf3, TIERS, DEMAND, 1.0)
+nf3 = {'a': (64, 256000, ['slim1']), 'b': (64, 256000, ['slim1'])}
+node, _, info = policy.pick_node(4, 8192, ['slim1'], nf3, TIERS, DEMAND, 1.0)
 check("no pin when the candidates are equally good", node is None, info["why"])
 G = 1024
 # Where capacity cannot tell the nodes apart, the free memory per CPU decides.
-nf4 = {'small': (8, 40 * G, ['zen5']), 'big': (256, 1500 * G, ['zen5'])}
-node, _, info = policy.pick_node(8, 32 * G, ['zen5'], nf4, TIERS, DEMAND, 1.0, 0.1)
+nf4 = {'small': (8, 40 * G, ['slim1']), 'big': (256, 1500 * G, ['slim1'])}
+node, _, info = policy.pick_node(8, 32 * G, ['slim1'], nf4, TIERS, DEMAND, 1.0, 0.1)
 check("near-equal by capacity: the closest memory per CPU wins (5 vs 5.9 GB for 4)",
       node == 'small', info["why"])
-nf5 = {'r60': (4, 240 * G, ['zen5']), 'r150': (4, 600 * G, ['zen5'])}
-node, _, info = policy.pick_node(1, 100 * G, ['zen5'], nf5, TIERS, DEMAND, 1.0, 0.1)
+nf5 = {'r60': (4, 240 * G, ['slim1']), 'r150': (4, 600 * G, ['slim1'])}
+node, _, info = policy.pick_node(1, 100 * G, ['slim1'], nf5, TIERS, DEMAND, 1.0, 0.1)
 check("beyond the demand mix, where capacity is blind, the ratio still decides",
       node == 'r150', info["why"])
-node, _, info = policy.pick_node(8, 32 * G, ['zen5'], nf4, TIERS, DEMAND, 1.0, 0.5)
+node, _, info = policy.pick_node(8, 32 * G, ['slim1'], nf4, TIERS, DEMAND, 1.0, 0.5)
 check("no pin when the ratio difference is below min_ratio_gain", node is None, info["why"])
 check("a job waiting on a dependency is pinned like any other",
       policy.pin_eligible(dict(jobid="5", nnodes=1, req_nodes="", reason="Dependency")) is None)
-node, _, info = policy.pick_node(512, 8192, ['zen5'], nf3, TIERS, DEMAND, 1.0)
+node, _, info = policy.pick_node(512, 8192, ['slim1'], nf3, TIERS, DEMAND, 1.0)
 check("no pin when nothing has room", node is None and "no node" in info["why"])
 check("arrays, multi-node, user nodelists and held jobs are never pinned",
       all(policy.pin_eligible(dict(jobid=i, nnodes=n, req_nodes=r, reason=why))
           for i, n, r, why in (("5_1", 1, "", "None"), ("5", 2, "", "None"),
-                               ("5", 1, "bio-node01", "None"), ("5", 1, "", "JobHeldUser")))
+                               ("5", 1, "node01", "None"), ("5", 1, "", "JobHeldUser")))
       and policy.pin_eligible(dict(jobid="5", nnodes=1, req_nodes="", reason="None", ntasks=100))
       and policy.pin_eligible(dict(jobid="5", nnodes=1, req_nodes="", reason="None", ntasks=1)) is None)
 tbl = policy.build_table(CFG, TOTAL, scale(0.3), SPEED)
 lua = policy.render_lua(tbl, CFG, time.time(), 1, TOTAL,
                         dict(nodes=nf, tiers=TIERS, room={1000: 64}))
-check("pin data is emitted when pinning", 'pin = {' in lua and '["n16"] = {256, 1500000, "zen5"}' in lua
+check("pin data is emitted when pinning", 'pin = {' in lua and '["n16"] = {256, 1500000, "slim1"}' in lua
       and '[1000] = 64' in lua)
 check("and not otherwise", 'pin = {' not in policy.render_lua(tbl, CFG, time.time(), 1, TOTAL))
 
 print("\n13. stale pins are released, and only sqp's own")
 real_ac, real_apply = slurm.admin_comment, slurm.apply
-comments = {"7": "sqp:pin=n16;from=zen5,zen3", "8": ""}
+comments = {"7": "sqp:pin=n16;from=slim1,slim2", "8": ""}
 slurm.admin_comment = lambda jid: comments[jid]
 applied = []
 slurm.apply = lambda argv, timeout=10.0: applied.append(argv) or True
@@ -301,7 +303,7 @@ try:
         else:
             check("enforce: releases the stale sqp pin and restores its partitions",
                   applied == [["scontrol", "update", "jobid=7", "reqnodelist="],
-                              ["scontrol", "update", "jobid=7", "partition=zen5,zen3",
+                              ["scontrol", "update", "jobid=7", "partition=slim1,slim2",
                                "admincomment=sqp:released=n16"]],
                   str(applied))
     check("a user's own --nodelist (job 8) and a fresh pin (job 9) are left alone",

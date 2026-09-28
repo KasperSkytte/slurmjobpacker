@@ -1,10 +1,9 @@
 """Talking to Slurm.
 
 Deliberately parses `scontrol ... --oneliner` key=value output rather than
-`--json`. The JSON schemas move between releases (this site runs 24.11 in
-production and 26.05 on its test box); the key=value form has been stable for
-many years and costs nothing to parse. That is the difference between a tool
-another site can install and one that only works here.
+`--json`. The JSON schemas move between releases; the key=value form has been
+stable for many years and costs nothing to parse, so the same code works on
+24.11 and 26.05 alike.
 """
 from __future__ import annotations
 import subprocess, shutil, shlex, time, re

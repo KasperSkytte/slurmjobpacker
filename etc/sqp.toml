@@ -3,9 +3,9 @@
 # regenerate with:  python3 -m sqp.daemon --print-config
 #
 # Start in mode = "observe": the daemon computes and logs every decision and
-# changes nothing. Move to "advise" to write the policy table, then "enforce"
-# to let it act on limits. Creating the disable_file reverts to the site's
-# static rule instantly, on the next submission, with no restart.
+# changes nothing. "advise" lets the plugin choose partitions; "enforce" also
+# pins nodes and, with [limits] mode = "global", pulses the QOS caps. Creating
+# the disable_file returns the plugin to its fallback on the next submission.
 
 [general]
 mode = "observe"
@@ -57,7 +57,7 @@ slim = 4.0
 fat_ratio_threshold = 6000
 
 [limits]
-mode = "global"
+mode = "off"
 qos_name = "normal"
 base_cpu_per_user = 864
 base_cpu_per_account = 1760

@@ -2,30 +2,42 @@
   slurmqueuepacker - job_submit plugin
 
   This runs synchronously inside slurmctld on every submission, so it does
-  exactly one thing: index a precomputed table. All the decision-making happens
-  in sqpd, out of band. Everything below is wrapped in pcall; a plugin that
-  throws rejects a user's job.
+  little: run your site's own rules, look the job up in the table sqpd keeps
+  in /run/sqp, and set the partitions (and, when the job can start at once,
+  the node) it finds there. All the deciding happens in sqpd, out of band.
+  Everything is wrapped in pcall; a plugin that throws rejects a user's job.
 
-  Failure is always to the site's static rule:
-    - the table file is missing, unreadable or unparsable
-    - the table is older than its own max_age
-    - the disable file exists
-    - anything at all raises
-  In every one of those cases the behaviour is exactly what this site did before
-  installing the packer.
+  If the table is missing, stale or unparsable, the disable file exists, or
+  anything at all raises, the job gets the static fallback below instead.
+
+  Edit the site configuration section, then copy this file next to slurm.conf
+  and set JobSubmitPlugins=lua.
 --]]
 
+-- ---------------------------------------------------------------- site configuration
+-- Must match state_dir and disable_file in sqp.toml.
 local TABLE_PATH   = "/run/sqp/policy.lua"
 local DISABLE_PATH = "/etc/sqp/disable"
 
--- Static fallback. Keep these in step with sqp.toml [policy].
-local SLIM = "zen5,zen3"
-local FAT  = "zen5x,zen3x"
-local RATIO_THRESHOLD = 6000            -- MB per CPU
-local MIN_MEM_MB = 512
-local INTERACTIVE = "interactive"
-local GPU_PARTITION = "gpu-a10"
+-- Static fallback, used whenever sqp's table cannot be: jobs asking less than
+-- RATIO_THRESHOLD MB per CPU get SLIM, the rest FAT (comma-separated partition
+-- lists). Leave both empty to leave the job's partition as it is.
+local SLIM = ""
+local FAT  = ""
+local RATIO_THRESHOLD = 6000              -- MB per CPU
 
+-- true: sqp places every batch job, including ones submitted with --partition
+-- (users often choose wrongly). false: a job that names its partition keeps it.
+local OVERRIDE_USER_PARTITION = true
+
+-- Your site's own rules, run first on every submission. Return nil to let sqp
+-- place the job, or a return code (slurm.SUCCESS, slurm.ERROR) to stop here --
+-- for instance after routing GPU or interactive jobs to their own partitions.
+local function site_rules(job_desc, submit_uid)
+    return nil
+end
+
+-- ---------------------------------------------------------------- sqp
 local cache = { body = nil, tbl = nil }
 
 local function file_exists(p)
@@ -64,7 +76,10 @@ local function bucket(value, edges)
 end
 
 local function static_choice(mem_mb, cpus)
-    if (mem_mb / cpus) < RATIO_THRESHOLD then return SLIM else return FAT end
+    local parts = FAT
+    if (mem_mb / cpus) < RATIO_THRESHOLD then parts = SLIM end
+    if parts == "" then return nil end
+    return parts
 end
 
 -- The bucket table cannot answer feasibility: its top shape buckets are
@@ -196,8 +211,11 @@ end
 local function blank(v) return v == nil or v == "" end
 
 -- Pin only plain jobs that can start the moment they are submitted.
-local function pin_eligible(job_desc, submit_uid, cpus, tbl)
+local function pin_eligible(job_desc, submit_uid, cpus, tbl, mem_given)
     local pin = tbl.pin
+    -- Without a memory request Slurm applies its own default, which sqp cannot
+    -- see, so it cannot know whether the job fits the node.
+    if not mem_given then return false end
     if type(pin) ~= "table" or type(pin.nodes) ~= "table" then return false end
     if not tbl.generated_at or (os.time() - tbl.generated_at) > pin.max_age then
         return false
@@ -219,9 +237,6 @@ local function pin_eligible(job_desc, submit_uid, cpus, tbl)
     if job_desc.begin_time and job_desc.begin_time > os.time() then return false end
     if job_desc.priority == 0 then return false end                  -- held
     if job_desc.shared == 0 then return false end                    -- --exclusive
-    if job_desc.min_mem_per_cpu and job_desc.min_mem_per_cpu ~= slurm.NO_VAL64 then
-        return false
-    end
     -- At the per-user CPU cap it would not start whichever node it got.
     if type(pin.room) == "table" and (blank(job_desc.qos) or job_desc.qos == pin.cap_qos) then
         local left = pin.room[math.floor(submit_uid)]
@@ -230,70 +245,50 @@ local function pin_eligible(job_desc, submit_uid, cpus, tbl)
     return true
 end
 
-function slurm_job_submit(job_desc, part_list, submit_uid)
-    -- Admin escape hatch, unchanged from the site's original script.
-    if job_desc.account == "root" and not job_desc.partition ~= "" then
-        return slurm.SUCCESS
+-- Memory the job asks for, per node, in MB, read without changing the job; and
+-- whether it asked at all. nil for --mem=0 (all of a node's memory).
+local function job_mem(job_desc, cpus)
+    local per_cpu, per_node = job_desc.min_mem_per_cpu, job_desc.min_mem_per_node
+    if per_cpu and per_cpu ~= slurm.NO_VAL64 and per_cpu > 0 then
+        return per_cpu * cpus, true
     end
-    if job_desc.reservation and job_desc.reservation ~= "" then
-        slurm.log_user("Reservation '%s': set --partition yourself to match it.",
-                       job_desc.reservation)
-        return slurm.SUCCESS
-    end
+    if per_node == 0 then return nil, true end
+    if per_node and per_node ~= slurm.NO_VAL64 then return per_node, true end
+    return 512, false
+end
 
-    -- Defaults, so the arithmetic below cannot divide by zero or nil.
-    if job_desc.min_mem_per_node and job_desc.min_mem_per_node == 0 then
-        slurm.log_user("Memory per node of 0 is not allowed; use --exclusive instead.")
-        return slurm.ERROR
+local function has_gpu(job_desc)
+    for _, f in ipairs({ "tres_per_node", "tres_per_job", "tres_per_task",
+                         "tres_per_socket" }) do
+        local v = job_desc[f]
+        if v and string.find(string.lower(v), "gpu") then return true end
     end
-    if not job_desc.min_mem_per_node or job_desc.min_mem_per_node == slurm.NO_VAL64
-       or job_desc.min_mem_per_node < MIN_MEM_MB then
-        job_desc.min_mem_per_node = MIN_MEM_MB
-    end
-    if not job_desc.min_cpus or job_desc.min_cpus == 0
-       or job_desc.min_cpus == slurm.NO_VAL then
-        job_desc.min_cpus = 1
-    end
+    return false
+end
 
-    local is_batch = (job_desc.script and job_desc.script ~= "")
+local function place(job_desc, submit_uid)
+    -- Left alone: interactive allocations (salloc, srun), GPU jobs, jobs in a
+    -- reservation, and, if so configured, jobs that chose their partition.
+    if not job_desc.script or job_desc.script == "" then return end
+    if has_gpu(job_desc) or not blank(job_desc.reservation) then return end
+    if not OVERRIDE_USER_PARTITION and not blank(job_desc.partition) then return end
 
-    if job_desc.tres_per_node and
-       string.find(string.lower(job_desc.tres_per_node), "gpu") then
-        job_desc.partition = GPU_PARTITION
-        return slurm.SUCCESS
-    end
-    if not is_batch then
-        job_desc.partition = INTERACTIVE
-        job_desc.qos = INTERACTIVE
-        return slurm.SUCCESS
-    end
-    if job_desc.comment and
-       string.find(string.lower(job_desc.comment), "openondemand_interactive") then
-        job_desc.partition = INTERACTIVE
-        job_desc.qos = INTERACTIVE
-        return slurm.SUCCESS
-    end
-    if job_desc.name and string.find(string.lower(job_desc.name), "sshdbridge") then
-        job_desc.partition = INTERACTIVE
-        job_desc.qos = INTERACTIVE
-        return slurm.SUCCESS
-    end
-
-    local mem = job_desc.min_mem_per_node
     local cpus = job_desc.min_cpus
+    if not cpus or cpus == 0 or cpus == slurm.NO_VAL then cpus = 1 end
+    local mem, mem_given = job_mem(job_desc, cpus)
+    if not mem then return end
     local minutes = job_desc.time_limit
     if not minutes or minutes == slurm.NO_VAL or minutes == slurm.INFINITE then
         minutes = 60
     end
 
-    -- The whole packer, from the plugin's point of view: one table lookup.
     local ok, parts, why, tbl = pcall(packed_choice, mem, cpus, minutes)
     if ok and parts then
         job_desc.partition = parts
         -- Pin the node only when the job can start now. Any failure here
         -- leaves the partition choice above untouched.
         local pok, node, pparts = pcall(function()
-            if pin_eligible(job_desc, submit_uid, cpus, tbl) then
+            if pin_eligible(job_desc, submit_uid, cpus, tbl, mem_given) then
                 return pick_node(tbl.pin, parts, cpus, mem)
             end
         end)
@@ -311,11 +306,23 @@ function slurm_job_submit(job_desc, part_list, submit_uid)
                        submit_uid, job_desc.name or "?", cpus, mem,
                        job_desc.partition, why or "")
     else
-        job_desc.partition = static_choice(mem, cpus)
+        local fallback = static_choice(mem, cpus)
+        if fallback then job_desc.partition = fallback end
         slurm.log_info("sqp: uid=%.0f name='%s' %dc %dMB -> %s (fallback: %s)",
                        submit_uid, job_desc.name or "?", cpus, mem,
-                       job_desc.partition, tostring(parts or why))
+                       job_desc.partition or "unchanged", tostring(parts or why))
     end
+end
+
+function slurm_job_submit(job_desc, part_list, submit_uid)
+    local sok, rc = pcall(site_rules, job_desc, submit_uid)
+    if not sok then
+        slurm.log_error("sqp: site_rules: %s", tostring(rc))
+    elseif rc ~= nil then
+        return rc
+    end
+    local ok, err = pcall(place, job_desc, submit_uid)
+    if not ok then slurm.log_error("sqp: %s", tostring(err)) end
     return slurm.SUCCESS
 end
 

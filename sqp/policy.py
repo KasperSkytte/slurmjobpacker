@@ -73,9 +73,9 @@ def choose(cpus, mem_mb, nodes_by_part, free_by_part, speed, demand,
            tolerance=0.25, starving=False):
     """The feasible *set* to hand Slurm. Slurm's PriorityTier still orders it.
 
-    Never returns an empty list: 3 of biocloud's 64 shape buckets describe jobs
-    no node can hold (e.g. 192 CPUs at 36 GB/CPU = 6.75 TB), and those must still
-    resolve to a real partition so the user gets Slurm's normal error.
+    Never returns an empty list: the top shape buckets can describe jobs no node
+    can hold (e.g. 192 CPUs at 36 GB/CPU = 6.75 TB), and those must still resolve
+    to a real partition so the user gets Slurm's normal error.
     """
     scored = score_partitions(cpus, mem_mb, nodes_by_part, free_by_part, speed, demand)
     if not scored:

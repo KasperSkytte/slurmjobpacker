@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stand up a throwaway slurmctld with a real cluster's node/partition topology,
+# Stand up a throwaway slurmctld with an example node/partition topology,
 # as an unprivileged user, on non-default ports. There is no slurmd: the nodes
 # are declared as cloud nodes whose resume program does nothing, so a job that
 # fits is really allocated to a node (state CONFIGURING, it never runs) and one
@@ -50,29 +50,33 @@ SuspendTime=-1
 SchedulerParameters=sched_min_interval=0
 GresTypes=gpu
 
-# Real biocloud topology. NodeAddr points at localhost because these nodes do
-# not exist; without it slurmctld fails to resolve them at startup.
-NodeName=bio-node01 NodeAddr=127.0.0.1 CPUs=256 RealMemory=1021540 State=CLOUD
-NodeName=bio-node02 NodeAddr=127.0.0.1 CPUs=192 RealMemory=505529  State=CLOUD
-NodeName=bio-node[03-07] NodeAddr=127.0.0.1 CPUs=192 RealMemory=1021567 State=CLOUD
-NodeName=bio-node08 NodeAddr=127.0.0.1 CPUs=192 RealMemory=2041663 State=CLOUD
-NodeName=bio-node09 NodeAddr=127.0.0.1 CPUs=256 RealMemory=2041636 State=CLOUD
-NodeName=bio-node10 NodeAddr=127.0.0.1 CPUs=64  RealMemory=247474  Gres=gpu:a10:1 State=CLOUD
-NodeName=bio-node11 NodeAddr=127.0.0.1 CPUs=288 RealMemory=1537338 State=CLOUD
-NodeName=bio-node[12-13] NodeAddr=127.0.0.1 CPUs=288 RealMemory=1537338 State=CLOUD
-NodeName=bio-node[14-15] NodeAddr=127.0.0.1 CPUs=288 RealMemory=2311479 State=CLOUD
-NodeName=bio-node[16-17] NodeAddr=127.0.0.1 CPUs=256 RealMemory=1537407 State=CLOUD
+# An example topology: slim (little memory per CPU) and fat partitions, each a
+# faster and a slower generation, ranked by PriorityTier; plus an interactive
+# and a GPU partition, which sqp leaves alone. NodeAddr points at localhost
+# because these nodes do not exist; without it slurmctld fails to resolve them.
+NodeName=node01 NodeAddr=127.0.0.1 CPUs=256 RealMemory=1021540 State=CLOUD
+NodeName=node02 NodeAddr=127.0.0.1 CPUs=192 RealMemory=505529  State=CLOUD
+NodeName=node[03-07] NodeAddr=127.0.0.1 CPUs=192 RealMemory=1021567 State=CLOUD
+NodeName=node08 NodeAddr=127.0.0.1 CPUs=192 RealMemory=2041663 State=CLOUD
+NodeName=node09 NodeAddr=127.0.0.1 CPUs=256 RealMemory=2041636 State=CLOUD
+NodeName=node10 NodeAddr=127.0.0.1 CPUs=64  RealMemory=247474  Gres=gpu:a10:1 State=CLOUD
+NodeName=node11 NodeAddr=127.0.0.1 CPUs=288 RealMemory=1537338 State=CLOUD
+NodeName=node[12-13] NodeAddr=127.0.0.1 CPUs=288 RealMemory=1537338 State=CLOUD
+NodeName=node[14-15] NodeAddr=127.0.0.1 CPUs=288 RealMemory=2311479 State=CLOUD
+NodeName=node[16-17] NodeAddr=127.0.0.1 CPUs=256 RealMemory=1537407 State=CLOUD
 
 PartitionName=DEFAULT MaxTime=14-00:00:00 DefaultTime=0-01:00:00 State=UP OverSubscribe=NO
-PartitionName=interactive Nodes=bio-node11 PriorityTier=1 MaxTime=1-00:00:00
-PartitionName=zen5  Nodes=bio-node[12-13],bio-node[16-17] PriorityTier=10 Default=YES
-PartitionName=zen3  Nodes=bio-node[01-07] PriorityTier=9
-PartitionName=zen5x Nodes=bio-node[14-15] PriorityTier=8
-PartitionName=zen3x Nodes=bio-node[08-09] PriorityTier=7
-PartitionName=gpu-a10 Nodes=bio-node10 PriorityTier=1
+PartitionName=interactive Nodes=node11 PriorityTier=1 MaxTime=1-00:00:00
+PartitionName=slim1  Nodes=node[12-13],node[16-17] PriorityTier=10 Default=YES
+PartitionName=slim2  Nodes=node[01-07] PriorityTier=9
+PartitionName=fat1 Nodes=node[14-15] PriorityTier=8
+PartitionName=fat2 Nodes=node[08-09] PriorityTier=7
+PartitionName=gpu Nodes=node10 PriorityTier=1
 EOF
 
   sed -e "s#/run/sqp/policy.lua#$D/policy.lua#" -e "s#/etc/sqp/disable#$D/disable#" \
+      -e 's/^local SLIM = ""/local SLIM = "slim1,slim2"/' \
+      -e 's/^local FAT  = ""/local FAT  = "fat1,fat2"/' \
       "$REPO/lua/job_submit.lua" > "$D/job_submit.lua"
 
   cat > "$D/sqp.toml" <<EOF
@@ -81,14 +85,14 @@ mode = "advise"
 state_dir = "$D"
 log_file = "$D/decisions.jsonl"
 disable_file = "$D/disable"
-# Partitions are discovered: interactive is dropped by name, gpu-a10 because
+# Partitions are discovered: interactive is dropped by name, gpu because
 # its only node has a GPU. Nothing is listed by hand.
 [topology]
 [topology.speed]
-zen5 = 1.0
-zen5x = 1.0
-zen3 = 0.8
-zen3x = 0.8
+slim1 = 1.0
+fat1 = 1.0
+slim2 = 0.8
+fat2 = 0.8
 EOF
 
   slurmctld -f "$D/slurm.conf" -D >> "$D/log/ctld.out" 2>&1 &
