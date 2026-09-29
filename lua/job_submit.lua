@@ -1,328 +1,68 @@
 --[[
-  slurmqueuepacker - job_submit plugin
+  A default job_submit.lua for clusters that do not have one yet.
 
-  This runs synchronously inside slurmctld on every submission, so it does
-  little: run your site's own rules, look the job up in the table sqpd keeps
-  in /run/sqp, and set the partitions (and, when the job can start at once,
-  the node) it finds there. All the deciding happens in sqpd, out of band.
-  Everything is wrapped in pcall; a plugin that throws rejects a user's job.
+  If your cluster already has a job_submit.lua, keep it and add sqp to it
+  instead: load lua/sqp.lua once at the top, and call sqp.place() where your
+  script chooses a batch job's partition (see the README).
 
-  If the table is missing, stale or unparsable, the disable file exists, or
-  anything at all raises, the job gets the static fallback below instead.
+  This one:
+    - sends interactive allocations (salloc, srun: no job script) to the
+      INTERACTIVE partition, if the cluster has one the user may use;
+    - optionally sends GPU jobs to GPU_PARTITION;
+    - lets sqp place everything else.
 
-  Edit the site configuration section, then copy this file next to slurm.conf
-  and set JobSubmitPlugins=lua.
+  Copy it next to slurm.conf, set JobSubmitPlugins=lua there, and run
+  `scontrol reconfigure`.
 --]]
 
--- ---------------------------------------------------------------- site configuration
--- Must match state_dir and disable_file in sqp.toml.
-local TABLE_PATH   = "/run/sqp/policy.lua"
-local DISABLE_PATH = "/etc/sqp/disable"
+local SQP = "/opt/slurmqueuepacker/lua/sqp.lua"
 
--- Static fallback, used whenever sqp's table cannot be: jobs asking less than
--- RATIO_THRESHOLD MB per CPU get SLIM, the rest FAT (comma-separated partition
--- lists). Leave both empty to leave the job's partition as it is.
-local SLIM = ""
-local FAT  = ""
-local RATIO_THRESHOLD = 6000              -- MB per CPU
+local INTERACTIVE = "interactive"    -- partition for salloc/srun; "" leaves them alone
+local INTERACTIVE_QOS = ""           -- QOS for them too, e.g. "interactive"; "" keeps theirs
+local GPU_PARTITION = ""             -- partition for GPU jobs, e.g. "gpu"; "" leaves them alone
 
--- true: sqp places every batch job, including ones submitted with --partition
--- (users often choose wrongly). false: a job that names its partition keeps it.
-local OVERRIDE_USER_PARTITION = true
-
--- Your site's own rules, run first on every submission. Return nil to let sqp
--- place the job, or a return code (slurm.SUCCESS, slurm.ERROR) to stop here --
--- for instance after routing GPU or interactive jobs to their own partitions.
-local function site_rules(job_desc, submit_uid)
-    return nil
+local ok, sqp = pcall(dofile, SQP)
+if not ok then
+    slurm.log_error("job_submit: cannot load %s: %s", SQP, tostring(sqp))
+    sqp = nil
+end
+if sqp then                          -- settings: see sqp.config in lua/sqp.lua
+    -- sqp.config.slim = "..."
+    -- sqp.config.fat  = "..."
 end
 
--- ---------------------------------------------------------------- sqp
-local cache = { body = nil, tbl = nil }
-
-local function file_exists(p)
-    local f = io.open(p, "r")
-    if f then f:close(); return true end
-    return false
-end
-
--- Reload only when the file actually changed. sqpd rewrites it only when the
--- decision surface changes, so in the steady state this costs one stat().
-local function load_table()
-    if file_exists(DISABLE_PATH) then return nil end
-    local f = io.open(TABLE_PATH, "r")
-    if not f then return nil end
-    local body = f:read("*a")
-    f:close()
-    if not body or #body == 0 then return nil end
-    -- Cache on the body itself. sqpd rewrites the file only when the decisions
-    -- change, so this compare succeeds almost every time and costs a few KB of
-    -- string comparison; caching on length alone could collide.
-    if cache.body == body and cache.tbl then return cache.tbl end
-    local chunk = load(body, "sqp-policy", "t", {})
-    if not chunk then return nil end
-    local ok, tbl = pcall(chunk)
-    if not ok or type(tbl) ~= "table" or type(tbl.t) ~= "table" then return nil end
-    cache.body, cache.tbl = body, tbl
-    return tbl
-end
-
-local function bucket(value, edges)
-    local i = 0
-    for k = 1, #edges do
-        if value >= edges[k] then i = i + 1 else break end
-    end
-    return i
-end
-
-local function static_choice(mem_mb, cpus)
-    local parts = FAT
-    if (mem_mb / cpus) < RATIO_THRESHOLD then parts = SLIM end
-    if parts == "" then return nil end
-    return parts
-end
-
--- The bucket table cannot answer feasibility: its top shape buckets are
--- open-ended, so a set chosen for a 0.86 TB job can be handed to a 2.2 TB job
--- that none of its partitions can hold. Filter by the job's real size against
--- each partition's largest node, which sqpd emits alongside the table.
-local function keep_feasible(parts, tbl, mem_mb, cpus)
-    if type(tbl.cap) ~= "table" then return parts end
-    local out, biggest, biggest_mem = {}, nil, -1
-    for p, c in pairs(tbl.cap) do
-        if c[2] > biggest_mem then biggest, biggest_mem = p, c[2] end
-    end
-    for p in string.gmatch(parts, "[^,]+") do
-        local c = tbl.cap[p]
-        if c then
-            if cpus <= c[1] and mem_mb <= c[2] then out[#out + 1] = p end
-        else
-            out[#out + 1] = p            -- unknown partition: do not second-guess
-        end
-    end
-    if #out > 0 then return table.concat(out, ",") end
-    -- Nothing in the looked-up set can hold this job, because the set was chosen
-    -- for a bucket representative smaller than the job actually is. Pruning
-    -- cannot recover from that, so recompute feasibility over ALL partitions
-    -- from the caps -- which is the one thing the plugin has enough information
-    -- to do on its own.
-    for p, c in pairs(tbl.cap) do
-        if cpus <= c[1] and mem_mb <= c[2] then out[#out + 1] = p end
-    end
-    if #out > 0 then
-        table.sort(out)
-        return table.concat(out, ",")
-    end
-    -- Genuinely fits nowhere. Name the roomiest partition anyway, so the user
-    -- gets Slurm's ordinary "node configuration is not available" rather than a
-    -- job with no partition at all.
-    return biggest
-end
-
-local function packed_choice(mem_mb, cpus, minutes)
-    local tbl = load_table()
-    if not tbl then return nil, "no table" end
-    if tbl.generated_at and tbl.max_age and
-       (os.time() - tbl.generated_at) > tbl.max_age then
-        return nil, "stale"
-    end
-    local i = bucket(mem_mb / cpus, tbl.mpc_edges)
-    local j = bucket(cpus, tbl.cpu_edges)
-    local k = bucket(minutes / 60, tbl.wt_edges)
-    local parts = tbl.t[string.format("%d,%d,%d", i, j, k)]
-    if type(parts) ~= "string" or parts == "" then return nil, "no entry" end
-    local kept = keep_feasible(parts, tbl, mem_mb, cpus)
-    if type(kept) ~= "string" or kept == "" then return nil, "infeasible" end
-    local note = ""
-    if kept ~= parts then note = " refit" end
-    return kept, string.format("v%d b%d,%d,%d%s", tbl.version or 0, i, j, k, note), tbl
-end
-
--- ---------------------------------------------------------------- node pins
--- Mirrors sqp.policy.phi_node and pick_node. Keep them in step.
-local function phi(fc, fm, demand)
-    local s = 0
-    for _, d in ipairs(demand) do s = s + d[2] * math.min(fc, fm / d[1]) end
-    return s
-end
-
--- Slurm tries a job's partitions in PriorityTier order and starts it in the
--- first with room, so the node is chosen inside the highest-ranked allowed
--- partition that has room: of the nodes destroying the least placeable capacity
--- (within min_gain), the one whose free memory per CPU is closest to the job's.
-local function pick_node(pin, parts, cpus, mem)
-    local allowed, ranks, seen = {}, {}, {}
-    for p in string.gmatch(parts, "[^,]+") do
-        allowed[p] = true
-        local t = pin.tier[p] or 1
-        if not seen[t] then seen[t] = true; ranks[#ranks + 1] = t end
-    end
-    table.sort(ranks, function(a, b) return a > b end)
-    for _, r in ipairs(ranks) do
-        local cands = {}
-        for name, n in pairs(pin.nodes) do
-            if n[1] >= cpus and n[2] >= mem then
-                local hit = false
-                for p in string.gmatch(n[3], "[^,]+") do
-                    if allowed[p] and (pin.tier[p] or 1) == r then hit = true end
-                end
-                if hit then
-                    cands[#cands + 1] = { phi(n[1], n[2], pin.demand)
-                                          - phi(n[1] - cpus, n[2] - mem, pin.demand), name }
-                end
-            end
-        end
-        if #cands > 0 then
-            if #cands == 1 then return nil, "one candidate" end
-            local want = mem / cpus
-            local function mismatch(name)
-                local n = pin.nodes[name]
-                return math.abs(math.log((n[2] / n[1]) / want))
-            end
-            local lo, hi, worst_mis = math.huge, -math.huge, -math.huge
-            for _, c in ipairs(cands) do
-                c[3] = mismatch(c[2])
-                if c[1] < lo then lo = c[1] end
-                if c[1] > hi then hi = c[1] end
-                if c[3] > worst_mis then worst_mis = c[3] end
-            end
-            local win = nil
-            for _, c in ipairs(cands) do
-                if c[1] - lo < pin.min_gain and (win == nil
-                   or c[3] < win[3] or (c[3] == win[3] and (c[1] < win[1]
-                   or (c[1] == win[1] and c[2] < win[2])))) then
-                    win = c
-                end
-            end
-            if hi - win[1] < pin.min_gain and worst_mis - win[3] < pin.min_ratio_gain then
-                return nil, "equal"
-            end
-            local best, ps = win[2], {}
-            for p in string.gmatch(pin.nodes[best][3], "[^,]+") do
-                if allowed[p] then ps[#ps + 1] = p end
-            end
-            table.sort(ps)
-            return best, table.concat(ps, ",")
-        end
-    end
-    return nil, "no room"
-end
-
-local function blank(v) return v == nil or v == "" end
-
--- Pin only plain jobs that can start the moment they are submitted.
-local function pin_eligible(job_desc, submit_uid, cpus, tbl, mem_given)
-    local pin = tbl.pin
-    -- Without a memory request Slurm applies its own default, which sqp cannot
-    -- see, so it cannot know whether the job fits the node.
-    if not mem_given then return false end
-    if type(pin) ~= "table" or type(pin.nodes) ~= "table" then return false end
-    if not tbl.generated_at or (os.time() - tbl.generated_at) > pin.max_age then
-        return false
-    end
-    if not blank(job_desc.req_nodes) or not blank(job_desc.exc_nodes) then return false end
-    -- A job with a dependency is treated like any other: if it has not started
-    -- by [pin] release_after, sqpd releases the pin.
-    if not blank(job_desc.array_inx) then return false end
-    if not blank(job_desc.features) or not blank(job_desc.admin_comment) then return false end
-    if not blank(job_desc.tres_per_node) then return false end
-    if job_desc.min_nodes and job_desc.min_nodes ~= slurm.NO_VAL
-       and job_desc.min_nodes > 1 then return false end
-    -- --nodelist means "include this node", not "only this node": a job of
-    -- several tasks that may span nodes would be split around the pin.
-    local tasks = job_desc.num_tasks
-    if tasks and tasks ~= slurm.NO_VAL and tasks > 1 and job_desc.max_nodes ~= 1 then
-        return false
-    end
-    if job_desc.begin_time and job_desc.begin_time > os.time() then return false end
-    if job_desc.priority == 0 then return false end                  -- held
-    if job_desc.shared == 0 then return false end                    -- --exclusive
-    -- At the per-user CPU cap it would not start whichever node it got.
-    if type(pin.room) == "table" and (blank(job_desc.qos) or job_desc.qos == pin.cap_qos) then
-        local left = pin.room[math.floor(submit_uid)]
-        if left and left < cpus then return false end
-    end
-    return true
-end
-
--- Memory the job asks for, per node, in MB, read without changing the job; and
--- whether it asked at all. nil for --mem=0 (all of a node's memory).
-local function job_mem(job_desc, cpus)
-    local per_cpu, per_node = job_desc.min_mem_per_cpu, job_desc.min_mem_per_node
-    if per_cpu and per_cpu ~= slurm.NO_VAL64 and per_cpu > 0 then
-        return per_cpu * cpus, true
-    end
-    if per_node == 0 then return nil, true end
-    if per_node and per_node ~= slurm.NO_VAL64 then return per_node, true end
-    return 512, false
-end
-
-local function has_gpu(job_desc)
-    for _, f in ipairs({ "tres_per_node", "tres_per_job", "tres_per_task",
-                         "tres_per_socket" }) do
+local function wants_gpu(job_desc)
+    for _, f in ipairs({ "tres_per_node", "tres_per_job", "tres_per_task" }) do
         local v = job_desc[f]
         if v and string.find(string.lower(v), "gpu") then return true end
     end
     return false
 end
 
-local function place(job_desc, submit_uid)
-    -- Left alone: interactive allocations (salloc, srun), GPU jobs, jobs in a
-    -- reservation, and, if so configured, jobs that chose their partition.
-    if not job_desc.script or job_desc.script == "" then return end
-    if has_gpu(job_desc) or not blank(job_desc.reservation) then return end
-    if not OVERRIDE_USER_PARTITION and not blank(job_desc.partition) then return end
-
-    local cpus = job_desc.min_cpus
-    if not cpus or cpus == 0 or cpus == slurm.NO_VAL then cpus = 1 end
-    local mem, mem_given = job_mem(job_desc, cpus)
-    if not mem then return end
-    local minutes = job_desc.time_limit
-    if not minutes or minutes == slurm.NO_VAL or minutes == slurm.INFINITE then
-        minutes = 60
-    end
-
-    local ok, parts, why, tbl = pcall(packed_choice, mem, cpus, minutes)
-    if ok and parts then
-        job_desc.partition = parts
-        -- Pin the node only when the job can start now. Any failure here
-        -- leaves the partition choice above untouched.
-        local pok, node, pparts = pcall(function()
-            if pin_eligible(job_desc, submit_uid, cpus, tbl, mem_given) then
-                return pick_node(tbl.pin, parts, cpus, mem)
-            end
-        end)
-        if pok and node and pparts then
-            job_desc.req_nodes = node
-            job_desc.partition = pparts
-            job_desc.admin_comment = "sqp:pin=" .. node .. ";from=" .. parts
-            -- Count it against the node until the next table arrives, so a burst
-            -- of submissions is not all pinned to the same free space.
-            local n = tbl.pin.nodes[node]
-            n[1], n[2] = n[1] - cpus, n[2] - mem
-            why = (why or "") .. " pin=" .. node
-        end
-        slurm.log_info("sqp: uid=%.0f name='%s' %dc %dMB -> %s (%s)",
-                       submit_uid, job_desc.name or "?", cpus, mem,
-                       job_desc.partition, why or "")
-    else
-        local fallback = static_choice(mem, cpus)
-        if fallback then job_desc.partition = fallback end
-        slurm.log_info("sqp: uid=%.0f name='%s' %dc %dMB -> %s (fallback: %s)",
-                       submit_uid, job_desc.name or "?", cpus, mem,
-                       job_desc.partition or "unchanged", tostring(parts or why))
-    end
-end
-
 function slurm_job_submit(job_desc, part_list, submit_uid)
-    local sok, rc = pcall(site_rules, job_desc, submit_uid)
-    if not sok then
-        slurm.log_error("sqp: site_rules: %s", tostring(rc))
-    elseif rc ~= nil then
-        return rc
+    local batch = job_desc.script and job_desc.script ~= ""
+
+    if not batch then
+        if INTERACTIVE ~= "" and part_list[INTERACTIVE] then
+            job_desc.partition = INTERACTIVE
+            if INTERACTIVE_QOS ~= "" then job_desc.qos = INTERACTIVE_QOS end
+        end
+        return slurm.SUCCESS
     end
-    local ok, err = pcall(place, job_desc, submit_uid)
-    if not ok then slurm.log_error("sqp: %s", tostring(err)) end
+
+    if GPU_PARTITION ~= "" and wants_gpu(job_desc) then
+        job_desc.partition = GPU_PARTITION
+        return slurm.SUCCESS
+    end
+
+    -- batch jobs do not belong in the interactive partition
+    if INTERACTIVE ~= "" and job_desc.partition == INTERACTIVE then
+        slurm.log_user("Batch jobs are not allowed in the '%s' partition; choosing another.",
+                       INTERACTIVE)
+        job_desc.partition = ""          -- "" clears it; nil would raise
+    end
+
+    if sqp then return sqp.place(job_desc, submit_uid) end
     return slurm.SUCCESS
 end
 

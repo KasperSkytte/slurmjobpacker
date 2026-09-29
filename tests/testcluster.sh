@@ -74,9 +74,12 @@ PartitionName=fat2 Nodes=node[08-09] PriorityTier=7
 PartitionName=gpu Nodes=node10 PriorityTier=1
 EOF
 
-  sed -e "s#/run/sqp/policy.lua#$D/policy.lua#" -e "s#/etc/sqp/disable#$D/disable#" \
-      -e 's/^local SLIM = ""/local SLIM = "slim1,slim2"/' \
-      -e 's/^local FAT  = ""/local FAT  = "fat1,fat2"/' \
+  # The default job_submit.lua, as a site would set it up: sqp loaded from the
+  # checkout, pointed at this cluster's paths, with a slim/fat fallback.
+  sed -e "s#^local SQP = .*#local SQP = \"$REPO/lua/sqp.lua\"#" \
+      -e 's#^local GPU_PARTITION = ""#local GPU_PARTITION = "gpu"#' \
+      -e "s#^    -- sqp.config.slim = .*#    sqp.config.slim, sqp.config.fat = \"slim1,slim2\", \"fat1,fat2\"#" \
+      -e "s#^    -- sqp.config.fat  = .*#    sqp.config.table_path, sqp.config.disable_path = \"$D/policy.lua\", \"$D/disable\"#" \
       "$REPO/lua/job_submit.lua" > "$D/job_submit.lua"
 
   cat > "$D/sqp.toml" <<EOF

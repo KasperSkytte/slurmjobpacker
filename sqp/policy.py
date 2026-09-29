@@ -94,7 +94,7 @@ def choose(cpus, mem_mb, nodes_by_part, free_by_part, speed, demand,
 def pick_node(cpus, mem_mb, allowed, node_free, tiers, demand, min_gain=1.0,
               min_ratio_gain=0.1):
     """Which node a job that can start now should start on. Authoritative;
-    job_submit.lua's pick_node mirrors it.
+    lua/sqp.lua's pick_node mirrors it.
 
     Slurm tries a job's partitions in PriorityTier order and starts it in the
     first one with room, so the node is chosen inside the highest-ranked allowed
@@ -230,7 +230,7 @@ def caps(nodes_by_part) -> dict:
 
 
 def plugin_lookup(table, cap, cfg, cpus, mem_mb, minutes):
-    """Python twin of job_submit.lua's packed_choice + keep_feasible.
+    """Python twin of lua/sqp.lua's packed_choice + keep_feasible.
 
     Used by dry runs to say what the plugin would have assigned a real job.
     Returns (partitions, (i, j, k), refit). Keep in step with the Lua.

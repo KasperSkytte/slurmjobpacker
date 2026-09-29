@@ -22,8 +22,8 @@ that waited more than an hour did so while a slim node had room for them
 
 ## What it does
 
-A daemon, `sqpd`, reads the cluster every second; a `job_submit.lua` plugin applies its
-decisions when a job is submitted. For each job it:
+A daemon, `sqpd`, reads the cluster every second; a small Lua module, called from your
+`job_submit.lua`, applies its decisions when a job is submitted. For each job it:
 
 - chooses the partitions it may use, by how well it fits the free space in each;
 - when it can start at once, pins its node: inside the highest-ranked partition
@@ -31,8 +31,8 @@ decisions when a job is submitted. For each job it:
 - optionally, lifts the per-user and per-account CPU caps for a minute when jobs held
   only by those caps would fit in idle hardware.
 
-Slurm still schedules, orders the queue and applies fair-share. If `sqpd` stops, the
-plugin falls back to your static rule.
+Slurm still schedules, orders the queue and applies fair-share. If `sqpd` stops, jobs
+keep their partition, or get a fallback rule you set.
 
 ## Status
 
@@ -58,7 +58,7 @@ starts, even under an admin account) and logs what it would do.
 
 <!-- x-release-please-start-version -->
 ```sh
-sudo git clone --branch v1.1.0 https://github.com/kasperskytte/slurmqueuepacker /opt/slurmqueuepacker
+sudo git clone --branch v1.0.0 https://github.com/kasperskytte/slurmqueuepacker /opt/slurmqueuepacker
 cd /opt/slurmqueuepacker && python3 tests/test_policy.py        # ends in ALL PASS
 ```
 <!-- x-release-please-end -->
@@ -88,18 +88,34 @@ sudo systemctl daemon-reload && sudo systemctl enable --now sqpd
 Every setting is documented in the generated file. To use the QOS cap pulse, set
 `[limits] mode = "global"` and the base caps to your QOS's values.
 
-**4. Go live**
+**4. Go live.** Enable Lua in `slurm.conf` (`JobSubmitPlugins=lua`), then:
 
-1. Edit the site configuration at the top of `lua/job_submit.lua`: your static rule as
-   the fallback, and your own routing rules in `site_rules()` (see the example below).
-   Copy it next to `slurm.conf`, set `JobSubmitPlugins=lua`, run `scontrol reconfigure`.
-2. Set `mode = "advise"` and restart `sqpd`: sqp now chooses partitions.
-3. Set `mode = "enforce"` and restart: sqp also pins nodes and, if enabled, pulses caps.
+- **If the cluster has a `job_submit.lua`,** load sqp in it and call `sqp.place()` where
+  it chooses a batch job's partition. Everything else in your script stays as it is:
 
-**Backing out.** `sudo touch /etc/sqp/disable` returns the plugin to its fallback on the
-next submission. For good, restore your old `job_submit.lua`, `scontrol reconfigure` and
-`systemctl disable --now sqpd`. When `sqpd` stops it puts the caps back to base; pins on
-jobs still pending stay, and can be released with:
+  ```lua
+  local sqp = dofile("/opt/slurmqueuepacker/lua/sqp.lua")   -- once, at the top
+
+  function slurm_job_submit(job_desc, part_list, submit_uid)
+      -- ... your own rules: reservations, GPU jobs, interactive jobs ...
+      return sqp.place(job_desc, submit_uid)                  -- partition (and node)
+  end
+  ```
+
+- **If it has none,** copy `lua/job_submit.lua` next to `slurm.conf`. It sends `salloc` and
+  `srun` jobs to an `interactive` partition if there is one, and the rest to sqp.
+
+Run `scontrol reconfigure`. `sqp.place()` only sets the partition (and, for a pinned job,
+the node), never rejects a job, and leaves interactive, GPU and reservation jobs alone.
+Without a table from `sqpd` the job keeps its partition, unless you set a fallback:
+`sqp.config.slim` and `sqp.config.fat`, used below and above `sqp.config.ratio_threshold`
+MB per CPU (see the top of `lua/sqp.lua`). Then set `mode = "advise"` in `sqp.toml` and
+restart `sqpd`, and later `mode = "enforce"`, which also pins nodes and pulses caps.
+
+**Backing out.** `sudo touch /etc/sqp/disable` makes `sqp.place()` fall back on the next
+submission; removing the call from `job_submit.lua` takes sqp out entirely. When `sqpd`
+stops it puts the caps back to base; pins on jobs still pending stay, and can be
+released with:
 
 ```sh
 for j in $(squeue -h -t PD -o %i); do
@@ -109,34 +125,15 @@ done
 ```
 
 **Upgrading.** `sudo git fetch --tags && sudo git checkout vX.Y.Z`, restart `sqpd`, and
-merge any change to `lua/job_submit.lua` into your copy.
-
-### Example `site_rules()`
-
-One cluster routes GPU and interactive work itself before sqp sees it:
-
-```lua
-local function site_rules(job_desc, submit_uid)
-    if job_desc.tres_per_node and string.find(job_desc.tres_per_node, "gpu") then
-        job_desc.partition = "gpu"
-        return slurm.SUCCESS
-    end
-    if not job_desc.script or job_desc.script == ""           -- salloc / srun
-       or string.find(job_desc.comment or "", "openondemand_interactive") then
-        job_desc.partition, job_desc.qos = "interactive", "interactive"
-        return slurm.SUCCESS
-    end
-    return nil                                                 -- sqp places the rest
-end
-```
+run `scontrol reconfigure` so `slurmctld` loads the new `sqp.lua`.
 
 ## How it decides
 
 **Partitions.** For every job shape (memory per CPU, CPUs, walltime), sqpd scores each
 partition by how much *placeable capacity* the job would destroy: free space measured
 against the mix of jobs the cluster actually runs (`[policy] demand`). The cheapest
-partitions, within a tolerance, are allowed; Slurm tries them in PriorityTier order. The
-plugin looks the job up in this table and drops any partition too small for it.
+partitions, within a tolerance, are allowed; Slurm tries them in PriorityTier order.
+`sqp.place()` looks the job up in this table and drops any partition too small for it.
 
 **Node pins.** Only for a job that can start at once, and only plain ones (one node, an
 explicit memory request; no `--nodelist`, `--exclude`, `--constraint`, `--exclusive`,
