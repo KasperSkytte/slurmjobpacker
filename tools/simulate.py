@@ -12,13 +12,13 @@ with reservation horizons taken from cohort history instead of declared limits
 measures how much room that leaves to pack better.
 
   usage: simulate.py --db accounting.sqlite --start 2026-03-09 --days 14 [--jobs 8]
-         (topology from ./site.toml, $SQP_SITE or --site PATH)
+         (topology from ./site.toml, $SJP_SITE or --site PATH)
 """
 import sqlite3, argparse, heapq, collections, os, sys, datetime as dt
 import multiprocessing as mp
 
 # ---------------------------------------------------------------- topology
-from sitefile import SITE                  # ./site.toml, $SQP_SITE or --site PATH
+from sitefile import SITE                  # ./site.toml, $SJP_SITE or --site PATH
 NODE_PART = SITE.batch_node_part
 TIER = SITE.tier
 SPEED = SITE.speed

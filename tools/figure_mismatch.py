@@ -7,7 +7,7 @@ and memory allocation as paired bars, in a light and a dark SVG. Also prints
 the history-wide numbers the README quotes.
 
   usage: figure_mismatch.py accounting.sqlite "2026-07-20 13:12" docs/img/
-         (topology from ./site.toml, $SQP_SITE or --site PATH)
+         (topology from ./site.toml, $SJP_SITE or --site PATH)
 
 Out-of-service periods are often missing from the accounting data, so a node
 that ran no job for more than OUT_OF_SERVICE seconds is treated as unavailable
@@ -19,7 +19,7 @@ down, or the waiting jobs held by a per-user cap instead.
 Read-only on the database.
 """
 import collections, sqlite3, sys, time
-from sitefile import SITE, expand          # ./site.toml, $SQP_SITE or --site PATH
+from sitefile import SITE, expand          # ./site.toml, $SJP_SITE or --site PATH
 
 NODE_PART = SITE.batch_node_part
 SLIM, FAT = SITE.slim, SITE.fat            # each in PriorityTier order

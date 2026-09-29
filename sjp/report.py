@@ -1,12 +1,12 @@
-"""sqp-report - read a decision log as a person, not a parser.
+"""sjp-report - read a decision log as a person, not a parser.
 
-    python3 -m sqp.report /var/log/sqp/decisions.jsonl            # timeline + summary
-    python3 -m sqp.report decisions.jsonl --summary               # summary only
-    python3 -m sqp.report decisions.jsonl --only different,excluded
+    python3 -m sjp.report /var/log/sjp/decisions.jsonl            # timeline + summary
+    python3 -m sjp.report decisions.jsonl --summary               # summary only
+    python3 -m sjp.report decisions.jsonl --only different,excluded
 
-The timeline is the same text sqpd writes to its text log: each job it saw
-submitted, with the partitions Slurm gave it, the ones sqp would have, and
-whether and where sqp would pin its node; and each change sqp made or would
+The timeline is the same text sjpd writes to its text log: each job it saw
+submitted, with the partitions Slurm gave it, the ones sjp would have, and
+whether and where sjp would pin its node; and each change sjp made or would
 have made, with its command and the reason.
 """
 from __future__ import annotations
@@ -25,7 +25,7 @@ def entries(path):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog="sqp-report")
+    ap = argparse.ArgumentParser(prog="sjp-report")
     ap.add_argument("log")
     ap.add_argument("--summary", action="store_true", help="summary only")
     ap.add_argument("--only", help="placement verdicts to list, e.g. different,excluded")
@@ -65,7 +65,7 @@ def main(argv=None):
         for how, n in pins.most_common():
             print(f"  node {how:<14} {n:>7}  {100 * n / total:5.1f}%")
         if moves:
-            print("  most common disagreements (slurm -> sqp):")
+            print("  most common disagreements (slurm -> sjp):")
             for m, n in moves.most_common(10):
                 print(f"    {n:>7}  {m}")
     return 0

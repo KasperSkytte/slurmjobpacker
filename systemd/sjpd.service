@@ -1,0 +1,28 @@
+[Unit]
+Description=slurmjobpacker control loop
+After=network.target slurmctld.service
+Wants=slurmctld.service
+
+[Service]
+Type=simple
+User=slurm
+Group=slurm
+# The checkout from README "Installing"; the sjp package is imported from here.
+WorkingDirectory=/opt/slurmjobpacker
+Environment=PYTHONPATH=/opt/slurmjobpacker
+ExecStart=/usr/bin/python3 -m sjp.daemon -c /etc/sjp/sjp.toml
+Restart=always
+RestartSec=5
+# The policy table lives on tmpfs; the plugin reads it on every submission.
+RuntimeDirectory=sjp
+RuntimeDirectoryMode=0755
+StateDirectory=sjp
+LogsDirectory=sjp
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/run/sjp /var/log/sjp
+
+[Install]
+WantedBy=multi-user.target

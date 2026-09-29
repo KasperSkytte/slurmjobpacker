@@ -1,7 +1,7 @@
 """Decision records, in words.
 
-sqpd writes every record twice: as JSON to the decision log, for tools, and
-through render() to the text log, for people. sqp.report uses the same render(),
+sjpd writes every record twice: as JSON to the decision log, for tools, and
+through render() to the text log, for people. sjp.report uses the same render(),
 so reading the log later shows exactly what the live text log showed.
 """
 from __future__ import annotations
@@ -50,12 +50,12 @@ def job(r) -> str:
     lines = [f"{head} -- {sub}{state}"]
 
     if r.get("acted"):
-        # advise/enforce: the plugin has already placed it; say what sqp did
-        if r.get("sqp_pin"):
-            lines.append(f"    partitions   {r['sqp_from']} (sqp's choice at submission)")
-            check = "" if r.get("pin") == r["sqp_pin"] else \
+        # advise/enforce: the plugin has already placed it; say what sjp did
+        if r.get("sjp_pin"):
+            lines.append(f"    partitions   {r['sjp_from']} (sjp's choice at submission)")
+            check = "" if r.get("pin") == r["sjp_pin"] else \
                 f" [recomputed now: {r.get('pin') or 'no pin'}, {r['pin_why']}]"
-            lines.append(f"    node         sqp pinned it to {r['sqp_pin']} in {r['actual']}"
+            lines.append(f"    node         sjp pinned it to {r['sjp_pin']} in {r['actual']}"
                          + (f": {r['pin_why']}" if not check else check))
         else:
             lines.append(f"    partitions   {r['actual']} (set at submission)")
@@ -67,16 +67,16 @@ def job(r) -> str:
     if r["state"] == "PD":
         same = set(r["actual"].split(",")) == set(r["would"].split(","))
         diff = "same" if same else "; ".join(r.get("differences") or ["different"])
-        lines.append(f"    partitions   Slurm: {r['actual']:<22} sqp: {r['would']}   ({diff})")
+        lines.append(f"    partitions   Slurm: {r['actual']:<22} sjp: {r['would']}   ({diff})")
     else:
-        diff = "; ".join(r.get("differences") or []) or "sqp would allow it there too"
-        lines.append(f"    partitions   Slurm ran it in {r['actual']}; sqp would allow "
+        diff = "; ".join(r.get("differences") or []) or "sjp would allow it there too"
+        lines.append(f"    partitions   Slurm ran it in {r['actual']}; sjp would allow "
                      f"{r['would']}   ({diff})")
     if r.get("pin"):
-        lines.append(f"    node         sqp would pin it to {r['pin']} "
+        lines.append(f"    node         sjp would pin it to {r['pin']} "
                      f"(partition {r['pin_parts']}): {r['pin_why']}")
     else:
-        lines.append(f"    node         sqp would leave it to Slurm: {r['pin_why']}")
+        lines.append(f"    node         sjp would leave it to Slurm: {r['pin_why']}")
     return "\n".join(lines)
 
 
@@ -116,7 +116,7 @@ def preflight(r) -> str:
         can.append("write the placement table")
     if r.get("actuation"):
         can.append("pin nodes, release pins and change QOS limits")
-    lines = [f"{t}  sqp {r.get('mode')}: "
+    lines = [f"{t}  sjp {r.get('mode')}: "
              + ("will " + " and ".join(can) if can else "changes nothing, only logs")]
     if r.get("batch_partitions") is not None:
         lines.append(f"    partitions   {', '.join(r['batch_partitions']) or '(none)'}")
@@ -141,7 +141,7 @@ def render(r) -> str | None:
     if ev == "error":
         return f"{_clock(r['ts'])}  ERROR in {r.get('where')}: {r.get('detail')}"
     if ev == "start":
-        return f"{_clock(r['ts'])}  sqp {r.get('version')} started in {r.get('mode')} mode"
+        return f"{_clock(r['ts'])}  sjp {r.get('version')} started in {r.get('mode')} mode"
     if ev == "stop":
-        return f"{_clock(r['ts'])}  sqp stopped"
+        return f"{_clock(r['ts'])}  sjp stopped"
     return None

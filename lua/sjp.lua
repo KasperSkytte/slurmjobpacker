@@ -1,41 +1,41 @@
 --[[
-  slurmqueuepacker - the placement module for job_submit.lua
+  slurmjobpacker - the placement module for job_submit.lua
 
-  Load it from your cluster's own job_submit.lua and call sqp.place() where the
+  Load it from your cluster's own job_submit.lua and call sjp.place() where the
   partition (and node) should be chosen:
 
-      local sqp = dofile("/opt/slurmqueuepacker/lua/sqp.lua")
+      local sjp = dofile("/opt/slurmjobpacker/lua/sjp.lua")
 
       function slurm_job_submit(job_desc, part_list, submit_uid)
           -- ... your own rules ...
-          return sqp.place(job_desc, submit_uid)
+          return sjp.place(job_desc, submit_uid)
       end
 
-  sqp.place() looks the job up in the table sqpd keeps in /run/sqp and sets its
+  sjp.place() looks the job up in the table sjpd keeps in /run/sjp and sets its
   partitions -- and, when it can start at once, its node. It only ever changes
   job_desc.partition, and for a pinned job req_nodes and admin_comment; it never
   rejects a job and always returns slurm.SUCCESS. It leaves alone interactive
   allocations (no job script), GPU jobs and jobs in a reservation. If the table
   is missing, stale or unparsable, the disable file exists, or anything raises,
-  the job gets the fallback in sqp.config, or keeps its partition if there is none.
+  the job gets the fallback in sjp.config, or keeps its partition if there is none.
 
   slurmctld loads this file once, with your job_submit.lua; after upgrading
-  sqp, run `scontrol reconfigure` to load the new version.
+  sjp, run `scontrol reconfigure` to load the new version.
 --]]
 
-local sqp = {}
+local sjp = {}
 
--- Override any of these after loading, e.g. sqp.config.slim = "slim1,slim2".
-sqp.config = {
-    table_path = "/run/sqp/policy.lua",    -- <state_dir>/policy.lua in sqp.toml
-    disable_path = "/etc/sqp/disable",     -- disable_file in sqp.toml
-    -- Fallback when sqp has no table: jobs asking less than ratio_threshold MB
+-- Override any of these after loading, e.g. sjp.config.slim = "slim1,slim2".
+sjp.config = {
+    table_path = "/run/sjp/policy.lua",    -- <state_dir>/policy.lua in sjp.toml
+    disable_path = "/etc/sjp/disable",     -- disable_file in sjp.toml
+    -- Fallback when sjp has no table: jobs asking less than ratio_threshold MB
     -- per CPU get slim, the rest fat (comma-separated partition lists). Empty:
     -- the job keeps the partition it has.
     slim = "",
     fat = "",
     ratio_threshold = 6000,
-    -- true: sqp places every batch job, including ones submitted with
+    -- true: sjp places every batch job, including ones submitted with
     -- --partition (users often choose wrongly). false: those keep theirs.
     override_user_partition = true,
 }
@@ -48,20 +48,20 @@ local function file_exists(p)
     return false
 end
 
--- Reload only when the file actually changed. sqpd rewrites it only when the
+-- Reload only when the file actually changed. sjpd rewrites it only when the
 -- decision surface changes, so in the steady state this costs one stat().
 local function load_table()
-    if file_exists(sqp.config.disable_path) then return nil end
-    local f = io.open(sqp.config.table_path, "r")
+    if file_exists(sjp.config.disable_path) then return nil end
+    local f = io.open(sjp.config.table_path, "r")
     if not f then return nil end
     local body = f:read("*a")
     f:close()
     if not body or #body == 0 then return nil end
-    -- Cache on the body itself. sqpd rewrites the file only when the decisions
+    -- Cache on the body itself. sjpd rewrites the file only when the decisions
     -- change, so this compare succeeds almost every time and costs a few KB of
     -- string comparison; caching on length alone could collide.
     if cache.body == body and cache.tbl then return cache.tbl end
-    local chunk = load(body, "sqp-policy", "t", {})
+    local chunk = load(body, "sjp-policy", "t", {})
     if not chunk then return nil end
     local ok, tbl = pcall(chunk)
     if not ok or type(tbl) ~= "table" or type(tbl.t) ~= "table" then return nil end
@@ -78,7 +78,7 @@ local function bucket(value, edges)
 end
 
 local function static_choice(mem_mb, cpus)
-    local c = sqp.config
+    local c = sjp.config
     local parts = c.fat
     if (mem_mb / cpus) < c.ratio_threshold then parts = c.slim end
     if parts == "" then return nil end
@@ -88,7 +88,7 @@ end
 -- The bucket table cannot answer feasibility: its top shape buckets are
 -- open-ended, so a set chosen for a 0.86 TB job can be handed to a 2.2 TB job
 -- that none of its partitions can hold. Filter by the job's real size against
--- each partition's largest node, which sqpd emits alongside the table.
+-- each partition's largest node, which sjpd emits alongside the table.
 local function keep_feasible(parts, tbl, mem_mb, cpus)
     if type(tbl.cap) ~= "table" then return parts end
     local out, biggest, biggest_mem = {}, nil, -1
@@ -142,7 +142,7 @@ local function packed_choice(mem_mb, cpus, minutes)
 end
 
 -- ---------------------------------------------------------------- node pins
--- Mirrors sqp.policy.phi_node and pick_node. Keep them in step.
+-- Mirrors sjp.policy.phi_node and pick_node. Keep them in step.
 local function phi(fc, fm, demand)
     local s = 0
     for _, d in ipairs(demand) do s = s + d[2] * math.min(fc, fm / d[1]) end
@@ -216,7 +216,7 @@ local function blank(v) return v == nil or v == "" end
 -- Pin only plain jobs that can start the moment they are submitted.
 local function pin_eligible(job_desc, submit_uid, cpus, tbl, mem_given)
     local pin = tbl.pin
-    -- Without a memory request Slurm applies its own default, which sqp cannot
+    -- Without a memory request Slurm applies its own default, which sjp cannot
     -- see, so it cannot know whether the job fits the node.
     if not mem_given then return false end
     if type(pin) ~= "table" or type(pin.nodes) ~= "table" then return false end
@@ -225,7 +225,7 @@ local function pin_eligible(job_desc, submit_uid, cpus, tbl, mem_given)
     end
     if not blank(job_desc.req_nodes) or not blank(job_desc.exc_nodes) then return false end
     -- A job with a dependency is treated like any other: if it has not started
-    -- by [pin] release_after, sqpd releases the pin.
+    -- by [pin] release_after, sjpd releases the pin.
     if not blank(job_desc.array_inx) then return false end
     if not blank(job_desc.features) or not blank(job_desc.admin_comment) then return false end
     if not blank(job_desc.tres_per_node) then return false end
@@ -274,7 +274,7 @@ local function place(job_desc, submit_uid)
     -- reservation, and, if so configured, jobs that chose their partition.
     if not job_desc.script or job_desc.script == "" then return end
     if has_gpu(job_desc) or not blank(job_desc.reservation) then return end
-    if not sqp.config.override_user_partition and not blank(job_desc.partition) then return end
+    if not sjp.config.override_user_partition and not blank(job_desc.partition) then return end
 
     local cpus = job_desc.min_cpus
     if not cpus or cpus == 0 or cpus == slurm.NO_VAL then cpus = 1 end
@@ -298,30 +298,30 @@ local function place(job_desc, submit_uid)
         if pok and node and pparts then
             job_desc.req_nodes = node
             job_desc.partition = pparts
-            job_desc.admin_comment = "sqp:pin=" .. node .. ";from=" .. parts
+            job_desc.admin_comment = "sjp:pin=" .. node .. ";from=" .. parts
             -- Count it against the node until the next table arrives, so a burst
             -- of submissions is not all pinned to the same free space.
             local n = tbl.pin.nodes[node]
             n[1], n[2] = n[1] - cpus, n[2] - mem
             why = (why or "") .. " pin=" .. node
         end
-        slurm.log_info("sqp: uid=%.0f name='%s' %dc %dMB -> %s (%s)",
+        slurm.log_info("sjp: uid=%.0f name='%s' %dc %dMB -> %s (%s)",
                        submit_uid, job_desc.name or "?", cpus, mem,
                        job_desc.partition, why or "")
     else
         local fallback = static_choice(mem, cpus)
         if fallback then job_desc.partition = fallback end
-        slurm.log_info("sqp: uid=%.0f name='%s' %dc %dMB -> %s (fallback: %s)",
+        slurm.log_info("sjp: uid=%.0f name='%s' %dc %dMB -> %s (fallback: %s)",
                        submit_uid, job_desc.name or "?", cpus, mem,
                        job_desc.partition or "unchanged", tostring(parts or why))
     end
 end
 
 -- Choose the job's partitions (and node) in place. Never rejects the job.
-function sqp.place(job_desc, submit_uid)
+function sjp.place(job_desc, submit_uid)
     local ok, err = pcall(place, job_desc, submit_uid)
-    if not ok then slurm.log_error("sqp: %s", tostring(err)) end
+    if not ok then slurm.log_error("sjp: %s", tostring(err)) end
     return slurm.SUCCESS
 end
 
-return sqp
+return sjp

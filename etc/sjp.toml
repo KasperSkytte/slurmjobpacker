@@ -1,6 +1,6 @@
-# slurmqueuepacker configuration.
+# slurmjobpacker configuration.
 # Every tunable the daemon has. Values shown are the built-in defaults;
-# regenerate with:  python3 -m sqp.daemon --print-config
+# regenerate with:  python3 -m sjp.daemon --print-config
 #
 # Start in mode = "observe": the daemon computes and logs every decision and
 # changes nothing. "advise" lets the plugin choose partitions; "enforce" also
@@ -9,10 +9,10 @@
 
 [general]
 mode = "observe"
-state_dir = "/run/sqp"
-log_file = "/var/log/sqp/decisions.jsonl"
-text_log = "/var/log/sqp/sqp.log"
-disable_file = "/etc/sqp/disable"
+state_dir = "/run/sjp"
+log_file = "/var/log/sjp/decisions.jsonl"
+text_log = "/var/log/sjp/sjp.log"
+disable_file = "/etc/sjp/disable"
 
 [cadence]
 score_interval = 1.0

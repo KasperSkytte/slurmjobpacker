@@ -10,7 +10,7 @@ Both are computed event-driven, no resampling.
 """
 import sqlite3, sys, re, bisect, collections
 
-from sitefile import SITE, expand          # ./site.toml, $SQP_SITE or --site PATH
+from sitefile import SITE, expand          # ./site.toml, $SJP_SITE or --site PATH
 
 DB = sys.argv[1] if len(sys.argv) > 1 else sys.exit('usage: stranding.py accounting.sqlite')
 T0 = SITE.t0

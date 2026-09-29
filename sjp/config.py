@@ -12,10 +12,10 @@ DEFAULTS: dict = {
         # advise   - also write the policy table (partitions only, no node pins)
         # enforce  - also pin nodes, release stale pins, and change QOS limits
         "mode": "observe",
-        "state_dir": "/run/sqp",
-        "log_file": "/var/log/sqp/decisions.jsonl",   # every record, JSON lines
-        "text_log": "/var/log/sqp/sqp.log",          # the same, for people ("" = off)
-        "disable_file": "/etc/sqp/disable",   # touch to fall back instantly
+        "state_dir": "/run/sjp",
+        "log_file": "/var/log/sjp/decisions.jsonl",   # every record, JSON lines
+        "text_log": "/var/log/sjp/sjp.log",          # the same, for people ("" = off)
+        "disable_file": "/etc/sjp/disable",   # touch to fall back instantly
     },
     "cadence": {
         "score_interval": 1.0,        # seconds; the policy table refresh
@@ -41,7 +41,7 @@ DEFAULTS: dict = {
     "policy": {
         # Demand mix: (MB per CPU, weight) -- how much memory per CPU arriving
         # jobs ask for. The defaults are one cluster's; fit your own with
-        # `python3 -m sqp.fit --since <date>`.
+        # `python3 -m sjp.fit --since <date>`.
         "demand": [[800, 0.10], [1280, 0.15], [4267, 0.25],
                    [7680, 0.25], [14178, 0.15], [30720, 0.10]],
         "demand_median": 4267,        # for the stranding metric only
@@ -66,7 +66,7 @@ DEFAULTS: dict = {
                                   # CPU is closest to the job's wins. Pin only if the
                                   # winner beats the worst candidate by min_gain, or
                                   # by this much in |log ratio| (0.1 ~ 10%)
-        "release_after": 60.0,    # seconds a pinned job may stay pending before sqpd
+        "release_after": 60.0,    # seconds a pinned job may stay pending before sjpd
                                   # drops the pin and restores its partitions
         "max_age": 10.0,          # plugin pins only from node state this fresh
     },
@@ -129,7 +129,7 @@ def defaults() -> dict:
 
 
 def load(path: str | None = None) -> dict:
-    path = path or os.environ.get("SQP_CONFIG", "/etc/sqp/sqp.toml")
+    path = path or os.environ.get("SJP_CONFIG", "/etc/sjp/sjp.toml")
     if not os.path.exists(path):
         return copy.deepcopy(DEFAULTS)
     with open(path, "rb") as f:
@@ -137,7 +137,7 @@ def load(path: str | None = None) -> dict:
 
 
 def dump_defaults() -> str:
-    """Emit the default config as TOML, for `sqp-config --defaults`."""
+    """Emit the default config as TOML, for `sjp-config --defaults`."""
     def fmt(v):
         if isinstance(v, bool):  return "true" if v else "false"
         if isinstance(v, str):   return f'"{v}"'

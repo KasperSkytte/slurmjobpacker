@@ -13,7 +13,7 @@ class SlurmError(RuntimeError):
     pass
 
 
-# The only commands that may run while actuation is off. Every process sqp
+# The only commands that may run while actuation is off. Every process sjp
 # starts goes through _run, so this is the last line of defence for a dry run
 # under an account that Slurm would otherwise let change anything.
 _READ_ONLY = {("scontrol", "show"), ("squeue",), ("sacctmgr", "-nP", "show"), ("sacct",)}

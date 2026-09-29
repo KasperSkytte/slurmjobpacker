@@ -2,7 +2,7 @@
 """Break down the cross-class result: who are these fat pending jobs, how long
 did they actually wait, and where was the idle capacity sitting?"""
 import sqlite3, collections, sys
-from sitefile import SITE, expand          # ./site.toml, $SQP_SITE or --site PATH
+from sitefile import SITE, expand          # ./site.toml, $SJP_SITE or --site PATH
 
 DB = sys.argv[1] if len(sys.argv) > 1 else sys.exit('usage: stranding2.py accounting.sqlite')
 T0 = SITE.t0

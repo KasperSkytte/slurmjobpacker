@@ -9,15 +9,15 @@
 # This is how the plugin is tested end to end without touching a real cluster.
 #
 #   usage: tests/testcluster.sh start|stop|status
-#          SLURM_CONF=/tmp/sqp-cluster/slurm.conf sbatch -n 8 --mem=64G --wrap=...
+#          SLURM_CONF=/tmp/sjp-cluster/slurm.conf sbatch -n 8 --mem=64G --wrap=...
 set -u
-D=${SQP_TEST_DIR:-/tmp/sqp-cluster}
+D=${SJP_TEST_DIR:-/tmp/sjp-cluster}
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 start() {
   mkdir -p "$D"/{state,log,run}
   cat > "$D/slurm.conf" <<EOF
-ClusterName=sqptest
+ClusterName=sjptest
 SlurmctldHost=$(hostname -s)
 SlurmUser=$(id -un)
 SlurmctldPort=7817
@@ -52,7 +52,7 @@ GresTypes=gpu
 
 # An example topology: slim (little memory per CPU) and fat partitions, each a
 # faster and a slower generation, ranked by PriorityTier; plus an interactive
-# and a GPU partition, which sqp leaves alone. NodeAddr points at localhost
+# and a GPU partition, which sjp leaves alone. NodeAddr points at localhost
 # because these nodes do not exist; without it slurmctld fails to resolve them.
 NodeName=node01 NodeAddr=127.0.0.1 CPUs=256 RealMemory=1021540 State=CLOUD
 NodeName=node02 NodeAddr=127.0.0.1 CPUs=192 RealMemory=505529  State=CLOUD
@@ -74,15 +74,15 @@ PartitionName=fat2 Nodes=node[08-09] PriorityTier=7
 PartitionName=gpu Nodes=node10 PriorityTier=1
 EOF
 
-  # The default job_submit.lua, as a site would set it up: sqp loaded from the
+  # The default job_submit.lua, as a site would set it up: sjp loaded from the
   # checkout, pointed at this cluster's paths, with a slim/fat fallback.
-  sed -e "s#^local SQP = .*#local SQP = \"$REPO/lua/sqp.lua\"#" \
+  sed -e "s#^local SJP = .*#local SJP = \"$REPO/lua/sjp.lua\"#" \
       -e 's#^local GPU_PARTITION = ""#local GPU_PARTITION = "gpu"#' \
-      -e "s#^    -- sqp.config.slim = .*#    sqp.config.slim, sqp.config.fat = \"slim1,slim2\", \"fat1,fat2\"#" \
-      -e "s#^    -- sqp.config.fat  = .*#    sqp.config.table_path, sqp.config.disable_path = \"$D/policy.lua\", \"$D/disable\"#" \
+      -e "s#^    -- sjp.config.slim = .*#    sjp.config.slim, sjp.config.fat = \"slim1,slim2\", \"fat1,fat2\"#" \
+      -e "s#^    -- sjp.config.fat  = .*#    sjp.config.table_path, sjp.config.disable_path = \"$D/policy.lua\", \"$D/disable\"#" \
       "$REPO/lua/job_submit.lua" > "$D/job_submit.lua"
 
-  cat > "$D/sqp.toml" <<EOF
+  cat > "$D/sjp.toml" <<EOF
 [general]
 mode = "advise"
 state_dir = "$D"
@@ -103,7 +103,7 @@ EOF
   SLURM_CONF="$D/slurm.conf" scontrol ping
   echo "config:  $D/slurm.conf"
   echo "run:     SLURM_CONF=$D/slurm.conf sbatch -n 8 --mem=64G -t 10 --wrap='sleep 60'"
-  echo "daemon:  SLURM_CONF=$D/slurm.conf python3 -m sqp.daemon -c $D/sqp.toml"
+  echo "daemon:  SLURM_CONF=$D/slurm.conf python3 -m sjp.daemon -c $D/sjp.toml"
 }
 
 stop() {

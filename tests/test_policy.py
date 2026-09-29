@@ -5,7 +5,7 @@ These are the claims the design rests on. If one of them fails, the argument in
 docs/design.html is wrong, not just the code.
 
 Safe to run on a live cluster: nothing here may start a process. subprocess.run
-is replaced before sqp is imported, and any attempt fails the run.
+is replaced before sjp is imported, and any attempt fails the run.
 """
 import sys, os, time, subprocess, tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -19,7 +19,7 @@ def _no_processes(args, **kw):
     raise _NoProcesses(f"tests must not start processes: {args}")
 subprocess.run = _no_processes
 
-from sqp import config, policy, daemon
+from sjp import config, policy, daemon
 
 CFG = config.defaults()
 DEMAND = [tuple(x) for x in CFG['policy']['demand']]
@@ -120,7 +120,7 @@ check("an ordinary job is not refit", not refit and parts == tbl[key], ",".join(
 
 print("\n10. a dry run changes nothing and says what it would have done")
 import io, json, tempfile
-from sqp import slurm
+from sjp import slurm
 ran = []
 real_run = slurm._run
 slurm._run = lambda args, timeout=10.0: ran.append(args) or ""
@@ -154,16 +154,16 @@ try:
           q.get("executed") is False and q.get("cmd", "").startswith("sacctmgr -i modify qos")
           and "held only by the CPU cap" in q.get("why", ""), json.dumps(q)[:200])
     check("apply() refuses while actuation is off",
-          slurm.set_qos_cpu_limits("sqp-test-no-such-qos", 1, 1) is False and ran == [])
+          slurm.set_qos_cpu_limits("sjp-test-no-such-qos", 1, 1) is False and ran == [])
     slurm.set_actuation(True)
     check("apply() runs once actuation is on",
-          slurm.set_qos_cpu_limits("sqp-test-no-such-qos", 1, 1) is True and len(ran) == 1)
+          slurm.set_qos_cpu_limits("sjp-test-no-such-qos", 1, 1) is True and len(ran) == 1)
 finally:
     slurm._run = real_run
     slurm.set_actuation(False)
 
 print("\n10a. QOS caps are raised only in a short pulse, only for jobs they hold")
-from sqp import limits
+from sjp import limits
 cfg = config.defaults()
 lp = limits.LimitPulse(cfg)
 H = cfg["limits"]["hysteresis"]
@@ -193,7 +193,7 @@ subprocess.run = lambda args, **kw: launched.append(args) or subprocess.Complete
 try:
     slurm.set_actuation(False)
     refused = 0
-    for argv in (slurm.cmd_set_qos_cpu_limits("sqp-test-no-such-qos", 1, 1),
+    for argv in (slurm.cmd_set_qos_cpu_limits("sjp-test-no-such-qos", 1, 1),
                  slurm.cmd_set_job_partitions("1", ["slim2"]),
                  slurm.cmd_set_job_qos("1", "flex"), slurm.cmd_set_array_throttle("1", 5)):
         try:
@@ -279,9 +279,9 @@ check("pin data is emitted when pinning", 'pin = {' in lua and '["n16"] = {256, 
       and '[1000] = 64' in lua)
 check("and not otherwise", 'pin = {' not in policy.render_lua(tbl, CFG, time.time(), 1, TOTAL))
 
-print("\n13. stale pins are released, and only sqp's own")
+print("\n13. stale pins are released, and only sjp's own")
 real_ac, real_apply = slurm.admin_comment, slurm.apply
-comments = {"7": "sqp:pin=n16;from=slim1,slim2", "8": ""}
+comments = {"7": "sjp:pin=n16;from=slim1,slim2", "8": ""}
 slurm.admin_comment = lambda jid: comments[jid]
 applied = []
 slurm.apply = lambda argv, timeout=10.0: applied.append(argv) or True
@@ -301,10 +301,10 @@ try:
                   [r["jobid"] for r in rel] == ["7"] and not rel[0]["executed"] and applied == [],
                   json.dumps(rel)[:200])
         else:
-            check("enforce: releases the stale sqp pin and restores its partitions",
+            check("enforce: releases the stale sjp pin and restores its partitions",
                   applied == [["scontrol", "update", "jobid=7", "reqnodelist="],
                               ["scontrol", "update", "jobid=7", "partition=slim1,slim2",
-                               "admincomment=sqp:released=n16"]],
+                               "admincomment=sjp:released=n16"]],
                   str(applied))
     check("a user's own --nodelist (job 8) and a fresh pin (job 9) are left alone",
           all("jobid=8" not in a and "jobid=9" not in a for a in applied))
@@ -336,14 +336,14 @@ def paths(state=None, log=None, text=None):
     daemon.cli_paths(g, state, log, text)
     return g["state_dir"], g["log_file"], g["text_log"]
 check("--state-dir alone puts everything there",
-      paths(state="/h/u/dry") == ("/h/u/dry", "/h/u/dry/decisions.jsonl", "/h/u/dry/sqp.log"))
+      paths(state="/h/u/dry") == ("/h/u/dry", "/h/u/dry/decisions.jsonl", "/h/u/dry/sjp.log"))
 check("--log-file alone puts the text log beside it",
-      paths(state="/h/u/s", log="/h/u/l/d.jsonl")[1:] == ("/h/u/l/d.jsonl", "/h/u/l/sqp.log"))
+      paths(state="/h/u/s", log="/h/u/l/d.jsonl")[1:] == ("/h/u/l/d.jsonl", "/h/u/l/sjp.log"))
 check("--text-log alone puts the JSON log beside it",
       paths(text="/h/u/t/x.log")[1:] == ("/h/u/t/decisions.jsonl", "/h/u/t/x.log"))
 check("--text-log '' still turns the text log off", paths(state="/h/u/s", text="")[2] == "")
 check("nothing given keeps the config's paths",
-      paths() == ("/run/sqp", "/var/log/sqp/decisions.jsonl", "/var/log/sqp/sqp.log"))
+      paths() == ("/run/sjp", "/var/log/sjp/decisions.jsonl", "/var/log/sjp/sjp.log"))
 
 check("no test started a process", subprocess.run is _no_processes)
 

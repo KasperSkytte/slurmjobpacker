@@ -1,8 +1,8 @@
-"""sqp-fit - fit [policy] demand to your cluster's own history.
+"""sjp-fit - fit [policy] demand to your cluster's own history.
 
-    python3 -m sqp.fit --since 2026-01-01          # prints TOML for sqp.toml
+    python3 -m sjp.fit --since 2026-01-01          # prints TOML for sjp.toml
 
-The demand mix is what sqp measures free space against: how much memory per
+The demand mix is what sjp measures free space against: how much memory per
 CPU the jobs that arrive tend to ask for. It is fitted here from `sacct`
 (read-only): single-node jobs, each weighted by the CPU-hours it held, and
 summarised as six points, one per band of that distribution (0-10, 10-25,
@@ -59,7 +59,7 @@ def from_sacct(since, until=None):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog="sqp-fit")
+    ap = argparse.ArgumentParser(prog="sjp-fit")
     ap.add_argument("--since", required=True, help="sacct start time, e.g. 2026-01-01")
     ap.add_argument("--until", help="sacct end time")
     a = ap.parse_args(argv)
@@ -67,7 +67,7 @@ def main(argv=None):
     try:
         demand, median = fit(jobs)
     except ValueError as e:
-        print(f"sqp-fit: {e} (is accounting enabled, and --since right?)", file=sys.stderr)
+        print(f"sjp-fit: {e} (is accounting enabled, and --since right?)", file=sys.stderr)
         return 1
     print(f"# fitted from {len(jobs):,} single-node jobs since {a.since}")
     print("[policy]")

@@ -1,4 +1,4 @@
-"""sqpd - the control loop.
+"""sjpd - the control loop.
 
 Two planes. This process decides slowly and out of band; job_submit.lua applies
 the decision instantly and in band, with one table lookup. If this process dies,
@@ -98,7 +98,7 @@ class Daemon:
                 os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
                 setattr(self, attr, open(path, "a"))
             except OSError as e:
-                print(f"sqpd: cannot open {path}: {e}. As an ordinary user, give "
+                print(f"sjpd: cannot open {path}: {e}. As an ordinary user, give "
                       "--state-dir (or --log-file/--text-log) a directory you can write.",
                       file=sys.stderr)
 
@@ -113,7 +113,7 @@ class Daemon:
     def intend(self, action, cmd, why, blocked, run, quiet=False, **kw):
         """Log an intended change, and carry it out only if nothing blocks it.
 
-        Every change sqpd would make goes through here, so the decision log is
+        Every change sjpd would make goes through here, so the decision log is
         also a complete list of what a dry run would have done.
         """
         executed, extra = False, {}
@@ -173,7 +173,7 @@ class Daemon:
         return by_part_total, by_part_free
 
     def pin_active(self) -> bool:
-        """Pins need sqpd to release the ones that do not start, which is an
+        """Pins need sjpd to release the ones that do not start, which is an
         enforce-mode action. observe shows what enforce would do; advise never pins."""
         return self.cfg["pin"]["enabled"] and self.mode != "advise"
 
@@ -348,7 +348,7 @@ class Daemon:
                 "partitions within tolerance of the cheapest are admitted)")
 
     def shadow(self, jobs):
-        """Log what sqp would do with each newly seen job, next to what Slurm did:
+        """Log what sjp would do with each newly seen job, next to what Slurm did:
         its partitions, and whether and where it would pin the node. The plugin
         acts at submission, which a dry run cannot intercept, so this is how its
         effect is made visible."""
@@ -364,14 +364,14 @@ class Daemon:
                 continue
             actual = [p for p in j["partition"].split(",") if p]
             # GPU, interactive and other partitions are routed by the plugin
-            # before the table is consulted; sqp has no opinion on them.
+            # before the table is consulted; sjp has no opinion on them.
             if j.get("gpu") or not set(actual) & set(s["cap"]):
                 continue
             self.log("placement", **self.evaluate(j, actual, s))
         self.seen = ids
 
     def evaluate(self, j, actual, s) -> dict:
-        """What sqp would do with one job, as a placement record."""
+        """What sjp would do with one job, as a placement record."""
         cpus = max(1, j["cpus"])
         mem = max(j.get("req_mem") or j["mem"], 512)
         would, key, refit = policy.plugin_lookup(s["table"], s["cap"], self.cfg, cpus, mem,
@@ -390,18 +390,18 @@ class Daemon:
             why += f"; refit to the job's real size -> {','.join(would)}"
 
         # In advise/enforce the plugin has already acted. A node requirement is
-        # sqp's own pin if the plugin marked it so; read the mark back.
-        sqp_pin = sqp_from = ""
+        # sjp's own pin if the plugin marked it so; read the mark back.
+        sjp_pin = sjp_from = ""
         if j.get("req_nodes") and self.mode != "observe":
             try:
                 note = slurm.admin_comment(j["jobid"])
             except slurm.SlurmError:
                 note = ""
-            if note.startswith("sqp:pin="):
-                sqp_pin, _, sqp_from = note[len("sqp:pin="):].partition(";from=")
-        # Recompute against what the job was given: sqp's partitions before the
+            if note.startswith("sjp:pin="):
+                sjp_pin, _, sjp_from = note[len("sjp:pin="):].partition(";from=")
+        # Recompute against what the job was given: sjp's partitions before the
         # pin, or, once the plugin acts, the partitions it set.
-        allowed = sqp_from.split(",") if sqp_from else \
+        allowed = sjp_from.split(",") if sjp_from else \
             (actual if self.mode != "observe" else would)
 
         # The node. A running job's own allocation is added back to its node, so
@@ -418,7 +418,7 @@ class Daemon:
         # A job the plugin pinned passed its checks, including the one-node limit
         # squeue cannot show.
         elif (reason := policy.pin_eligible(dict(j, req_nodes="", ntasks=1)
-                                            if sqp_pin else j)):
+                                            if sjp_pin else j)):
             pin_why = reason
         elif room is not None and room < cpus and j["qos"] == self.cfg["limits"]["qos_name"]:
             pin_why = f"the user is at the per-user CPU cap ({room} CPUs left)"
@@ -436,7 +436,7 @@ class Daemon:
                     actual=",".join(actual), would=",".join(would), verdict=verdict,
                     differences=self.differences(actual, would, cpus, mem, cost, s, running),
                     pin=pin, pin_parts=",".join(pin_parts), pin_why=pin_why,
-                    acted=self.mode != "observe", sqp_pin=sqp_pin, sqp_from=sqp_from,
+                    acted=self.mode != "observe", sjp_pin=sjp_pin, sjp_from=sjp_from,
                     why=why, cost={p: round(c, 1) for c, p in cost})
 
     @staticmethod
@@ -446,7 +446,7 @@ class Daemon:
 
         def reason(p):
             if p not in s["total"]:
-                return "not a partition sqp assigns"
+                return "not a partition sjp assigns"
             if not policy.feasible(cpus, mem, {p: s["total"][p]}):
                 return "no node there is big enough"
             if p not in room:
@@ -454,7 +454,7 @@ class Daemon:
             return "a poorer fit for this job's shape"
         if running:
             p = actual[0]
-            return [] if p in would else [f"sqp would not have allowed {p}: {reason(p)}"]
+            return [] if p in would else [f"sjp would not have allowed {p}: {reason(p)}"]
         out = [f"adds {p}" + (": it fits about as well now" if p in room else "")
                for p in sorted(set(would) - set(actual))]
         out += [f"drops {p}: {reason(p)}" for p in sorted(set(actual) - set(would))]
@@ -476,10 +476,10 @@ class Daemon:
             except slurm.SlurmError as e:
                 self.log("error", where="release", detail=repr(e))
                 continue
-            if not note.startswith("sqp:pin="):
+            if not note.startswith("sjp:pin="):
                 continue                 # the user's own --nodelist: never touch it
-            node, _, parts = note[len("sqp:pin="):].partition(";from=")
-            argvs = slurm.cmd_release_pin(jid, parts, f"sqp:released={node}")
+            node, _, parts = note[len("sjp:pin="):].partition(";from=")
+            argvs = slurm.cmd_release_pin(jid, parts, f"sjp:released={node}")
             self.intend("release_pin", " && ".join(slurm.cmdline(a) for a in argvs),
                         f"pinned at submission but still pending after "
                         f"{now - j['submit']:.0f} s ({j['reason']})",
@@ -536,7 +536,7 @@ class Daemon:
                     info["warnings"].append(
                         f"QOS {qos} is MaxTRESPU cpu={u} MaxTRESPA cpu={a}, config base "
                         f"is {lc['base_cpu_per_user']}/{lc['base_cpu_per_account']}; "
-                        "in enforce mode sqp sets the QOS to the config's base at startup")
+                        "in enforce mode sjp sets the QOS to the config's base at startup")
             except slurm.SlurmError as e:
                 info["warnings"].append(f"qos: {e}")
         self.log("preflight", **info)
@@ -634,7 +634,7 @@ class Daemon:
     # ---------------------------------------------------------------- run
     def run(self):
         self.open_logs()
-        self.log("start", version=__import__("sqp").__version__,
+        self.log("start", version=__import__("sjp").__version__,
                  limits_mode=self.cfg["limits"]["mode"],
                  cadence=self.cfg["cadence"])
         self.preflight()
@@ -675,11 +675,11 @@ def cli_paths(g, state_dir, log_file, text_log):
     if text_log is not None:
         g["text_log"] = text_log
     elif base:
-        g["text_log"] = os.path.join(base, "sqp.log")
+        g["text_log"] = os.path.join(base, "sjp.log")
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog="sqpd")
+    ap = argparse.ArgumentParser(prog="sjpd")
     ap.add_argument("-c", "--config")
     ap.add_argument("--mode", choices=("observe", "advise", "enforce"))
     ap.add_argument("--dry-run", action="store_true",

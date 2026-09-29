@@ -5,9 +5,9 @@
   "packages": {
     ".": {
       "release-type": "simple",
-      "package-name": "slurmqueuepacker",
+      "package-name": "slurmjobpacker",
       "changelog-path": "CHANGELOG.md",
-      "extra-files": ["sqp/__init__.py", "README.md"]
+      "extra-files": ["sjp/__init__.py", "README.md"]
     }
   }
 }

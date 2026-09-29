@@ -90,7 +90,7 @@ class PerJobPromoter:
     named job at a time -- but note the measured bias: it promotes only jobs that
     can start immediately, which systematically favours small, easy-to-place work
     over exactly the large high-ratio jobs that wait longest. The global pulse has
-    no such bias, which is why it is the default. Not wired into sqpd yet.
+    no such bias, which is why it is the default. Not wired into sjpd yet.
     """
 
     def __init__(self, cfg):

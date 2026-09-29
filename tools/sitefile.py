@@ -1,6 +1,6 @@
 """The cluster the analysis tools describe, read from a TOML site file.
 
-The file is --site PATH on the command line, else $SQP_SITE, else ./site.toml.
+The file is --site PATH on the command line, else $SJP_SITE, else ./site.toml.
 tools/site.example.toml documents the format; copy it to site.toml (kept out of
 git) and describe your own partitions. Importing this module loads the file,
 so every tool, and every worker process a tool starts, sees the same cluster.
@@ -32,9 +32,9 @@ def expand(nl):
 def _path():
     if '--site' in sys.argv:
         i = sys.argv.index('--site')
-        os.environ['SQP_SITE'] = os.path.abspath(sys.argv[i + 1])   # for workers
+        os.environ['SJP_SITE'] = os.path.abspath(sys.argv[i + 1])   # for workers
         del sys.argv[i:i + 2]
-    return os.environ.get('SQP_SITE', 'site.toml')
+    return os.environ.get('SJP_SITE', 'site.toml')
 
 
 class Site:
@@ -64,7 +64,7 @@ class Site:
         self.slim = tuple(p for p in order if parts[p]['class'] == 'slim')
         self.fat = tuple(p for p in order if parts[p]['class'] == 'fat')
         self.batch_node_part = {n: p for n, p in self.node_part.items() if p in self.tier}
-        # the demand mix, as `python3 -m sqp.fit` prints it; else sqp's defaults
+        # the demand mix, as `python3 -m sjp.fit` prints it; else sjp's defaults
         self.demand = [tuple(x) for x in c.get('demand', [
             [800, .10], [1280, .15], [4267, .25], [7680, .25], [14178, .15], [30720, .10]])]
         self.demand_median = c.get('demand_median', 4267)
