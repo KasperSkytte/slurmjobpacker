@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/KasperSkytte/slurmqueuepacker/compare/v1.1.0...v1.2.0) (2026-09-29)
+
+
+### Features
+
+* load sqp from the cluster's own job_submit.lua ([db29f9b](https://github.com/KasperSkytte/slurmqueuepacker/commit/db29f9bcb0277a32fb7934e6629d0c421584bf45))
+
 ## [1.1.0](https://github.com/KasperSkytte/slurmqueuepacker/compare/v1.0.0...v1.1.0) (2026-09-28)
 
 
