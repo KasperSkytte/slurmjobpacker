@@ -1,26 +1,19 @@
 # slurmqueuepacker
 
-Places Slurm jobs by how well they fit the free space on each node right now, not only
-by the memory per CPU they ask for.
+Slurm plugin for automatic partition and compute node selection to enable optimal packing of jobs on shared compute nodes (i.e. nodes run multiple jobs concurrently). This is achieved by optimally matching the Memory:CPU ratio of jobs to that currently available on nodes in order to reduce waste due to starvation of either CPU or Memory.
 
-## The problem
+## The problem with sharing nodes
 
-On shared nodes, what a job needs is memory *per CPU*. Clusters therefore split their
-nodes into slim and fat partitions and route each job by that ratio. That keeps free
-space well shaped in the long run, but it cannot see what is running. Slim nodes fill up
-on CPUs first and are left with memory a high-memory job could use, while the fat nodes
-run out of memory with CPUs idle, and high-memory jobs queue for them.
+A computing cluster configured so that nodes can be shared by multiple jobs at once is often the preferred choice for smaller, local clusters compared to exclusive-only node access due to a potentially more efficient utilization of computing resources. In order to properly take advantage of this, users must both ensure to request hardware resources that match the job requirements as precisely as possible, but also avoid being in the way of other future jobs. Choosing the most appropriate hardware partition is challenging for many users, and many will get it wrong, leading to wasted computing resources, defeating the purpose of sharing nodes altogether. **The goal of `slurmqueuepacker` is to BOTH automate the partition and node selection, but also to pack the cluster as tightly as possible**, in order to optimize resource utilization on clusters where nodes are shared among many users.
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/img/mismatch-dark.svg">
-  <img alt="One cluster at one moment: slim nodes with most of their memory free, fat nodes with memory full and CPUs idle, and 98 high-memory jobs waiting for the fat nodes." src="docs/img/mismatch-light.svg">
-</picture>
 
-An example from one production cluster. Over eleven months, at least 12% of the high-memory jobs
-that waited more than an hour did so while a slim node had room for them
-(`tools/figure_mismatch.py`).
+INSERT IMAGE HERE
 
-## What it does
+In order to pack a cluster most efficiently when compute nodes run many jobs simultaneously, the average CPU+Memory shape of the jobs becomes very important. If the average job running on a node uses significantly more memory per CPU than that of the node, it will lead to memory starvation and therefore idle CPUs (fx a node with 256 allocatable threads and 1TB memory has a ratio of max 4.0 GB/thread, and thus the combined requirements of all jobs running on that node should preferably match that ratio). Similarly, allocating jobs that need little memory per CPU to, often much more expensive, nodes with extra memory can prevent memory demanding jobs to run there. Lastly, sometimes jobs with both low and high memory per CPU requirements actually fit perfectly together on the same node, so a simple [job submit LUA script](https://slurm.schedmd.com/job_submit_plugins.html) that assigns the partition to jobs simply based on a fixed memory per cpu threshold is not ideal either (e.g. more than x GB per CPU use a fat node, otherwise a slim node). 
+
+`slurmqueuepacker` uses the memory per CPU the jobs ask for and chooses the placement that leaves the most room usable for that mix of jobs considering the available space on all nodes at once, which is much better than leaving it up to the users and SLURMs default FIFO scheduling alone.
+
+## How it works
 
 A daemon, `sqpd`, reads the cluster every second; a small Lua module, called from your
 `job_submit.lua`, applies its decisions when a job is submitted. For each job it:
@@ -34,16 +27,9 @@ A daemon, `sqpd`, reads the cluster every second; a small Lua module, called fro
 Slurm still schedules, orders the queue and applies fair-share. If `sqpd` stops, jobs
 keep their partition, or get a fallback rule you set.
 
-## Status
+## Installation
 
-**v<!-- x-release-please-start-version -->1.0.0<!-- x-release-please-end -->.** Tested end
-to end against a real `slurmctld`, including every failure path; not yet run in
-production. It starts in `observe` mode, which changes nothing.
-
-## Installing
-
-Needs Python 3.11+ (standard library only) and the Slurm commands `scontrol`, `squeue`,
-`sacct` and `sacctmgr`, on the `slurmctld` host. Tested on Slurm 26.05.
+Needs Python 3.11+ (standard library only). Tested on Slurm 26.05.
 
 | mode | reads the cluster | chooses partitions | pins nodes | pulses QOS caps |
 |---|---|---|---|---|
@@ -56,12 +42,10 @@ starts, even under an admin account) and logs what it would do.
 
 **1. Install**
 
-<!-- x-release-please-start-version -->
 ```sh
-sudo git clone --branch v1.2.0 https://github.com/kasperskytte/slurmqueuepacker /opt/slurmqueuepacker
+sudo git clone https://github.com/kasperskytte/slurmqueuepacker /opt/slurmqueuepacker
 cd /opt/slurmqueuepacker && python3 tests/test_policy.py        # ends in ALL PASS
 ```
-<!-- x-release-please-end -->
 
 **2. Dry run**, as your own user, from that directory:
 
@@ -102,7 +86,7 @@ Every setting is documented in the generated file. To use the QOS cap pulse, set
   end
   ```
 
-- **If it has none,** copy `lua/job_submit.lua` next to `slurm.conf`. It sends `salloc` and
+- **If it has none,** copy the example `lua/job_submit.lua` next to `slurm.conf` (usually `/etc/slurm/job_submit.lua`). It sends `salloc` and
   `srun` jobs to an `interactive` partition if there is one, and the rest to sqp.
 
 Run `scontrol reconfigure`. `sqp.place()` only sets the partition (and, for a pinned job,
@@ -127,12 +111,12 @@ done
 **Upgrading.** `sudo git fetch --tags && sudo git checkout vX.Y.Z`, restart `sqpd`, and
 run `scontrol reconfigure` so `slurmctld` loads the new `sqp.lua`.
 
-## How it decides
+## How it decides...
 
 **Partitions.** For every job shape (memory per CPU, CPUs, walltime), sqpd scores each
 partition by how much *placeable capacity* the job would destroy: free space measured
-against the mix of jobs the cluster actually runs (`[policy] demand`). The cheapest
-partitions, within a tolerance, are allowed; Slurm tries them in PriorityTier order.
+against the mix of jobs currently running on the cluster (`[policy] demand`). The cheapest
+partitions, within a tolerance, are allowed; Slurm tries them in `PriorityTier` order.
 `sqp.place()` looks the job up in this table and drops any partition too small for it.
 
 **Node pins.** Only for a job that can start at once, and only plain ones (one node, an
@@ -165,8 +149,7 @@ python3 tools/figure_mismatch.py accounting.sqlite "2026-07-20 13:12" docs/img/
 ```
 
 `simulate.py` replays the real arrival trace against the current rule and against sqp.
-Compare policies within one run; its absolute numbers are not calibrated. The design and
-its measurements are in `docs/design.html`.
+Compare policies within one run; its absolute numbers are not calibrated.
 
 ## Development
 
