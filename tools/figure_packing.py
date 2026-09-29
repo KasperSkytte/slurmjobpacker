@@ -3,7 +3,7 @@
 
 Each node is drawn in resource space -- CPUs across, memory up -- as a box of its
 size. Its jobs are rectangles of their CPUs x memory, stacked corner to corner
-from the origin, lightest memory per CPU first. Hatched areas are wasted: CPUs
+from the origin, in alphabetical order. Hatched areas are wasted: CPUs
 no job can use for want of memory, or memory no job can use for want of CPUs.
 Plain grey is free in both, and so still usable by new jobs.
 
@@ -20,9 +20,8 @@ SLIM = dict(name="slim node", cpus=64, mem=256)
 FAT = dict(name="fat node", cpus=64, mem=1024)
 # (CPUs, GB)
 JOBS = dict(A=(8, 160), B=(16, 32), C=(24, 48), D=(12, 36), E=(8, 40), F=(4, 80),
-            G=(6, 30), H=(10, 20), I=(4, 120), J=(6, 180), K=(2, 60))
+            G=(6, 30), H=(10, 20), I=(4, 120), J=(16, 128), K=(2, 60))
 HIGH = 6    # GB per CPU from which a job counts as high-memory (its colour)
-NEW = (16, 256)   # an example job submitted now: fits only where CPUs and memory are both free
 BAD = {"slim node": "AEGH", "fat node": "BCDFIK"}      # J cannot start anywhere
 GOOD = {"slim node": "BCDHK", "fat node": "AEFGIJ"}
 
@@ -77,10 +76,10 @@ def label_in(c, x, y, w, h, s, size=11):
     return out
 
 
-def node(c, x0, base, spec, keys, waste_note, show_new):
+def node(c, x0, base, spec, keys, waste_note):
     out = []
     w, h = spec["cpus"] * PX_CPU, spec["mem"] * PX_GB
-    jobs = sorted(((k,) + JOBS[k] for k in keys), key=lambda j: j[2] / j[1])
+    jobs = [(k,) + JOBS[k] for k in sorted(keys)]              # A, B, C ... left to right
     used_c, used_m = sum(j[1] for j in jobs), sum(j[2] for j in jobs)
     idle_c, idle_m = spec["cpus"] - used_c, spec["mem"] - used_m
     cx, cy = x0 + used_c * PX_CPU, base - used_m * PX_GB     # where the jobs end
@@ -102,8 +101,7 @@ def node(c, x0, base, spec, keys, waste_note, show_new):
     elif waste_note == "free":         # both left, together: room for new jobs
         out.append(f'<rect x="{cx:.1f}" y="{top:.1f}" width="{idle_c * PX_CPU:.1f}" '
                    f'height="{idle_m * PX_GB:.1f}" fill="{c["free"]}"/>')
-        above = (idle_m - NEW[1]) * PX_GB if show_new else idle_m * PX_GB
-        out += label_in(c, cx, top, idle_c * PX_CPU, above, "Free for new jobs")
+        out += label_in(c, cx, top, idle_c * PX_CPU, idle_m * PX_GB, "Room for more jobs")
     # jobs, corner to corner, with a 1px surface gap between them
     # labelled with its ID just above its top edge, which is always clear: the
     # next job starts at this one's top-right corner
@@ -117,10 +115,6 @@ def node(c, x0, base, spec, keys, waste_note, show_new):
         x, m = x + jc * PX_CPU, m + jm
     out.append(f'<rect x="{x0:.1f}" y="{top:.1f}" width="{w:.1f}" height="{h:.1f}" '
                f'fill="none" stroke="{c["axis"]}" stroke-width="1"/>')
-    if show_new:        # the new job, at the corner where the jobs end: in, or over the edge
-        out.append(f'<rect x="{cx:.1f}" y="{cy - NEW[1] * PX_GB:.1f}" '
-                   f'width="{NEW[0] * PX_CPU:.1f}" height="{NEW[1] * PX_GB:.1f}" fill="none" '
-                   f'stroke="{c["ink"]}" stroke-width="1.5" stroke-dasharray="4 3"/>')
     # axes: CPUs across, memory up, each with its two end ticks
     out.append(text(x0, base + 14, "0", c["muted"], 10, anchor="middle"))
     out.append(text(x0 + w, base + 14, str(spec["cpus"]), c["muted"], 10, anchor="middle"))
@@ -134,12 +128,24 @@ def node(c, x0, base, spec, keys, waste_note, show_new):
     return out
 
 
-def pair(c, x0, top, title, note, layout, notes, new_on):
+def pair(c, x0, top, title, note, layout, notes, waiting=()):
     out = [text(x0, top, title, c["ink"], 14, 600), text(x0, top + 18, note, c["ink2"], 12)]
     base = top + 40 + FAT["mem"] * PX_GB
+    if waiting:         # jobs that cannot start: shown in the space above the slim node
+        wx, wy = x0 + AXIS_L, base - FAT["mem"] * PX_GB
+        out.append(text(wx, wy + 10, "Waiting in the queue:", c["ink2"], 12))
+        y = wy + 22
+        for key in waiting:
+            jc, jm = JOBS[key]
+            kind = "high" if jm / jc >= HIGH else "low"
+            out.append(f'<rect x="{wx:.1f}" y="{y:.1f}" width="{jc * PX_CPU:.1f}" '
+                       f'height="{jm * PX_GB:.1f}" rx="1.5" fill="{c[kind]}"/>')
+            out.append(text(wx + jc * PX_CPU + 8, y + jm * PX_GB / 2 + 4,
+                            f"{key}: {jc} CPUs, {jm} GB", c["ink"], 11, 600))
+            y += jm * PX_GB + 10
     for i, spec in enumerate((SLIM, FAT)):
         out += node(c, x0 + AXIS_L + i * (SLIM["cpus"] * PX_CPU + NODE_GAP), base, spec,
-                    layout[spec["name"]], notes[i], spec["name"] in new_on)
+                    layout[spec["name"]], notes[i])
     return out, base + 44
 
 
@@ -155,44 +161,40 @@ def draw(theme):
     ly = pad + 42                                              # legend, two rows
     rows = ((("low", c["low"], "Job with a low memory/CPU requirement"),
              ("high", c["high"], "Job with a high memory/CPU requirement")),
-            (("waste", "url(#waste)", "Wasted"), ("free", c["free"], "Free"),
-             ("new", None, f"New job: {NEW[0]} CPUs, {NEW[1]} GB")))
+            (("waste", "url(#waste)", "Wasted"), ("free", c["free"], "Free")))
+    legend_w = 0
     for r, items in enumerate(rows):
         x, y = pad, ly + r * 20
         for kind, fill, label in items:
-            if fill:
-                out.append(f'<rect x="{x}" y="{y - 9}" width="12" height="10" rx="2" fill="{fill}"/>')
-            else:
-                out.append(f'<rect x="{x}" y="{y - 9}" width="12" height="10" fill="none" '
-                           f'stroke="{c["ink"]}" stroke-width="1.5" stroke-dasharray="3 2"/>')
+            out.append(f'<rect x="{x}" y="{y - 9}" width="12" height="10" rx="2" fill="{fill}"/>')
             out.append(text(x + 18, y, label, c["ink2"], 12))
             x += 18 + len(label) * 6.6 + 28
+        legend_w = max(legend_w, x - 28 - pad)
 
     top = ly + 60
-    # the divider goes after the new job sticking out of the badly packed fat node
+    # the two halves stacked, divided by a line
     pair_w = AXIS_L + 2 * SLIM["cpus"] * PX_CPU + NODE_GAP
-    divider = pad + pair_w + NEW[0] * PX_CPU + 20
-    left, b1 = pair(c, pad, top, "Badly packed",
-                    "Job J cannot run, and the new job fits on neither node.", BAD,
-                    ("cpu", "mem"),
-                    ("slim node", "fat node"))
-    right, b2 = pair(c, divider + 24, top, "Well packed",
-                     "Every job runs, J too, and the new job fits on the fat node.", GOOD,
-                     ("some", "free"), ("fat node",))
-    out += left + right
-    out.append(f'<line x1="{divider:.1f}" y1="{top - 16:.1f}" x2="{divider:.1f}" '
-               f'y2="{max(b1, b2) - 6:.1f}" stroke="{c["rule"]}" stroke-width="1"/>')
-    h = max(b1, b2) + pad
-    width = divider + 24 + pair_w + pad + 8                     # the "64" tick overhangs
+    width = max(pad + pair_w + 8 + pad, legend_w + 2 * pad)
+    upper, b1 = pair(c, pad, top, "Badly packed",
+                     "Job J cannot run: neither node has room for it.", BAD,
+                     ("cpu", "mem"),
+                     waiting=sorted(set(JOBS) - set("".join(BAD.values()))))
+    rule = b1 + 6
+    lower, b2 = pair(c, pad, rule + 34, "Well packed",
+                     "Every job runs, J included, with room for more jobs.", GOOD, ("some", "free"))
+    out += upper + lower
+    out.append(f'<line x1="{pad}" y1="{rule:.1f}" x2="{width - pad:.1f}" y2="{rule:.1f}" '
+               f'stroke="{c["rule"]}" stroke-width="1"/>')
+    h = b2 + pad
     body = "\n".join(out)
     desc = ("A slim node (64 CPUs, 256 GB) and a fat node (64 CPUs, 1024 GB), drawn with "
             "CPUs across and memory up, packed badly and well with the same eleven jobs. "
             "Badly packed: a big high-memory job on the slim node uses up its memory, "
             "leaving 32 CPUs unavailable; low-memory jobs use up the fat node's CPUs, "
-            "wasting 648 GB; job J cannot run and a new 16-CPU, 256 GB job fits on neither. "
+            "wasting 648 GB; job J (16 CPUs, 128 GB) cannot run on either node. "
             "Jobs are labelled A to K. Well packed: every "
-            "job runs, the slim node wastes 60 GB, and the fat node keeps 28 CPUs and "
-            "414 GB free, where the new job fits.")
+            "job runs, J included, the slim node wastes 60 GB, and the fat node keeps "
+            "18 CPUs and 466 GB free for more jobs.")
     return (f'<svg xmlns="http://www.w3.org/2000/svg" width="{width:.0f}" height="{h:.0f}" '
             f'viewBox="0 0 {width:.0f} {h:.0f}" font-family="{FONT}" role="img">\n'
             f'<title>Badly and well packed nodes</title><desc>{desc}</desc>\n{defs}\n'
