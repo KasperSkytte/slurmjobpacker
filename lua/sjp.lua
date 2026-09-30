@@ -27,6 +27,8 @@
     "not batch"   an interactive allocation (salloc, srun)
     "gpu"         the job asks for GPUs
     "reservation" the job runs in a reservation
+    "constraint"  the job asks for node features (--constraint), which sjp
+                  does not know; the site's own rule places it
     "no memory"   --mem=0, all of a node's memory
     "error"       anything raised; the error is logged
 
@@ -222,7 +224,7 @@ local function pin_eligible(job_desc, submit_uid, cpus, tbl, mem_given)
     -- A job with a dependency is treated like any other: if it has not started
     -- by [pin] release_after, sjpd releases the pin.
     if not blank(job_desc.array_inx) then return false end
-    if not blank(job_desc.features) or not blank(job_desc.admin_comment) then return false end
+    if not blank(job_desc.admin_comment) then return false end
     if not blank(job_desc.tres_per_node) then return false end
     if job_desc.min_nodes and job_desc.min_nodes ~= slurm.NO_VAL
        and job_desc.min_nodes > 1 then return false end
@@ -290,6 +292,7 @@ local function place(job_desc, submit_uid)
     if not job_desc.script or job_desc.script == "" then return false, "not batch" end
     if has_gpu(job_desc) then return false, "gpu" end
     if not blank(job_desc.reservation) then return false, "reservation" end
+    if not blank(job_desc.features) then return false, "constraint" end
 
     local cpus = job_desc.min_cpus
     if not cpus or cpus == 0 or cpus == slurm.NO_VAL then cpus = 1 end

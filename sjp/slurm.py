@@ -109,7 +109,7 @@ PENDING_FMT = ("JobID:|,UserName:|,Account:|,NumCPUs:|,MinMemory:|,"
 # *requested* TRES for a job that has not started; its mem is the job's total,
 # which MinMemory is not when the job used --mem-per-cpu.
 QUEUE_FMT = PENDING_FMT + (",StateCompact:|,tres-alloc:|,ReqNodes:|,NodeList:|,"
-                           "SubmitTime:|,NumTasks:|,EligibleTime:|")
+                           "SubmitTime:|,NumTasks:|,EligibleTime:|,Feature:|")
 
 
 def queue(states: str = "PD,R,CF") -> list[dict]:
@@ -118,7 +118,7 @@ def queue(states: str = "PD,R,CF") -> list[dict]:
     out = []
     for line in txt.splitlines():
         f = [x.strip() for x in line.split("|")]
-        if len(f) < 18:
+        if len(f) < 19:
             continue
         try:
             tres = dict(kv.split("=", 1) for kv in f[12].split(",") if "=" in kv)
@@ -131,7 +131,8 @@ def queue(states: str = "PD,R,CF") -> list[dict]:
                             state=f[11], nnodes=nnodes,
                             gpu=any(k.startswith("gres/gpu") for k in tres),
                             req_nodes=f[13], nodelist=f[14], submit=_epoch(f[15]),
-                            ntasks=int(f[16] or 1), eligible=_epoch(f[17])))
+                            ntasks=int(f[16] or 1), eligible=_epoch(f[17]),
+                            features="" if f[18] == "(null)" else f[18]))
         except ValueError:
             continue
     if txt.strip() and not out:

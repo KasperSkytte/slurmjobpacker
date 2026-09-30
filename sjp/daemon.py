@@ -389,9 +389,9 @@ class Daemon:
             if j["jobid"] in self.seen:
                 continue
             actual = [p for p in j["partition"].split(",") if p]
-            # GPU, interactive and other partitions are routed by the plugin
-            # before the table is consulted; sjp has no opinion on them.
-            if j.get("gpu") or not set(actual) & set(s["cap"]):
+            # GPU, --constraint, interactive and other partitions: the plugin
+            # leaves them to the site's rules; sjp has no opinion on them.
+            if j.get("gpu") or j.get("features") or not set(actual) & set(s["cap"]):
                 continue
             self.log("placement", **self.evaluate(j, actual, s))
         self.seen = ids

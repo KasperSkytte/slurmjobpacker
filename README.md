@@ -116,6 +116,7 @@ and a reason when it left the job untouched:
 | `"not batch"` | an interactive job (`salloc`, `srun`) |
 | `"gpu"` | the job asks for GPUs |
 | `"reservation"` | the job runs in a reservation |
+| `"constraint"` | the job asks for node features (`--constraint`) |
 | `"no memory"` | the job asks for all of a node's memory (`--mem=0`) |
 | `"error"` | something went wrong; the error is in the `slurmctld` log |
 
