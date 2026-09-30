@@ -7,7 +7,11 @@
       "release-type": "simple",
       "package-name": "slurmjobpacker",
       "changelog-path": "CHANGELOG.md",
-      "extra-files": ["sjp/__init__.py", "README.md"]
+      "extra-files": [
+        "sjp/__init__.py",
+        "README.md",
+        "ansible-role-slurmjobpacker/defaults/main.yml"
+      ]
     }
   }
 }

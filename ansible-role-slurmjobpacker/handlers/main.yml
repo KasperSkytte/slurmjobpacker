@@ -1,0 +1,16 @@
+---
+- name: Restart sjpd
+  ansible.builtin.systemd:
+    name: sjpd
+    state: restarted
+    daemon_reload: true
+  when:
+    - inventory_hostname == sjp_daemon_host
+    - sjp_service_state == 'started'
+
+# slurmctld loads sjp.lua once, with job_submit.lua; this loads a new version
+- name: Reload sjp.lua in slurmctld
+  ansible.builtin.command: scontrol reconfigure
+  run_once: true
+  changed_when: true
+  when: sjp_reconfigure_slurm | bool

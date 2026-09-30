@@ -1,0 +1,28 @@
+# {{ ansible_managed }}
+[Unit]
+Description=slurmjobpacker control loop
+After=network.target slurmctld.service
+Wants=slurmctld.service
+
+[Service]
+Type=simple
+User={{ sjp_user }}
+Group={{ sjp_user }}
+WorkingDirectory={{ sjp_install_dir }}
+Environment=PYTHONPATH={{ sjp_install_dir }}
+ExecStart={{ sjp_python }} -m sjp.daemon -c {{ sjp_config_dir }}/sjp.toml
+Restart=always
+RestartSec=5
+# The policy table lives on tmpfs; the plugin reads it on every submission.
+RuntimeDirectory=sjp
+RuntimeDirectoryMode=0755
+StateDirectory=sjp
+LogsDirectory=sjp
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/run/sjp /var/log/sjp
+
+[Install]
+WantedBy=multi-user.target

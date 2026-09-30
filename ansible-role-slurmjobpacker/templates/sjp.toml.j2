@@ -1,0 +1,24 @@
+# {{ ansible_managed }}
+# Settings not listed here take sjp's built-in defaults; to see them all:
+#   cd {{ sjp_install_dir }} && {{ sjp_python }} -m sjp.daemon --print-config
+{% macro value(v) -%}
+{%- if v is boolean -%}{{ v | lower }}
+{%- elif v is number -%}{{ v }}
+{%- elif v is string -%}{{ v | to_json }}
+{%- else -%}[{% for x in v %}{{ value(x) }}{{ ", " if not loop.last }}{% endfor %}]
+{%- endif -%}
+{%- endmacro %}
+{% for section, keys in sjp_config.items() %}
+
+[{{ section }}]
+{% for k, v in keys.items() if v is not mapping %}
+{{ k }} = {{ value(v) }}
+{% endfor %}
+{% for k, sub in keys.items() if sub is mapping %}
+
+[{{ section }}.{{ k }}]
+{% for k2, v2 in sub.items() %}
+{{ k2 }} = {{ value(v2) }}
+{% endfor %}
+{% endfor %}
+{% endfor %}

@@ -1,0 +1,25 @@
+---
+- name: Write sjp.toml
+  ansible.builtin.template:
+    src: sjp.toml.j2
+    dest: "{{ sjp_config_dir }}/sjp.toml"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart sjpd
+
+- name: Install the sjpd systemd unit
+  ansible.builtin.template:
+    src: sjpd.service.j2
+    dest: /etc/systemd/system/sjpd.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart sjpd
+
+- name: Enable and start sjpd
+  ansible.builtin.systemd:
+    name: sjpd
+    enabled: "{{ sjp_service_enabled }}"
+    state: "{{ sjp_service_state }}"
+    daemon_reload: true

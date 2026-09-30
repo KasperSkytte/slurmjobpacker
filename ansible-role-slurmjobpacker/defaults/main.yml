@@ -1,0 +1,34 @@
+---
+# Where the checkout goes. Install it on every slurmctld host, so whichever
+# controller is active can load lua/sjp.lua from job_submit.lua.
+sjp_repo: https://github.com/KasperSkytte/slurmjobpacker.git
+sjp_version: v1.3.0  # x-release-please-version
+sjp_install_dir: /opt/slurmjobpacker
+sjp_python: /usr/bin/python3
+
+# sjpd runs on one host only: two would both change the QOS caps and release
+# pins. On the other controllers sjp.place() finds no table and returns false.
+sjp_daemon_host: "{{ ansible_play_hosts_all[0] }}"
+# The user sjpd runs as. In advise and enforce it changes jobs and QOS caps, so
+# it must be a Slurm operator or administrator (sacctmgr modify user ... adminlevel=).
+sjp_user: slurm
+
+# sjp.toml, as {section: {key: value}}; a dict value becomes a sub-table. Only
+# what differs from sjp's defaults is needed; to list them all:
+#   python3 -m sjp.daemon --print-config
+# Partitions, their PriorityTier and the QOS caps are read from Slurm.
+sjp_config_dir: /etc/sjp
+sjp_config:
+  general:
+    mode: observe                  # observe -> advise -> enforce
+
+sjp_service_enabled: true
+sjp_service_state: started
+
+# true creates the disable file: sjp.place() then returns false, so only the
+# rules in your job_submit.lua apply.
+sjp_disabled: false
+
+# Run `scontrol reconfigure` when a new version is checked out, so slurmctld
+# loads the new sjp.lua. Set this once your job_submit.lua calls sjp.
+sjp_reconfigure_slurm: false

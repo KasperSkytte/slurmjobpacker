@@ -1,0 +1,39 @@
+---
+- name: Check that Python is 3.11 or newer
+  ansible.builtin.command: "{{ sjp_python }} -c 'import sys; sys.exit(sys.version_info < (3, 11))'"
+  changed_when: false
+
+- name: Install git
+  ansible.builtin.package:
+    name: git
+    state: present
+
+- name: Check out slurmjobpacker
+  ansible.builtin.git:
+    repo: "{{ sjp_repo }}"
+    dest: "{{ sjp_install_dir }}"
+    version: "{{ sjp_version }}"
+    force: true
+  notify:
+    - Restart sjpd
+    - Reload sjp.lua in slurmctld
+
+- name: Create {{ sjp_config_dir }}
+  ansible.builtin.file:
+    path: "{{ sjp_config_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Set or remove the disable file
+  ansible.builtin.file:
+    path: "{{ sjp_config_dir }}/disable"
+    state: "{{ 'touch' if sjp_disabled else 'absent' }}"
+    mode: "0644"
+    modification_time: preserve
+    access_time: preserve
+
+- name: Install sjpd
+  ansible.builtin.include_tasks: daemon.yml
+  when: inventory_hostname == sjp_daemon_host

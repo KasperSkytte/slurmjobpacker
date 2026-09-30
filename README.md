@@ -79,6 +79,9 @@ It starts in `observe` mode: it only reads the cluster and logs what it would do
 | `advise` | yes | no | no |
 | `enforce` | yes | yes | if `[limits] mode = "global"` |
 
+With Ansible, the example role in [`ansible-role-slurmjobpacker/`](ansible-role-slurmjobpacker/)
+does all of the above.
+
 ## Using sjp from job_submit.lua
 
 Set `JobSubmitPlugins=lua` in `slurm.conf`. Load `sjp.lua` once at the top of your
