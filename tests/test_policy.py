@@ -23,7 +23,6 @@ from sjp import config, policy, daemon
 
 CFG = config.defaults()
 DEMAND = [tuple(x) for x in CFG['policy']['demand']]
-SPEED = {'slim1': 1.0, 'fat1': 1.0, 'slim2': 0.8, 'fat2': 0.8}
 TOTAL = {
     'slim2':  [(192, 1021567)] * 5 + [(256, 1021540), (192, 505529)],
     'fat2': [(192, 2041663), (256, 2041636)],
@@ -51,18 +50,19 @@ check("a 24-CPU/2.2TB job is feasible only on fat1",
       set(huge) == {'fat1'}, ",".join(sorted(huge)))
 
 print("\n2. idle cluster packs by ratio (the cold-start case)")
-idle = policy.choose(1, 32768, TOTAL, scale(0.0), SPEED, DEMAND, 0.25)
+idle = policy.choose(1, 32768, TOTAL, scale(0.0), DEMAND, 0.25)
 check("high-ratio job avoids slim nodes when everything is free",
       not ({'slim2', 'slim1'} & set(idle)), ",".join(idle))
 
-print("\n3. loaded cluster opens up (phi is spent, work term dominates)")
-loaded = policy.choose(1, 32768, TOTAL, scale(0.85), SPEED, DEMAND, 0.25)
-check("same job admitted more widely under load", len(loaded) >= len(idle),
+print("\n3. a nearly full cluster admits anything that fits (phi is spent everywhere)")
+loaded = policy.choose(1, 32768, TOTAL, scale(0.99), DEMAND, 0.25)
+check("same job admitted to every partition that fits it", len(loaded) > len(idle)
+      and set(loaded) == set(policy.feasible(1, 32768, TOTAL)),
       f"idle={len(idle)} loaded={len(loaded)}: {','.join(loaded)}")
 
 print("\n4. starvation guard widens the set")
-narrow = policy.choose(16, 131072, TOTAL, scale(0.5), SPEED, DEMAND, 0.25, starving=False)
-wide = policy.choose(16, 131072, TOTAL, scale(0.5), SPEED, DEMAND, 0.25, starving=True)
+narrow = policy.choose(16, 131072, TOTAL, scale(0.5), DEMAND, 0.25, starving=False)
+wide = policy.choose(16, 131072, TOTAL, scale(0.5), DEMAND, 0.25, starving=True)
 check("starving job gets every feasible partition", len(wide) >= len(narrow),
       f"{len(narrow)} -> {len(wide)}")
 
@@ -71,20 +71,23 @@ d = daemon.Daemon(CFG)
 d.mode = "observe"
 sigs = []
 for frac in (0.0, 0.0, 0.0, 0.5, 0.5, 0.9):
-    tbl = policy.build_table(CFG, TOTAL, scale(frac), SPEED)
+    tbl = policy.build_table(CFG, TOTAL, scale(frac))
     sigs.append(hash(tuple(sorted((k, ",".join(v)) for k, v in tbl.items()))))
 check("identical state -> identical signature", sigs[0] == sigs[1] == sigs[2])
 check("different load -> different signature", len(set(sigs)) > 1,
       f"{len(set(sigs))} distinct across 3 load levels")
 
-print("\n6. static fallback reproduces the site's current rule")
-check("low ratio -> slim",
-      policy.static_fallback(16, 64000, ['slim1','slim2'], ['fat1','fat2']) == ['slim1','slim2'])
-check("high ratio -> fat",
-      policy.static_fallback(1, 32768, ['slim1','slim2'], ['fat1','fat2']) == ['fat1','fat2'])
+print("\n6. sjp places a job only where some node has room for it now")
+free6 = {"a": (8, 64000, ["slim1"]), "b": (64, 32000, ["slim1", "slim2"]),
+         "c": (2, 500000, ["fat1"])}
+check("a node in the partitions has room", policy.has_room(8, 32000, ["slim1"], free6))
+check("room only in other partitions does not count",
+      not policy.has_room(2, 400000, ["slim1", "slim2"], free6))
+check("CPUs and memory must both fit on one node",
+      not policy.has_room(64, 64000, ["slim1", "slim2"], free6))
 
 print("\n7. rendered table is loadable and complete")
-tbl = policy.build_table(CFG, TOTAL, scale(0.3), SPEED)
+tbl = policy.build_table(CFG, TOTAL, scale(0.3))
 lua = policy.render_lua(tbl, CFG, time.time(), 7)
 b = CFG['policy']['buckets']
 expect = (len(b['mem_per_cpu'])+1) * (len(b['cpus'])+1) * (len(b['walltime_h'])+1)
@@ -110,7 +113,7 @@ check("a 2.2TB job is not left with a partition that cannot hold it",
 check("fat1 can hold it", big <= cap['fat1'][1])
 
 print("\n9. plugin_lookup mirrors the plugin's refit")
-tbl = policy.build_table(CFG, TOTAL, scale(0.3), SPEED)
+tbl = policy.build_table(CFG, TOTAL, scale(0.3))
 cap = policy.caps(TOTAL)
 parts, key, refit = policy.plugin_lookup(tbl, cap, CFG, 24, 2200 * 1024, 60)
 check("a 2.2TB job is refit to the only partition that holds it",
@@ -122,8 +125,9 @@ print("\n10. a dry run changes nothing and says what it would have done")
 import io, json, tempfile
 from sjp import slurm
 ran = []
-real_run = slurm._run
+real_run, real_q = slurm._run, slurm.qos_cpu_limits
 slurm._run = lambda args, timeout=10.0: ran.append(args) or ""
+slurm.qos_cpu_limits = lambda qos: (864, 1760)            # what the QOS says
 try:
     cfg = config.defaults()
     cfg["general"]["mode"] = "observe"
@@ -153,19 +157,28 @@ try:
     check("the limit change is logged with its command and reason, not run",
           q.get("executed") is False and q.get("cmd", "").startswith("sacctmgr -i modify qos")
           and "held only by the CPU cap" in q.get("why", ""), json.dumps(q)[:200])
+    j10 = dict(jobid="2", user="u", name="x", cpus=4, mem=8192, req_mem=8192, qos="normal",
+               reason="Resources", partition="slim1", state="PD", timelimit=60)
+    r = d.evaluate(j10, ["slim1"], d.snap)
+    check("a job that fits free space is placed", r["placed"] and r["would"], r["would"])
+    full = dict(d.snap, node_free={n: (0, 0, ps) for n, (_, _, ps) in d.snap["node_free"].items()})
+    r = d.evaluate(j10, ["slim1"], full)
+    check("with no room anywhere it would take, it is left to the site's rule",
+          r["placed"] is False and r["would"] == "" and r["verdict"] == "not placed"
+          and r["pin"] is None, r["why"])
     check("apply() refuses while actuation is off",
           slurm.set_qos_cpu_limits("sjp-test-no-such-qos", 1, 1) is False and ran == [])
     slurm.set_actuation(True)
     check("apply() runs once actuation is on",
           slurm.set_qos_cpu_limits("sjp-test-no-such-qos", 1, 1) is True and len(ran) == 1)
 finally:
-    slurm._run = real_run
+    slurm._run, slurm.qos_cpu_limits = real_run, real_q
     slurm.set_actuation(False)
 
 print("\n10a. QOS caps are raised only in a short pulse, only for jobs they hold")
 from sjp import limits
 cfg = config.defaults()
-lp = limits.LimitPulse(cfg)
+lp = limits.LimitPulse(cfg, "normal", (864, 1760))
 H = cfg["limits"]["hysteresis"]
 out = [lp.observe(0.9, 0, now=t) for t in range(H + 2)]
 check("no pulse while no job is held by the caps", all(o is None for o in out))
@@ -184,6 +197,70 @@ check("a pulse ends early when the cluster fills up",
       lp.observe(0.05, 3, now=500 + H + 5) == (864, 1760), lp.why)
 check("the pulse is released by the reasons squeue really prints",
       slurm.CAP_REASONS == {"QOSMaxCpuPerUserLimit", "MaxCpuPerAccount"})
+
+print("\n10c. each QOS pulses from its own caps, and an interrupted pulse is undone")
+cfg = config.defaults()
+cfg["limits"]["mode"] = "global"
+cfg["limits"]["state_file"] = os.path.join(tempfile.mkdtemp(), "limits.json")
+real_q = slurm.qos_cpu_limits
+live = {"normal": (1000, 2000), "long": (100, 200)}
+slurm.qos_cpu_limits = lambda qos: live[qos]
+try:
+    d = daemon.Daemon(cfg); d.log_fh = io.StringIO()
+    d.resolve_limits()
+    check("each QOS's base caps are read from that QOS",
+          (d.limiter("normal").base_u, d.limiter("long").base_u) == (1000, 100))
+    d.remember_pulse("normal", True)                     # a pulse starts, then sjpd dies
+    live["normal"] = (2000, 4000)                        # the QOS still shows the pulse
+    d2 = daemon.Daemon(cfg); d2.log_fh = io.StringIO()
+    d2.resolve_limits()
+    check("after a crash mid-pulse the recorded base is used, not the raised caps",
+          (d2.limiter("normal").base_u, d2.limiter("normal").base_a) == (1000, 2000))
+    d2.remember_pulse("normal", False)
+    d3 = daemon.Daemon(cfg); d3.log_fh = io.StringIO()
+    d3.resolve_limits()
+    check("once back to base, the QOS is read again", d3.limiter("normal").base_u == 2000)
+    live["nocap"] = (None, None)
+    check("a QOS without caps: nothing to pulse", not d3.limiter("nocap").known
+          and d3.limiter("nocap").observe(0.9, 5) is None)
+finally:
+    slurm.qos_cpu_limits = real_q
+
+print("\n10d. the starvation guard widens long-waiting jobs, and only those")
+cfg = config.defaults()
+d = daemon.Daemon(cfg); d.log_fh = io.StringIO()
+d.snap = dict(total=TOTAL)
+now = time.time()
+real_ac = slurm.admin_comment
+slurm.admin_comment = lambda jid: "" if jid == "8" else ("sjp:pin=n1;from=slim1" if jid == "3"
+                                                        else "sjp:placed")
+def pjob(jid, part, waited_h, cpus=8, mem=32768, reason="Resources", **kw):
+    return dict(dict(jobid=jid, state="PD", reason=reason, partition=part, cpus=cpus,
+                     mem=mem, req_mem=mem, eligible=now - waited_h * 3600, gpu=False,
+                     req_nodes=""), **kw)
+jobs = [pjob("1", "slim1", 5),                     # slim, over its 4 h budget
+        pjob("2", "slim1", 2),                     # within budget
+        pjob("3", "fat1", 2, cpus=1, mem=65536),   # fat, over its 1 h budget
+        pjob("4", "slim1", 9, reason="QOSMaxCpuPerUserLimit"),   # widening cannot help
+        pjob("5_[1-9]", "slim1", 9),               # array: left alone
+        pjob("6", "gpu", 9),                       # not a batch partition sjp assigns
+        pjob("7", "slim1", 9, req_nodes="node12"), # pinned: left alone
+        pjob("8", "slim1", 9)]                     # placed by the site's own rule
+try:
+    d.widen_starving(jobs, now)
+finally:
+    slurm.admin_comment = real_ac
+recs = [json.loads(l) for l in d.log_fh.getvalue().splitlines()]
+w = {r["jobid"]: r for r in recs if r.get("action") == "widen_partitions"}
+check("slim job over its budget, and fat job over its shorter one, are widened; "
+      "a job sjp did not place is not",
+      sorted(w) == ["1", "3"], str(sorted(w)))
+check("widened to every partition that can hold the job",
+      w["1"]["after"] == ",".join(sorted(policy.feasible(8, 32768, TOTAL))), w["1"]["after"])
+check("a dry run only says what it would do", not w["1"]["executed"]
+      and w["1"]["cmd"].startswith("scontrol update jobid=1 partition="))
+d.widen_starving(jobs, now)
+check("each job is considered once", d.log_fh.getvalue().count("widen_partitions") == 2)
 
 print("\n10b. the process launcher itself refuses writes while actuation is off")
 import subprocess
@@ -272,12 +349,17 @@ check("arrays, multi-node, user nodelists and held jobs are never pinned",
                                ("5", 1, "node01", "None"), ("5", 1, "", "JobHeldUser")))
       and policy.pin_eligible(dict(jobid="5", nnodes=1, req_nodes="", reason="None", ntasks=100))
       and policy.pin_eligible(dict(jobid="5", nnodes=1, req_nodes="", reason="None", ntasks=1)) is None)
-tbl = policy.build_table(CFG, TOTAL, scale(0.3), SPEED)
+tbl = policy.build_table(CFG, TOTAL, scale(0.3))
 lua = policy.render_lua(tbl, CFG, time.time(), 1, TOTAL,
-                        dict(nodes=nf, tiers=TIERS, room={1000: 64}))
-check("pin data is emitted when pinning", 'pin = {' in lua and '["n16"] = {256, 1500000, "slim1"}' in lua
-      and '[1000] = 64' in lua)
-check("and not otherwise", 'pin = {' not in policy.render_lua(tbl, CFG, time.time(), 1, TOTAL))
+                        dict(nodes=nf, tiers=TIERS,
+                             room=dict(by_qos={"normal": {1000: 64}}, user_qos={1000: "normal"})))
+check("free space and pin data are emitted", 'pin = {' in lua and 'enabled = true' in lua
+      and '["n16"] = {256, 1500000, "slim1"}' in lua
+      and '["normal"] = {[1000] = 64}' in lua and '[1000] = "normal"' in lua)
+lua = policy.render_lua(tbl, CFG, time.time(), 1, TOTAL, dict(nodes=nf, tiers=TIERS,
+                        room=None, enabled=False))
+check("free space is emitted without pinning too, marked as such",
+      'enabled = false' in lua and '["n16"] = {256, 1500000, "slim1"}' in lua)
 
 print("\n13. stale pins are released, and only sjp's own")
 real_ac, real_apply = slurm.admin_comment, slurm.apply

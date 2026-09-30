@@ -34,9 +34,6 @@ DEFAULTS: dict = {
         # Ignore nodes with a GPU (Gres or CfgTRES gres/gpu); a partition left
         # with no nodes is dropped. GPU jobs are routed by the plugin, not here.
         "exclude_gpu_nodes": True,
-        # Relative throughput per partition, for the work term. 1.0 = fastest.
-        "speed": {},
-        "default_speed": 1.0,
     },
     "policy": {
         # Demand mix: (MB per CPU, weight) -- how much memory per CPU arriving
@@ -46,7 +43,6 @@ DEFAULTS: dict = {
                    [7680, 0.25], [14178, 0.15], [30720, 0.10]],
         "demand_median": 4267,        # for the stranding metric only
         "tolerance": 0.25,            # extra partitions admitted, CPUs of phi per job CPU
-        "ratio_threshold": 6000,      # fallback static rule, MB/CPU
         "buckets": {
             "mem_per_cpu": [1024, 2048, 4096, 6144, 8192, 12288, 24576],
             "cpus": [1, 4, 8, 16, 32, 64, 128],
@@ -68,27 +64,33 @@ DEFAULTS: dict = {
                                   # by this much in |log ratio| (0.1 ~ 10%)
         "release_after": 60.0,    # seconds a pinned job may stay pending before sjpd
                                   # drops the pin and restores its partitions
-        "max_age": 10.0,          # plugin pins only from node state this fresh
+        "max_age": 10.0,          # plugin places and pins only from node state this fresh
     },
     "starvation": {
-        # Wait budget per class, hours. Beyond this a job's feasible set is
-        # widened and competing cohorts are narrowed until it starts.
+        # A job placed in few partitions can wait while another partition would
+        # take it. In enforce mode, a job sjp placed, pending for Resources or Priority
+        # longer than its class's budget (hours since it became eligible) is
+        # widened to every batch partition that can hold it. Not arrays, GPU jobs,
+        # reservations or pinned jobs.
+        "enabled": True,
         "budget_hours": {"fat": 1.0, "slim": 4.0},
         "fat_ratio_threshold": 6000,  # MB/CPU above which a job counts as "fat"
     },
     "limits": {
         # off | global | perjob
         #   global - when jobs are held only by the per-user or per-account CPU
-        #            cap and would fit in idle hardware, raise both caps for
-        #            EVERYONE for pulse_seconds, then put them back to base. The
-        #            caps are at base the rest of the time, and after a restart.
+        #            cap of their QOS and would fit in idle hardware, raise both
+        #            caps of that QOS, for EVERYONE, for pulse_seconds, then put
+        #            them back. The caps are read from each QOS itself; they are at
+        #            base the rest of the time, and after a restart.
         #   perjob - move individual pending jobs to a flex QOS. NOT YET
         #            IMPLEMENTED: currently changes nothing.
-        # Off by default: it edits a QOS. Set the base caps to your QOS's values.
+        # Off by default: it edits QOSes.
         "mode": "off",
-        "qos_name": "normal",         # the QOS whose MaxTRESPU/MaxTRESPA are pulsed
-        "base_cpu_per_user": 864,
-        "base_cpu_per_account": 1760,
+        # While a pulse is on, the real caps are kept here, so that if sjpd stops
+        # mid-pulse the next start restores them rather than taking the raised
+        # ones as base.
+        "state_file": "/var/lib/sjp/limits.json",
         "ceiling": 2.0,               # the raised caps, as a multiple of base
         "raise_above": 0.25,          # idle placeable fraction needed to pulse
         "lower_below": 0.10,          # end a pulse early if idle falls below this

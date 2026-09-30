@@ -15,124 +15,121 @@ To pack a cluster efficiently when compute nodes run many jobs simultaneously, t
 
 ## How it works
 
-A daemon, `sjpd`, reads the cluster every second; a small Lua module, called from your
-`job_submit.lua`, applies its decisions when a job is submitted. For each job it:
+A daemon, `sjpd`, reads the cluster every second. A small Lua module, `sjp.lua`, is
+called from your `job_submit.lua` and places each batch job when it is submitted:
 
-- chooses the partitions it may use, by how well it fits the free space in each;
-- when it can start at once, pins its node: inside the highest-ranked partition
-  (PriorityTier) with room, the node whose free memory per CPU best matches the job's;
-- optionally, lifts the per-user and per-account CPU caps for a minute when jobs held
-  only by those caps would fit in idle hardware.
+- it chooses the partitions where the job fits the free space best;
+- if the job can start now, it also chooses the node (in the highest `PriorityTier`
+  partition with room, the node whose free memory per CPU best matches the job's);
+- it returns `true` when it placed the job, or `false` and a reason (e.g. `"no room"`)
+  when it could not, leaving the job untouched. Your script decides what to do then,
+  e.g. apply its own fallback rule (see [Using sjp from job_submit.lua](#using-sjp-from-job_submitlua)).
 
-Slurm still schedules, orders the queue and applies fair-share. If `sjpd` stops, jobs
-keep their partition, or get a fallback rule you set.
+```mermaid
+flowchart TD
+    sjpd["sjpd<br/>reads each node's free CPUs and memory,<br/>i.e. its free memory per CPU"] -. "every second" .-> table[("placement table")]
+    submit(["sbatch"]) --> own
+    subgraph lua ["job_submit.lua (on slurmctld)"]
+        own["your own rules"] --> place{"sjp.place()<br/>does a node have room<br/>for the job now?"}
+        place -- "no: returns false, reason" --> fallback["your fallback rule"]
+    end
+    table -.-> place
+    place -- "yes: returns true" --> parts["sets partition and node<br/>matching the job's memory per CPU"]
+    parts --> slurm(["Slurm schedules the job"])
+    fallback --> slurm
+```
+
+Slurm still schedules, orders the queue and applies fair-share. Optionally, `sjpd` also
+widens the partitions of sjp's jobs that have waited long, and briefly lifts per-user CPU
+caps when jobs held only by those caps would fit on idle nodes.
 
 ## Installation
 
 Needs Python 3.11+ (standard library only). Tested on Slurm 26.05.
-
-| mode | reads the cluster | chooses partitions | pins nodes | pulses QOS caps |
-|---|---|---|---|---|
-| `observe` (default) | yes | no | no | no |
-| `advise` | yes | yes | no | no |
-| `enforce` | yes | yes | yes | if `[limits] mode = "global"` |
-
-In `observe`, sjp runs only read-only Slurm commands (anything else is refused before it
-starts, even under an admin account) and logs what it would do.
-
-**1. Install**
 
 ```sh
 sudo git clone https://github.com/kasperskytte/slurmjobpacker /opt/slurmjobpacker
 cd /opt/slurmjobpacker && python3 tests/test_policy.py        # ends in ALL PASS
 ```
 
-**2. Dry run**, as your own user, from that directory:
+**Try it without changing anything.** As your own user:
 
 ```sh
 python3 -m sjp.daemon --dry-run --state-dir ~/sjp-dry
 tail -f ~/sjp-dry/sjp.log                                      # in another terminal
 ```
 
-The log has one entry per job: where Slurm put it, where sjp would have, and why.
-Its first entry lists the partitions sjp found (interactive partitions and GPU nodes are
-left out; see `[topology]`). `python3 -m sjp.report ~/sjp-dry/decisions.jsonl --summary`
-totals it up.
+The log shows, for each new job, where Slurm put it and where sjp would have, and why.
 
-**3. Configure and run the service** (still `observe`):
+**Run the service.**
 
 ```sh
 sudo mkdir -p /etc/sjp
 python3 -m sjp.daemon --print-config | sudo tee /etc/sjp/sjp.toml
-python3 -m sjp.fit --since 2026-01-01    # your demand mix, for [policy] in sjp.toml
 sudo cp systemd/sjpd.service /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now sjpd
 ```
 
-Every setting is documented in the generated file. To use the QOS cap pulse, set
-`[limits] mode = "global"` and the base caps to your QOS's values.
+It starts in `observe` mode: it only reads the cluster and logs what it would do. Set
+`mode` in `sjp.toml` and restart `sjpd` to go further:
 
-**4. Go live.** Enable Lua in `slurm.conf` (`JobSubmitPlugins=lua`), then:
+| mode | chooses partitions | pins nodes, widens long waits | lifts CPU caps |
+|---|---|---|---|
+| `observe` (default) | no | no | no |
+| `advise` | yes | no | no |
+| `enforce` | yes | yes | if `[limits] mode = "global"` |
 
-- **If the cluster has a `job_submit.lua`,** load sjp in it and call `sjp.place()` where
-  it chooses a batch job's partition. Everything else in your script stays as it is:
+## Using sjp from job_submit.lua
 
-  ```lua
-  local sjp = dofile("/opt/slurmjobpacker/lua/sjp.lua")   -- once, at the top
+Set `JobSubmitPlugins=lua` in `slurm.conf`. Load `sjp.lua` once at the top of your
+`job_submit.lua`, and call `sjp.place()` where you choose a batch job's partition:
 
-  function slurm_job_submit(job_desc, part_list, submit_uid)
-      -- ... your own rules: reservations, GPU jobs, interactive jobs ...
-      return sjp.place(job_desc, submit_uid)                  -- partition (and node)
-  end
-  ```
+```lua
+local ok, sjp = pcall(dofile, "/opt/slurmjobpacker/lua/sjp.lua")
+if not ok then sjp = nil end        -- without sjp, your own rules still apply
 
-- **If it has none,** copy the example `lua/job_submit.lua` next to `slurm.conf` (usually `/etc/slurm/job_submit.lua`). It sends `salloc` and
-  `srun` jobs to an `interactive` partition if there is one, and the rest to sjp.
+function slurm_job_submit(job_desc, part_list, submit_uid)
+    -- your own rules first: reservations, GPU jobs, interactive jobs, ...
 
-Run `scontrol reconfigure`. `sjp.place()` only sets the partition (and, for a pinned job,
-the node), never rejects a job, and leaves interactive, GPU and reservation jobs alone.
-Without a table from `sjpd` the job keeps its partition, unless you set a fallback:
-`sjp.config.slim` and `sjp.config.fat`, used below and above `sjp.config.ratio_threshold`
-MB per CPU (see the top of `lua/sjp.lua`). Then set `mode = "advise"` in `sjp.toml` and
-restart `sjpd`, and later `mode = "enforce"`, which also pins nodes and pulses caps.
+    if sjp and sjp.place(job_desc, submit_uid) then
+        return slurm.SUCCESS         -- placed by sjp
+    end
 
-**Backing out.** `sudo touch /etc/sjp/disable` makes `sjp.place()` fall back on the next
-submission; removing the call from `job_submit.lua` takes sjp out entirely. When `sjpd`
-stops it puts the caps back to base; pins on jobs still pending stay, and can be
-released with:
-
-```sh
-for j in $(squeue -h -t PD -o %i); do
-  c=$(scontrol show job $j | grep -o 'AdminComment=sjp:pin=[^ ]*') || continue
-  scontrol update jobid=$j reqnodelist= && scontrol update jobid=$j partition=${c##*from=}
-done
+    -- not placed: your fallback, for example by memory per CPU
+    job_desc.partition = "slim1,slim2"
+    return slurm.SUCCESS
+end
 ```
 
-**Upgrading.** `sudo git fetch --tags && sudo git checkout vX.Y.Z`, restart `sjpd`, and
-run `scontrol reconfigure` so `slurmctld` loads the new `sjp.lua`.
+Then run `scontrol reconfigure` (again after every sjp upgrade). If you have no
+`job_submit.lua` yet, copy [`lua/job_submit.lua`](lua/job_submit.lua) next to
+`slurm.conf` and set the few variables at its top.
 
-## How it decides...
+`sjp.place()` never rejects a job. It returns `true` when it placed the job, or `false`
+and a reason when it left the job untouched:
 
-**Partitions.** For every job shape (memory per CPU, CPUs, walltime), sjpd scores each
-partition by how much *placeable capacity* the job would destroy: free space measured
-against the mix of jobs currently running on the cluster (`[policy] demand`). The cheapest
-partitions, within a tolerance, are allowed; Slurm tries them in `PriorityTier` order.
-`sjp.place()` looks the job up in this table and drops any partition too small for it.
+| reason | meaning |
+|---|---|
+| `"no room"` | no node that could hold the job has room for it right now |
+| `"no table"` | `sjpd` is not running, or `/etc/sjp/disable` exists |
+| `"stale"` | `sjpd` has not updated its data in the last few seconds |
+| `"not batch"` | an interactive job (`salloc`, `srun`) |
+| `"gpu"` | the job asks for GPUs |
+| `"reservation"` | the job runs in a reservation |
+| `"no memory"` | the job asks for all of a node's memory (`--mem=0`) |
+| `"error"` | something went wrong; the error is in the `slurmctld` log |
 
-**Node pins.** Only for a job that can start at once, and only plain ones (one node, an
-explicit memory request; no `--nodelist`, `--exclude`, `--constraint`, `--exclusive`,
-hold or array). Among the
-nodes that destroy the least capacity, the one whose free memory per CPU is closest to
-the job's wins; if they are all about equal, Slurm chooses. The job is marked in its
-`AdminComment`, and if it has not started within a minute the pin is removed and its
-partitions restored. A user's own `--nodelist` is never touched.
+Use the reason if you want different fallbacks, for example:
 
-**QOS caps.** Raised to twice the base, for everyone, for 60 s at a time, only when jobs
-held by the per-user or per-account CPU cap would fit in idle hardware; then back to base,
-with 5 minutes before the next pulse. Jobs started during a pulse keep running, so this
-is kept short: a user submitting a large pool cannot take over the cluster.
+```lua
+local placed, why = sjp.place(job_desc, submit_uid)
+if not placed and why == "no room" then ... end
+```
 
-All timings and thresholds are in `sjp.toml`.
+A placed job is marked `sjp:...` in its `AdminComment`.
+
+**Turning it off.** `sudo touch /etc/sjp/disable` makes `sjp.place()` return `false` from
+the next submission, so only your own rules apply.
 
 ## Analysing your own cluster
 
@@ -145,25 +142,18 @@ python3 tools/normalize.py accounting.sqlite
 cp tools/site.example.toml site.toml                          # describe your partitions
 python3 tools/stranding.py accounting.sqlite                  # stranded CPU-hours
 python3 tools/simulate.py --db accounting.sqlite --start 2026-03-09 --days 14
-python3 tools/figure_mismatch.py accounting.sqlite "2026-07-20 13:12" docs/img/
 ```
-
-`simulate.py` replays the real arrival trace against the current rule and against sjp.
-Compare policies within one run; its absolute numbers are not calibrated.
 
 ## Development
 
 ```sh
-python3 tests/test_policy.py          # behavioural tests; start no processes
-tests/testcluster.sh start            # throwaway slurmctld as your user, no slurmd
+python3 tests/test_policy.py          # unit tests
+tests/testcluster.sh start            # throwaway slurmctld as your user
 export SLURM_CONF=/tmp/sjp-cluster/slurm.conf
 python3 -m sjp.daemon -c /tmp/sjp-cluster/sjp.toml
 tests/testcluster.sh stop
 ```
 
-The test cluster's nodes are cloud nodes that never boot, so jobs are really allocated
-(and stay `CONFIGURING`) and you can see the partitions and node sjp chose.
-
 Releases are made by [release-please](https://github.com/googleapis/release-please) from
-[Conventional Commits](https://www.conventionalcommits.org/) on `main`: `fix:` for a
-patch, `feat:` for a minor release.
+[Conventional Commits](https://www.conventionalcommits.org/): `fix:` for a patch, `feat:`
+for a minor release.

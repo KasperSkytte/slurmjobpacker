@@ -64,6 +64,10 @@ def job(r) -> str:
                 f" [recomputed now: would pin {r['pin']}, {r['pin_why']}]"))
         return "\n".join(lines)
 
+    if r.get("placed") is False:
+        lines.append(f"    partitions   Slurm: {r['actual']:<22} sjp: not placed (no node "
+                     "that could take it has room now; left to the site's rule)")
+        return "\n".join(lines)
     if r["state"] == "PD":
         same = set(r["actual"].split(",")) == set(r["would"].split(","))
         diff = "same" if same else "; ".join(r.get("differences") or ["different"])
@@ -93,6 +97,10 @@ def action(r) -> str | None:
         verb = _did(r, "released", "would release", "tried to release")
         return (f"{t}  job {r['jobid']}: {verb} its pin to {r['node']}, putting it back "
                 f"in partitions {r['parts']}: {r['why']}\n    command: {r['cmd']}" + _blocked(r))
+    if a == "widen_partitions":
+        verb = _did(r, "widened", "would widen", "tried to widen")
+        return (f"{t}  job {r['jobid']}: {verb} its partitions {r['before']} -> "
+                f"{r['after']}: {r['why']}\n    command: {r['cmd']}" + _blocked(r))
     if a == "write_policy_table" and r.get("changes"):
         verb = _did(r, "updated", "would update", "tried to update")
         n = len(r["changes"])

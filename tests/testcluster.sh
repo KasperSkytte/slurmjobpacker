@@ -78,8 +78,9 @@ EOF
   # checkout, pointed at this cluster's paths, with a slim/fat fallback.
   sed -e "s#^local SJP = .*#local SJP = \"$REPO/lua/sjp.lua\"#" \
       -e 's#^local GPU_PARTITION = ""#local GPU_PARTITION = "gpu"#' \
-      -e "s#^    -- sjp.config.slim = .*#    sjp.config.slim, sjp.config.fat = \"slim1,slim2\", \"fat1,fat2\"#" \
-      -e "s#^    -- sjp.config.fat  = .*#    sjp.config.table_path, sjp.config.disable_path = \"$D/policy.lua\", \"$D/disable\"#" \
+      -e 's#^local SLIM = ""#local SLIM = "slim1,slim2"#' \
+      -e 's#^local FAT = ""#local FAT = "fat1,fat2"#' \
+      -e "s#^    -- sjp.config.table_path = .*#    sjp.config.table_path, sjp.config.disable_path = \"$D/policy.lua\", \"$D/disable\"#" \
       "$REPO/lua/job_submit.lua" > "$D/job_submit.lua"
 
   cat > "$D/sjp.toml" <<EOF
@@ -91,11 +92,6 @@ disable_file = "$D/disable"
 # Partitions are discovered: interactive is dropped by name, gpu because
 # its only node has a GPU. Nothing is listed by hand.
 [topology]
-[topology.speed]
-slim1 = 1.0
-fat1 = 1.0
-slim2 = 0.8
-fat2 = 0.8
 EOF
 
   slurmctld -f "$D/slurm.conf" -D >> "$D/log/ctld.out" 2>&1 &

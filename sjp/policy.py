@@ -35,12 +35,14 @@ def feasible(cpus: int, mem_mb: int, nodes_by_part) -> list[str]:
             if any(c >= cpus and m >= mem_mb for c, m in nodes)]
 
 
-def score_partitions(cpus, mem_mb, nodes_by_part, free_by_part, speed, demand):
-    """cost(p) = phi destroyed - speed(p) x cpus, best (lowest) first.
+def score_partitions(cpus, mem_mb, nodes_by_part, free_by_part, demand):
+    """cost(p) = placeable capacity (phi) the job destroys there, best (lowest) first.
 
-    Idle cluster: phi is large, so preserving it dominates and placement comes out
-    ratio-matched. Busy cluster: phi is near zero, the work term dominates, and
-    anything that fits is admitted. No mode switch, no pressure knob.
+    Idle cluster: phi is large and differs between partitions, so placement comes
+    out ratio-matched. Busy cluster: phi is near zero everywhere, every partition
+    falls within choose()'s tolerance, and anything that fits is admitted. No mode
+    switch, no pressure knob. Which admitted partition Slurm tries first is left
+    to PriorityTier.
     """
     out = []
     for p in feasible(cpus, mem_mb, nodes_by_part):
@@ -49,9 +51,8 @@ def score_partitions(cpus, mem_mb, nodes_by_part, free_by_part, speed, demand):
             if fc < cpus or fm < mem_mb:
                 continue
             loss = phi_node(fc, fm, demand) - phi_node(fc - cpus, fm - mem_mb, demand)
-            c = loss - speed.get(p, 1.0) * cpus
-            if best is None or c < best:
-                best = c
+            if best is None or loss < best:
+                best = loss
         if best is not None:
             out.append((best, p))
     out.sort()
@@ -69,7 +70,7 @@ def largest_partitions(nodes_by_part) -> list[str]:
     return [p for p, v in nodes_by_part.items() if v and max(m for _, m in v) == best]
 
 
-def choose(cpus, mem_mb, nodes_by_part, free_by_part, speed, demand,
+def choose(cpus, mem_mb, nodes_by_part, free_by_part, demand,
            tolerance=0.25, starving=False):
     """The feasible *set* to hand Slurm. Slurm's PriorityTier still orders it.
 
@@ -77,7 +78,7 @@ def choose(cpus, mem_mb, nodes_by_part, free_by_part, speed, demand,
     can hold (e.g. 192 CPUs at 36 GB/CPU = 6.75 TB), and those must still resolve
     to a real partition so the user gets Slurm's normal error.
     """
-    scored = score_partitions(cpus, mem_mb, nodes_by_part, free_by_part, speed, demand)
+    scored = score_partitions(cpus, mem_mb, nodes_by_part, free_by_part, demand)
     if not scored:
         return sorted(feasible(cpus, mem_mb, nodes_by_part)
                       or largest_partitions(nodes_by_part))
@@ -181,9 +182,12 @@ def pin_eligible(job) -> str | None:
     return None
 
 
-def static_fallback(cpus, mem_mb, slim, fat, threshold=6000):
-    """What the plugin does when the table is missing, stale or unparsable."""
-    return list(slim) if mem_mb / max(cpus, 1) < threshold else list(fat)
+def has_room(cpus, mem_mb, parts, node_free) -> bool:
+    """Whether some node in these partitions has room for the job now.
+    Mirrors the plugin's has_room: it places a job only if so."""
+    allowed = set(parts)
+    return any(fc >= cpus and fm >= mem_mb and allowed & set(ps)
+               for fc, fm, ps in node_free.values())
 
 
 # ---------------------------------------------------------------- bucket table
@@ -194,7 +198,7 @@ def bucket_index(value, edges) -> int:
     return i
 
 
-def build_table(cfg, nodes_by_part, free_by_part, speed):
+def build_table(cfg, nodes_by_part, free_by_part):
     """Precompute the whole decision surface as (mpc, cpu, walltime) -> partitions.
 
     ~300 rows. Computed here, out of band; the plugin only indexes it.
@@ -207,7 +211,7 @@ def build_table(cfg, nodes_by_part, free_by_part, speed):
     for i in range(len(mpc_e) + 1):
         for j in range(len(cpu_e) + 1):
             cpus, mem = bucket_shape(cfg, i, j)
-            parts = choose(cpus, mem, nodes_by_part, free_by_part, speed, demand, tol)
+            parts = choose(cpus, mem, nodes_by_part, free_by_part, demand, tol)
             for k in range(len(wt_e) + 1):
                 # walltime does not change feasibility, only the phi horizon,
                 # which is folded into free_by_part before this is called
@@ -290,10 +294,12 @@ def render_lua(table, cfg, generated_at, version, nodes_by_part=None, pin=None) 
 
 
 def render_pin(cfg, pin) -> list[str]:
-    """What the plugin needs to choose a node: free space per node, partition
-    ranks, the demand mix for phi, and each user's room under the CPU cap."""
+    """Free space per node, which the plugin checks every job against; and what
+    it needs to choose a node: partition ranks, the demand mix for phi, and
+    each user's room under the CPU caps. enabled says whether to pin at all."""
     c = cfg["pin"]
-    out = ["  pin = {", f"    max_age = {c['max_age']:.0f},",
+    out = ["  pin = {", "    enabled = %s," % str(pin.get("enabled", True)).lower(),
+           f"    max_age = {c['max_age']:.0f},",
            f"    min_gain = {c['min_gain']},",
            f"    min_ratio_gain = {c['min_ratio_gain']},",
            "    demand = {%s}," % ", ".join("{%s, %s}" % (q, w)
@@ -306,9 +312,15 @@ def render_pin(cfg, pin) -> list[str]:
         out.append('      ["%s"] = {%d, %d, "%s"},' % (n, fc, fm, ",".join(parts)))
     out += ["    },"]
     if pin.get("room") is not None:
-        out += [f'    cap_qos = "{cfg["limits"]["qos_name"]}",', "    room = {"]
-        for uid, left in sorted(pin["room"].items()):
-            out.append("      [%d] = %d," % (uid, left))
-        out += ["    },"]
+        # CPUs each user has left under the per-user cap, per QOS; and the QOS
+        # a user's running jobs are in, for jobs submitted without --qos
+        out.append("    room = {")
+        for qos, users in sorted(pin["room"]["by_qos"].items()):
+            out.append('      ["%s"] = {%s},' % (qos, ", ".join(
+                "[%d] = %d" % (u, left) for u, left in sorted(users.items()))))
+        out += ["    },", "    user_qos = {"]
+        for uid, qos in sorted(pin["room"]["user_qos"].items()):
+            out.append('      [%d] = "%s",' % (uid, qos))
+        out.append("    },")
     out.append("  },")
     return out

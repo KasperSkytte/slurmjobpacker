@@ -2,22 +2,33 @@
   slurmjobpacker - the placement module for job_submit.lua
 
   Load it from your cluster's own job_submit.lua and call sjp.place() where the
-  partition (and node) should be chosen:
+  partition (and node) should be chosen. It returns true if it placed the job,
+  or false and a reason if not, leaving the job untouched; then your own rule
+  applies:
 
-      local sjp = dofile("/opt/slurmjobpacker/lua/sjp.lua")
+      local ok, sjp = pcall(dofile, "/opt/slurmjobpacker/lua/sjp.lua")
+      if not ok then sjp = nil end
 
       function slurm_job_submit(job_desc, part_list, submit_uid)
           -- ... your own rules ...
-          return sjp.place(job_desc, submit_uid)
+          if sjp and sjp.place(job_desc, submit_uid) then return slurm.SUCCESS end
+          -- ... your fallback, e.g. slim or fat partitions by memory per CPU ...
+          return slurm.SUCCESS
       end
 
-  sjp.place() looks the job up in the table sjpd keeps in /run/sjp and sets its
-  partitions -- and, when it can start at once, its node. It only ever changes
-  job_desc.partition, and for a pinned job req_nodes and admin_comment; it never
-  rejects a job and always returns slurm.SUCCESS. It leaves alone interactive
-  allocations (no job script), GPU jobs and jobs in a reservation. If the table
-  is missing, stale or unparsable, the disable file exists, or anything raises,
-  the job gets the fallback in sjp.config, or keeps its partition if there is none.
+  sjp.place() places a batch job only where it can start: when some node in a
+  partition that can hold it has room for it right now. It then sets the job's
+  partitions -- and, when the job can start at once, its node -- from the
+  table sjpd keeps in /run/sjp, and marks it in admin_comment ("sjp:..."). It
+  never rejects a job. It does not place (returns false):
+    "no room"     no node that could take the job has room for it now
+    "no table"    sjpd is not running, or the disable file exists
+    "stale"       sjpd has not refreshed the table or free space recently
+    "not batch"   an interactive allocation (salloc, srun)
+    "gpu"         the job asks for GPUs
+    "reservation" the job runs in a reservation
+    "no memory"   --mem=0, all of a node's memory
+    "error"       anything raised; the error is logged
 
   slurmctld loads this file once, with your job_submit.lua; after upgrading
   sjp, run `scontrol reconfigure` to load the new version.
@@ -25,19 +36,10 @@
 
 local sjp = {}
 
--- Override any of these after loading, e.g. sjp.config.slim = "slim1,slim2".
+-- Where sjpd writes; override only if sjp.toml moves them.
 sjp.config = {
     table_path = "/run/sjp/policy.lua",    -- <state_dir>/policy.lua in sjp.toml
     disable_path = "/etc/sjp/disable",     -- disable_file in sjp.toml
-    -- Fallback when sjp has no table: jobs asking less than ratio_threshold MB
-    -- per CPU get slim, the rest fat (comma-separated partition lists). Empty:
-    -- the job keeps the partition it has.
-    slim = "",
-    fat = "",
-    ratio_threshold = 6000,
-    -- true: sjp places every batch job, including ones submitted with
-    -- --partition (users often choose wrongly). false: those keep theirs.
-    override_user_partition = true,
 }
 
 local cache = { body = nil, tbl = nil }
@@ -75,14 +77,6 @@ local function bucket(value, edges)
         if value >= edges[k] then i = i + 1 else break end
     end
     return i
-end
-
-local function static_choice(mem_mb, cpus)
-    local c = sjp.config
-    local parts = c.fat
-    if (mem_mb / cpus) < c.ratio_threshold then parts = c.slim end
-    if parts == "" then return nil end
-    return parts
 end
 
 -- The bucket table cannot answer feasibility: its top shape buckets are
@@ -216,10 +210,11 @@ local function blank(v) return v == nil or v == "" end
 -- Pin only plain jobs that can start the moment they are submitted.
 local function pin_eligible(job_desc, submit_uid, cpus, tbl, mem_given)
     local pin = tbl.pin
+    if type(pin) ~= "table" or not pin.enabled then return false end
     -- Without a memory request Slurm applies its own default, which sjp cannot
     -- see, so it cannot know whether the job fits the node.
     if not mem_given then return false end
-    if type(pin) ~= "table" or type(pin.nodes) ~= "table" then return false end
+    if type(pin.nodes) ~= "table" then return false end
     if not tbl.generated_at or (os.time() - tbl.generated_at) > pin.max_age then
         return false
     end
@@ -240,9 +235,13 @@ local function pin_eligible(job_desc, submit_uid, cpus, tbl, mem_given)
     if job_desc.begin_time and job_desc.begin_time > os.time() then return false end
     if job_desc.priority == 0 then return false end                  -- held
     if job_desc.shared == 0 then return false end                    -- --exclusive
-    -- At the per-user CPU cap it would not start whichever node it got.
-    if type(pin.room) == "table" and (blank(job_desc.qos) or job_desc.qos == pin.cap_qos) then
-        local left = pin.room[math.floor(submit_uid)]
+    -- At the per-user CPU cap of its QOS it would not start whichever node it
+    -- got. Without --qos, assume the QOS the user's running jobs are in.
+    if type(pin.room) == "table" then
+        local uid = math.floor(submit_uid)
+        local qos = job_desc.qos
+        if blank(qos) and type(pin.user_qos) == "table" then qos = pin.user_qos[uid] end
+        local left = qos and pin.room[qos] and pin.room[qos][uid]
         if left and left < cpus then return false end
     end
     return true
@@ -269,59 +268,78 @@ local function has_gpu(job_desc)
     return false
 end
 
+-- Whether some node in the given partitions has room for the job right now,
+-- from the free space sjpd publishes with the table; nil if that is too old.
+local function has_room(tbl, parts, cpus, mem)
+    local pin = tbl.pin
+    if type(pin) ~= "table" or type(pin.nodes) ~= "table" then return true end
+    if (os.time() - (tbl.generated_at or 0)) > (pin.max_age or 10) then return nil end
+    local allowed = {}
+    for p in string.gmatch(parts, "[^,]+") do allowed[p] = true end
+    for _, n in pairs(pin.nodes) do
+        if n[1] >= cpus and n[2] >= mem then
+            for p in string.gmatch(n[3], "[^,]+") do
+                if allowed[p] then return true end
+            end
+        end
+    end
+    return false
+end
+
 local function place(job_desc, submit_uid)
-    -- Left alone: interactive allocations (salloc, srun), GPU jobs, jobs in a
-    -- reservation, and, if so configured, jobs that chose their partition.
-    if not job_desc.script or job_desc.script == "" then return end
-    if has_gpu(job_desc) or not blank(job_desc.reservation) then return end
-    if not sjp.config.override_user_partition and not blank(job_desc.partition) then return end
+    if not job_desc.script or job_desc.script == "" then return false, "not batch" end
+    if has_gpu(job_desc) then return false, "gpu" end
+    if not blank(job_desc.reservation) then return false, "reservation" end
 
     local cpus = job_desc.min_cpus
     if not cpus or cpus == 0 or cpus == slurm.NO_VAL then cpus = 1 end
     local mem, mem_given = job_mem(job_desc, cpus)
-    if not mem then return end
+    if not mem then return false, "no memory" end
     local minutes = job_desc.time_limit
     if not minutes or minutes == slurm.NO_VAL or minutes == slurm.INFINITE then
         minutes = 60
     end
 
-    local ok, parts, why, tbl = pcall(packed_choice, mem, cpus, minutes)
-    if ok and parts then
-        job_desc.partition = parts
-        -- Pin the node only when the job can start now. Any failure here
-        -- leaves the partition choice above untouched.
-        local pok, node, pparts = pcall(function()
-            if pin_eligible(job_desc, submit_uid, cpus, tbl, mem_given) then
-                return pick_node(tbl.pin, parts, cpus, mem)
-            end
-        end)
-        if pok and node and pparts then
-            job_desc.req_nodes = node
-            job_desc.partition = pparts
-            job_desc.admin_comment = "sjp:pin=" .. node .. ";from=" .. parts
-            -- Count it against the node until the next table arrives, so a burst
-            -- of submissions is not all pinned to the same free space.
-            local n = tbl.pin.nodes[node]
-            n[1], n[2] = n[1] - cpus, n[2] - mem
-            why = (why or "") .. " pin=" .. node
+    local parts, why, tbl = packed_choice(mem, cpus, minutes)
+    if not parts then return false, why end
+    local room = has_room(tbl, parts, cpus, mem)
+    if room == nil then return false, "stale" end
+    if not room then return false, "no room" end
+
+    job_desc.partition = parts
+    local mark = "sjp:placed"
+    -- Pin the node only when the job can start now. Any failure here leaves
+    -- the partition choice above as it is.
+    local pok, node, pparts = pcall(function()
+        if pin_eligible(job_desc, submit_uid, cpus, tbl, mem_given) then
+            return pick_node(tbl.pin, parts, cpus, mem)
         end
-        slurm.log_info("sjp: uid=%.0f name='%s' %dc %dMB -> %s (%s)",
-                       submit_uid, job_desc.name or "?", cpus, mem,
-                       job_desc.partition, why or "")
-    else
-        local fallback = static_choice(mem, cpus)
-        if fallback then job_desc.partition = fallback end
-        slurm.log_info("sjp: uid=%.0f name='%s' %dc %dMB -> %s (fallback: %s)",
-                       submit_uid, job_desc.name or "?", cpus, mem,
-                       job_desc.partition or "unchanged", tostring(parts or why))
+    end)
+    if pok and node and pparts then
+        job_desc.req_nodes = node
+        job_desc.partition = pparts
+        mark = "sjp:pin=" .. node .. ";from=" .. parts
+        -- Count it against the node until the next table arrives, so a burst
+        -- of submissions is not all pinned to the same free space.
+        local n = tbl.pin.nodes[node]
+        n[1], n[2] = n[1] - cpus, n[2] - mem
+        why = why .. " pin=" .. node
     end
+    if blank(job_desc.admin_comment) then job_desc.admin_comment = mark end
+    return true, why
 end
 
--- Choose the job's partitions (and node) in place. Never rejects the job.
+-- Place a batch job where it fits now. Returns true, or false and a reason
+-- (see the top of this file); a job that is not placed is left untouched.
 function sjp.place(job_desc, submit_uid)
-    local ok, err = pcall(place, job_desc, submit_uid)
-    if not ok then slurm.log_error("sjp: %s", tostring(err)) end
-    return slurm.SUCCESS
+    local ok, placed, why = pcall(place, job_desc, submit_uid)
+    if not ok then
+        slurm.log_error("sjp: %s", tostring(placed))
+        return false, "error"
+    end
+    slurm.log_info("sjp: uid=%.0f name='%s' -> %s (%s)", submit_uid, job_desc.name or "?",
+                   placed and job_desc.partition or "not placed", tostring(why))
+    return placed, why
 end
 
 return sjp

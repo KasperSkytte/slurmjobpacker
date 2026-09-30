@@ -47,7 +47,10 @@ class Daemon:
         # not the path the plugin reads.
         self.dryrun_table_path = os.path.join(self.state_dir, "policy.dryrun.lua")
         self.status_path = os.path.join(self.state_dir, "status.json")
-        self.limiter = limits.LimitPulse(cfg)
+        self.limiters: dict = {}     # QOS -> LimitPulse, for each QOS that has held jobs
+        self.qos_caps: dict = {}     # QOS -> (per_user, per_account, read at), a cache
+        self.pulse_record: dict = {} # QOS -> base caps while a pulse is on (state_file)
+        self.widened: set = set()    # jobs the starvation guard already widened
         self.promoter = limits.PerJobPromoter(cfg)
         self.version = 0
         self.last_rendered = None
@@ -196,23 +199,43 @@ class Daemon:
                 self.uids[user] = None
         return self.uids[user]
 
+    def qos_cap(self, qos):
+        """The per-user CPU cap a QOS has now: raised during its pulse, else read
+        from Slurm (cached for ten minutes). None if it has none."""
+        lim = self.limiters.get(qos)
+        if lim and lim.known:
+            return lim.cur_u
+        cached = self.qos_caps.get(qos)
+        if not cached or time.time() - cached[2] > 600:
+            try:
+                u, a = slurm.qos_cpu_limits(qos)
+            except slurm.SlurmError:
+                u, a = None, None
+            cached = self.qos_caps[qos] = (u, a, time.time())
+        return cached[0]
+
     def user_room(self, jobs) -> dict | None:
-        """uid -> CPUs left under the per-user cap, for users with running jobs."""
+        """CPUs each user has left under the per-user cap of each QOS they run in,
+        and the QOS most of their running CPUs are in (for jobs that name none)."""
         if self.cfg["limits"]["mode"] != "global":
             return None
-        qos, cap = self.cfg["limits"]["qos_name"], int(self.limiter.cur_u)
-        used = collections.Counter()
+        used = collections.defaultdict(collections.Counter)      # qos -> user -> CPUs
         for j in jobs:
-            if j["state"] in ("R", "CF") and j["qos"] == qos:
-                used[j["user"]] += j["cpus"]
-        return {u: cap - c for user, c in used.items() if (u := self.uid(user)) is not None}
+            if j["state"] in ("R", "CF") and j["qos"] not in ("", "(null)"):
+                used[j["qos"]][j["user"]] += j["cpus"]
+        by_qos, main = {}, {}
+        for qos, users in used.items():
+            cap = self.qos_cap(qos)
+            if not cap:
+                continue
+            by_qos[qos] = {u: int(cap) - c for user, c in users.items()
+                           if (u := self.uid(user)) is not None}
+        for user in {u for users in used.values() for u in users}:
+            uid = self.uid(user)
+            if uid is not None:
+                main[uid] = max(used, key=lambda q: used[q][user])
+        return dict(by_qos=by_qos, user_qos=main)
 
-    def speeds(self, parts) -> dict:
-        cfgs = self.cfg["topology"]["speed"]
-        dflt = self.cfg["topology"]["default_speed"]
-        return {p: cfgs.get(p, dflt) for p in parts}
-
-    # ---------------------------------------------------------------- threads
     def poll_nodes(self):
         iv = self.cfg["cadence"]["node_poll_interval"]
         while not self.sh.stop.wait(0):
@@ -241,6 +264,8 @@ class Daemon:
                 self.shadow(q)
                 if self.cfg["pin"]["enabled"]:
                     self.release_pins(q, time.time())
+                if self.cfg["starvation"]["enabled"]:
+                    self.widen_starving(q, time.time())
             except Exception as e:
                 if self.sh.note_error("queue", e):   # log each distinct failure once
                     self.log("error", where="queue", detail=repr(e))
@@ -271,8 +296,7 @@ class Daemon:
             if self.sh.note_error("score", e):
                 self.log("error", where="score", detail=e)
             return
-        speed = self.speeds(total)
-        table = policy.build_table(self.cfg, total, free, speed)
+        table = policy.build_table(self.cfg, total, free)
         # Compare the DECISIONS, not the rendered text: the text embeds a
         # timestamp, so comparing it would rewrite the file every tick and force
         # the plugin to reparse on every submission -- the exact churn the
@@ -283,18 +307,20 @@ class Daemon:
             jobs = list(self.sh.jobs)
         state = dict(nodes=self.node_free(nodes, parts),
                      tiers={p: parts[p]["tier"] for p in total},
-                     room=self.user_room(jobs))
-        pin = state if self.pin_active() else None
-        pin_sig = hash(repr(pin)) if pin else None
+                     room=self.user_room(jobs), enabled=self.pin_active())
+        # Free space goes out always: the plugin places a job only where some
+        # node has room for it now, and pins from it when pinning is on.
+        pin = state
+        pin_sig = hash(repr(pin))
         self.snap = dict(table=table, cap=policy.caps(total), total=total, free=free,
-                         speed=speed, version=self.version, node_free=state["nodes"],
+                         version=self.version, node_free=state["nodes"],
                          tiers=state["tiers"], room=state["room"])
-        # Rewrite when the partition decisions change, when free space changes
-        # while pinning (the plugin pins from it), and often enough that the
-        # plugin never sees the table as stale: max_age/3, or pin max_age/2.
+        # Rewrite when the partition decisions or the free space change, and
+        # often enough that the plugin never sees the table or its free space
+        # as stale: policy max_age/3, or pin max_age/2.
         age = now - self.last_write
-        refresh = age > self.cfg["cadence"]["policy_max_age"] / 3 or \
-            (pin is not None and age > self.cfg["pin"]["max_age"] / 2)
+        refresh = age > min(self.cfg["cadence"]["policy_max_age"] / 3,
+                            self.cfg["pin"]["max_age"] / 2)
         if sig == self.last_sig and pin_sig == self.last_pin_sig and not refresh:
             return
         changed = sig != self.last_sig
@@ -319,7 +345,7 @@ class Daemon:
                  phi=round(phi, 1), stranded=round(strand, 1),
                  distinct=len({tuple(v) for v in table.values()}),
                  reason="changed" if changed else "refresh")
-        why = self.table_why(table, total, free, speed, changed)
+        why = self.table_why(table, total, free, changed)
         self.intend("write_policy_table", f"write {self.table_path} (v{self.version})",
                     why, self.blocked(("advise", "enforce")),
                     lambda: self._write_atomic(self.table_path, rendered),
@@ -327,7 +353,7 @@ class Daemon:
         if self.mode == "observe":
             self._write_atomic(self.dryrun_table_path, rendered)
 
-    def table_why(self, table, total, free, speed, changed) -> str:
+    def table_why(self, table, total, free, changed) -> str:
         """Explain a table write; leaves the per-bucket diff in self.table_changes."""
         shape = {(i, j): parts for (i, j, k), parts in table.items() if k == 0}
         prev, self.last_shape = self.last_shape, shape
@@ -338,13 +364,13 @@ class Daemon:
             if prev.get(key) == parts:
                 continue
             cpus, mem = policy.bucket_shape(self.cfg, *key)
-            cost = policy.score_partitions(cpus, mem, total, free, speed, self.demand)
+            cost = policy.score_partitions(cpus, mem, total, free, self.demand)
             self.table_changes.append(dict(
                 bucket=f"{key[0]},{key[1]},*", shape=f"{cpus}c x {mem // cpus} MB/CPU",
                 before=",".join(prev.get(key, [])), after=",".join(parts),
                 cost={p: round(c, 1) for c, p in cost}))
         return (f"{len(self.table_changes)} of {len(shape)} shape buckets changed as "
-                "free capacity moved (cost = placeable capacity destroyed - speed x cpus; "
+                "free capacity moved (cost = placeable capacity destroyed; "
                 "partitions within tolerance of the cheapest are admitted)")
 
     def shadow(self, jobs):
@@ -381,8 +407,7 @@ class Daemon:
             verdict = "allowed" if actual[0] in would else "excluded"
         else:
             verdict = "same" if set(actual) == set(would) else "different"
-        cost = policy.score_partitions(cpus, mem, s["total"], s["free"], s["speed"],
-                                       self.demand)
+        cost = policy.score_partitions(cpus, mem, s["total"], s["free"], self.demand)
         why = (f"{cpus}c x {mem // cpus} MB/CPU, {j['timelimit']} min -> bucket "
                f"{key[0]},{key[1]},{key[2]} of table v{s['version']}: "
                f"{','.join(s['table'].get(key, []))}")
@@ -412,15 +437,22 @@ class Daemon:
             fc, fm, ps = nf[node]
             nf[node] = (fc + cpus, fm + mem, ps)
         pin, pin_parts = None, []
-        room = (s["room"] or {}).get(self.uid(j["user"]))
-        if not self.cfg["pin"]["enabled"]:
+        room = ((s["room"] or {}).get("by_qos", {}).get(j["qos"]) or {}).get(self.uid(j["user"]))
+        # The plugin places a job only if some node in those partitions has room
+        # for it now; otherwise it leaves the job to the site's own rule.
+        placed = sjp_pin != "" or policy.has_room(cpus, mem, allowed, nf)
+        if not placed:
+            would, verdict = [], "not placed"
+            why += "; no node there has room now, so sjp leaves it to the site's rule"
+            pin_why = "not placed"
+        elif not self.cfg["pin"]["enabled"]:
             pin_why = "pinning is off"
         # A job the plugin pinned passed its checks, including the one-node limit
         # squeue cannot show.
         elif (reason := policy.pin_eligible(dict(j, req_nodes="", ntasks=1)
                                             if sjp_pin else j)):
             pin_why = reason
-        elif room is not None and room < cpus and j["qos"] == self.cfg["limits"]["qos_name"]:
+        elif room is not None and room < cpus:
             pin_why = f"the user is at the per-user CPU cap ({room} CPUs left)"
         else:
             pin, pin_parts, info = policy.pick_node(cpus, mem, allowed, nf, s["tiers"],
@@ -435,7 +467,7 @@ class Daemon:
                     node=node, cpus=cpus, mem_mb=mem, minutes=j["timelimit"],
                     actual=",".join(actual), would=",".join(would), verdict=verdict,
                     differences=self.differences(actual, would, cpus, mem, cost, s, running),
-                    pin=pin, pin_parts=",".join(pin_parts), pin_why=pin_why,
+                    placed=placed, pin=pin, pin_parts=",".join(pin_parts), pin_why=pin_why,
                     acted=self.mode != "observe", sjp_pin=sjp_pin, sjp_from=sjp_from,
                     why=why, cost={p: round(c, 1) for c, p in cost})
 
@@ -488,6 +520,56 @@ class Daemon:
                         jobid=jid, node=node, parts=parts)
         self.released &= {j["jobid"] for j in jobs}
 
+    # Pending reasons a wider partition list can help with.
+    WIDEN_REASONS = ("Resources", "Priority")
+
+    def widen_starving(self, jobs, now):
+        """The starvation guard. sjp may give a job fewer partitions than a static
+        rule would, and a pending job keeps them. So a job sjp placed, pending
+        for Resources or Priority longer than its class's budget, is widened to
+        every batch partition that can hold it. Slurm's priority and backfill then decide as
+        usual, now across all those partitions."""
+        s = self.snap
+        if s is None:
+            return
+        c = self.cfg["starvation"]
+        total = s["total"]
+        for j in jobs:
+            jid = j["jobid"]
+            if (j["state"] != "PD" or j["reason"] not in self.WIDEN_REASONS
+                    or jid in self.widened or "_" in jid or j.get("gpu")
+                    or j.get("req_nodes") or not j.get("eligible")):
+                continue
+            cpus = max(1, j["cpus"])
+            mem = j.get("req_mem") or j["mem"]
+            kind = "fat" if mem / cpus >= c["fat_ratio_threshold"] else "slim"
+            budget = c["budget_hours"][kind] * 3600
+            waited = now - j["eligible"]
+            if waited < budget:
+                continue
+            self.widened.add(jid)
+            current = [p for p in j["partition"].split(",") if p]
+            if not current or not set(current) <= set(total):
+                continue                 # interactive, GPU or other: not sjp's to widen
+            # Only jobs sjp placed: a job the site's own rule placed keeps its
+            # partitions (the plugin marks its jobs in AdminComment).
+            try:
+                if not slurm.admin_comment(jid).startswith("sjp:"):
+                    continue
+            except slurm.SlurmError:
+                continue
+            wide = sorted(policy.feasible(cpus, mem, total))
+            if not wide or set(wide) <= set(current):
+                continue                 # already everywhere it can go
+            argv = slurm.cmd_set_job_partitions(jid, wide)
+            self.intend("widen_partitions", slurm.cmdline(argv),
+                        f"pending {waited / 3600:.1f} h ({j['reason']}), over the "
+                        f"{budget / 3600:g} h budget for {kind} jobs; widened to every "
+                        "partition that can hold it",
+                        self.blocked(("enforce",)), lambda: self.apply_retrying(argv),
+                        jobid=jid, before=",".join(current), after=",".join(wide))
+        self.widened &= {j["jobid"] for j in jobs}
+
     @staticmethod
     def apply_retrying(argv, tries=3, wait=1.0) -> bool:
         """slurm.apply, for job updates. Slurm answers some updates with EAGAIN
@@ -527,18 +609,6 @@ class Daemon:
             info["warnings"].append(
                 "limits.mode = perjob is not implemented yet: no limits or QOS will be "
                 "changed. Use global or off.")
-        if self.cfg["limits"]["mode"] == "global":
-            lc, qos = self.cfg["limits"], self.cfg["limits"]["qos_name"]
-            try:
-                u, a = slurm.qos_cpu_limits(qos)
-                info["qos_live"] = dict(qos=qos, per_user=u, per_account=a)
-                if (u, a) != (lc["base_cpu_per_user"], lc["base_cpu_per_account"]):
-                    info["warnings"].append(
-                        f"QOS {qos} is MaxTRESPU cpu={u} MaxTRESPA cpu={a}, config base "
-                        f"is {lc['base_cpu_per_user']}/{lc['base_cpu_per_account']}; "
-                        "in enforce mode sjp sets the QOS to the config's base at startup")
-            except slurm.SlurmError as e:
-                info["warnings"].append(f"qos: {e}")
         self.log("preflight", **info)
 
     def act(self):
@@ -568,58 +638,123 @@ class Daemon:
                   for v in free.values() for fc, fm in v)
         idle_frac = phi / total_cpu
         capped = [j for j in pend if j["reason"] in slurm.LIMIT_REASONS]
-        # Jobs a pulse could release: held by a CPU cap, in the pulsed QOS, and
-        # small enough for some node's free space right now.
+        # Jobs a pulse could release, per QOS: held by a CPU cap of their QOS,
+        # and small enough for some node's free space right now.
         nf = self.node_free(nodes, parts)
-        held = [j for j in pend if j["reason"] in slurm.CAP_REASONS
-                and j["qos"] == self.cfg["limits"]["qos_name"]
-                and any(fc >= j["cpus"] and fm >= (j.get("req_mem") or j["mem"])
-                        for fc, fm, _ in nf.values())]
+        held = collections.Counter(
+            j["qos"] for j in pend if j["reason"] in slurm.CAP_REASONS
+            and any(fc >= j["cpus"] and fm >= (j.get("req_mem") or j["mem"])
+                    for fc, fm, _ in nf.values()))
 
         if self.cfg["limits"]["mode"] == "global":
-            before = (self.limiter.cur_u, self.limiter.cur_a)
-            change = self.limiter.observe(idle_frac, len(held))
-            if change:
-                self.set_caps(change, before, idle_frac, len(held))
+            for qos in set(held) | set(self.limiters):
+                lim = self.limiter(qos)
+                before = (lim.cur_u, lim.cur_a)
+                change = lim.observe(idle_frac, held.get(qos, 0))
+                if change:
+                    self.set_caps(qos, change, before, idle_frac, held.get(qos, 0))
         self._write_atomic(self.status_path, json.dumps(dict(
             ts=time.time(), mode=self.mode, version=self.version,
             idle_fraction=round(idle_frac, 4), total_cpu=total_cpu,
             capped_jobs=len(capped), pending=len(pend),
-            limits=self.limiter.state(), errors=self.sh.errors), indent=1))
+            limits=[lim.state() for lim in self.limiters.values()],
+            errors=self.sh.errors), indent=1))
 
-    def set_caps(self, caps, before, idle_frac=None, held=None):
+    def set_caps(self, qos, caps, before, idle_frac=None, held=None):
         """Log and, in enforce, apply a change of the per-user/per-account caps.
         Going back to base is allowed even with the disable file present: it only
         ever makes the cluster more conservative."""
         per_user, per_acct = caps
-        self.log("limits", idle_fraction=idle_frac, per_user=per_user,
+        lim = self.limiter(qos)
+        self.log("limits", qos=qos, idle_fraction=idle_frac, per_user=per_user,
                  per_account=per_acct, held_jobs=held)
         unset = float("inf")                    # a QOS with no cap set reports None
         lowering = per_user <= (before[0] or unset) and per_acct <= (before[1] or unset)
         blocked = self.blocked(("enforce",)) if not lowering else \
             (None if self.mode == "enforce" else f"mode={self.mode}")
-        argv = slurm.cmd_set_qos_cpu_limits(self.cfg["limits"]["qos_name"], per_user, per_acct)
-        self.intend("set_qos_cpu_limits", slurm.cmdline(argv), self.limiter.why, blocked,
-                    lambda: slurm.apply(argv, timeout=30.0),
-                    qos=self.cfg["limits"]["qos_name"], before_user=before[0],
+        argv = slurm.cmd_set_qos_cpu_limits(qos, per_user, per_acct)
+
+        def run():                      # only called when the change is really made
+            if not lowering:
+                self.remember_pulse(qos, True)
+            done = slurm.apply(argv, timeout=30.0)
+            if lowering and done:
+                self.remember_pulse(qos, False)
+            return done
+        self.intend("set_qos_cpu_limits", slurm.cmdline(argv), lim.why, blocked, run,
+                    qos=qos, before_user=before[0],
                     before_account=before[1], per_user=per_user, per_account=per_acct,
                     idle_fraction=idle_frac, held_jobs=held)
 
+    def limiter(self, qos):
+        """The pulse controller for a QOS, created on first use. Its base caps are
+        the recorded ones if a previous run stopped mid-pulse, else the QOS's own."""
+        lim = self.limiters.get(qos)
+        if lim is None:
+            rec = self.pulse_record.get(qos)
+            if rec:
+                base = (rec.get("per_user"), rec.get("per_account"))
+            else:
+                try:
+                    base = slurm.qos_cpu_limits(qos)
+                except slurm.SlurmError as e:
+                    self.log("error", where="limits", detail=repr(e))
+                    base = (None, None)
+            lim = self.limiters[qos] = limits.LimitPulse(self.cfg, qos, base)
+            if lim.known:
+                self.log("limits", qos=qos, per_user=base[0], per_account=base[1],
+                         source="state_file (a pulse was interrupted)" if rec else "the QOS")
+            else:
+                self.log("error", where="limits",
+                         detail=f"QOS {qos} has no per-user and per-account CPU caps: "
+                                "nothing to pulse there")
+        return lim
+
+    def resolve_limits(self):
+        """Read the record of pulses a previous run left on (state_file)."""
+        if self.cfg["limits"]["mode"] != "global":
+            return
+        try:
+            with open(self.cfg["limits"]["state_file"]) as f:
+                self.pulse_record = {q: r for q, r in json.load(f).items()
+                                     if isinstance(r, dict)}
+        except (OSError, ValueError, AttributeError):
+            self.pulse_record = {}
+
+    def remember_pulse(self, qos, raised: bool):
+        """Keep a QOS's base caps on disk while its pulse is on, so a restart after
+        a crash mid-pulse restores those rather than taking the raised ones as base."""
+        lim = self.limiters[qos]
+        if raised:
+            self.pulse_record[qos] = dict(per_user=lim.base_u, per_account=lim.base_a)
+        else:
+            self.pulse_record.pop(qos, None)
+        try:
+            self._write_atomic(self.cfg["limits"]["state_file"], json.dumps(self.pulse_record))
+        except OSError as e:
+            self.log("error", where="limits", detail=repr(e))
+
     def restore_caps(self, when: str):
-        """Put the caps back to base if the live QOS differs: at startup, in case a
-        previous run died mid-pulse, and at shutdown, in case this one is in one."""
+        """Put every QOS with a pulse on back to its base: at startup, those a
+        previous run left raised; at shutdown, those raised now."""
         if self.cfg["limits"]["mode"] != "global" or self.mode != "enforce":
             return
-        base = (self.limiter.base_u, self.limiter.base_a)
-        try:
-            live = slurm.qos_cpu_limits(self.cfg["limits"]["qos_name"])
-        except slurm.SlurmError as e:
-            self.log("error", where="limits", detail=repr(e))
-            return
-        if live != base:
-            self.limiter.reset()
-            self.limiter.why = f"restore base caps at {when}"
-            self.set_caps(base, live)
+        qoses = set(self.pulse_record) | {q for q, l in self.limiters.items() if l.raised}
+        for qos in sorted(qoses):
+            lim = self.limiter(qos)
+            if not lim.known:
+                continue
+            try:
+                live = slurm.qos_cpu_limits(qos)
+            except slurm.SlurmError as e:
+                self.log("error", where="limits", detail=repr(e))
+                continue
+            lim.reset()
+            lim.why = f"restore base caps at {when}"
+            if live != (lim.base_u, lim.base_a):
+                self.set_caps(qos, (lim.base_u, lim.base_a), live)
+            else:
+                self.remember_pulse(qos, False)
 
     @staticmethod
     def _write_atomic(path, text):
@@ -638,6 +773,7 @@ class Daemon:
                  limits_mode=self.cfg["limits"]["mode"],
                  cadence=self.cfg["cadence"])
         self.preflight()
+        self.resolve_limits()
         self.restore_caps("startup")
         threads = [threading.Thread(target=t, name=n, daemon=True)
                    for t, n in ((self.poll_nodes, "nodes"), (self.poll_queue, "queue"),
@@ -710,6 +846,7 @@ def main(argv=None):
         # same records rather than differing by invocation
         d.open_logs()
         d.preflight()
+        d.resolve_limits()
         d.sh.nodes, d.sh.parts = slurm.nodes(), slurm.partitions()
         d.sh.nodes_at = time.time()
         try:

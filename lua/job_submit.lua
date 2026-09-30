@@ -9,7 +9,10 @@
     - sends interactive allocations (salloc, srun: no job script) to the
       INTERACTIVE partition, if the cluster has one the user may use;
     - optionally sends GPU jobs to GPU_PARTITION;
-    - lets sjp place everything else.
+    - lets sjp place everything else;
+    - and when sjp does not place a batch job (no node has room for it now,
+      or sjpd is not running), optionally applies a fixed rule: SLIM below
+      FAT_ABOVE MB of memory per CPU, FAT above it.
 
   Copy it next to slurm.conf, set JobSubmitPlugins=lua there, and run
   `scontrol reconfigure`.
@@ -20,15 +23,17 @@ local SJP = "/opt/slurmjobpacker/lua/sjp.lua"
 local INTERACTIVE = "interactive"    -- partition for salloc/srun; "" leaves them alone
 local INTERACTIVE_QOS = ""           -- QOS for them too, e.g. "interactive"; "" keeps theirs
 local GPU_PARTITION = ""             -- partition for GPU jobs, e.g. "gpu"; "" leaves them alone
+local SLIM = ""                      -- fallback partitions, e.g. "slim1,slim2"; "" leaves the
+local FAT = ""                       -- job as submitted, e.g. "fat1,fat2"
+local FAT_ABOVE = 6000               -- MB per CPU from which a job counts as FAT
 
 local ok, sjp = pcall(dofile, SJP)
 if not ok then
     slurm.log_error("job_submit: cannot load %s: %s", SJP, tostring(sjp))
     sjp = nil
 end
-if sjp then                          -- settings: see sjp.config in lua/sjp.lua
-    -- sjp.config.slim = "..."
-    -- sjp.config.fat  = "..."
+if sjp then                          -- only if sjpd's paths moved: see lua/sjp.lua
+    -- sjp.config.table_path = "/run/sjp/policy.lua"
 end
 
 local function wants_gpu(job_desc)
@@ -62,7 +67,19 @@ function slurm_job_submit(job_desc, part_list, submit_uid)
         job_desc.partition = ""          -- "" clears it; nil would raise
     end
 
-    if sjp then return sjp.place(job_desc, submit_uid) end
+    if sjp and sjp.place(job_desc, submit_uid) then return slurm.SUCCESS end
+
+    -- sjp did not place it: the fixed rule, if set
+    if SLIM ~= "" and FAT ~= "" then
+        local cpus = job_desc.min_cpus
+        if not cpus or cpus == 0 or cpus == slurm.NO_VAL then cpus = 1 end
+        local per_cpu = job_desc.min_mem_per_cpu
+        if not per_cpu or per_cpu == slurm.NO_VAL64 then
+            local per_node = job_desc.min_mem_per_node
+            per_cpu = (per_node and per_node ~= slurm.NO_VAL64) and per_node / cpus or 0
+        end
+        job_desc.partition = (per_cpu >= FAT_ABOVE) and FAT or SLIM
+    end
     return slurm.SUCCESS
 end
 

@@ -15,19 +15,19 @@ import time
 
 
 class LimitPulse:
-    """Moves MaxTRESPU/MaxTRESPA on one QOS: base, briefly up, back to base."""
+    """Moves MaxTRESPU/MaxTRESPA on one QOS: base, briefly up, back to base.
+    One per QOS that holds jobs; its base caps come from the QOS (set_base)."""
 
-    def __init__(self, cfg):
+    def __init__(self, cfg, qos, base=(None, None)):
         c = cfg["limits"]
-        self.base_u = c["base_cpu_per_user"]
-        self.base_a = c["base_cpu_per_account"]
+        self.base_u, self.base_a = base                    # None: the QOS has no cap
         self.ceiling = c["ceiling"]
         self.raise_above = c["raise_above"]
         self.lower_below = c["lower_below"]
         self.hysteresis = c["hysteresis"]
         self.pulse = c["pulse_seconds"]
         self.cooldown = c["cooldown_seconds"]
-        self.qos = c["qos_name"]
+        self.qos = qos
         self.cur_u, self.cur_a = self.base_u, self.base_a
         self.streak = 0
         self.raised_at = None
@@ -38,12 +38,24 @@ class LimitPulse:
     def raised(self) -> bool:
         return self.raised_at is not None
 
+    @property
+    def known(self) -> bool:
+        """Whether there are base caps to pulse from (the QOS may have none)."""
+        return bool(self.base_u and self.base_a)
+
+    def set_base(self, per_user, per_account):
+        self.base_u, self.base_a = per_user, per_account
+        if not self.raised:
+            self.cur_u, self.cur_a = per_user, per_account
+
     def observe(self, idle_fraction: float, held_that_fit: int, now: float | None = None):
         """Return (per_user, per_account) if the caps should change, else None.
 
         held_that_fit: pending jobs held by a CPU cap that fit in free space now.
         """
         now = time.time() if now is None else now
+        if not self.known:
+            return None
         if self.raised:
             if now - self.raised_at >= self.pulse:
                 self.why = f"the {self.pulse:.0f} s pulse is over; back to base"
@@ -76,11 +88,11 @@ class LimitPulse:
 
     @property
     def multiple(self) -> float:
-        return self.cur_u / self.base_u
+        return self.cur_u / self.base_u if self.known else 1.0
 
     def state(self) -> dict:
-        return dict(per_user=self.cur_u, per_account=self.cur_a, raised=self.raised,
-                    streak=self.streak)
+        return dict(qos=self.qos, per_user=self.cur_u, per_account=self.cur_a,
+                    raised=self.raised, streak=self.streak)
 
 
 class PerJobPromoter:
