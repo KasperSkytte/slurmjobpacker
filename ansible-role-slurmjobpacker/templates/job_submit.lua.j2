@@ -1,0 +1,84 @@
+-- {{ ansible_managed }}
+--[[
+  job_submit.lua from the slurmjobpacker Ansible role, made from the example
+  lua/job_submit.lua in slurmjobpacker. It:
+    - sends interactive allocations (salloc, srun: no job script) to the
+      INTERACTIVE partition, if the cluster has one;
+    - optionally sends GPU jobs to GPU_PARTITION;
+    - lets sjp place every other batch job;
+    - and when sjp does not place one (no node has room for it now, or sjpd
+      is not running), optionally applies a fixed rule: SLIM below FAT_ABOVE
+      MB of memory per CPU, FAT from it.
+--]]
+
+local SJP = "{{ sjp_install_dir }}/lua/sjp.lua"
+
+local INTERACTIVE = "{{ sjp_interactive_partition }}"
+local INTERACTIVE_QOS = "{{ sjp_interactive_qos }}"
+local GPU_PARTITION = "{{ sjp_gpu_partition }}"
+local SLIM = "{{ sjp_fallback_slim }}"
+local FAT = "{{ sjp_fallback_fat }}"
+local FAT_ABOVE = {{ sjp_fallback_fat_above }}
+
+local ok, sjp = pcall(dofile, SJP)
+if not ok then
+    slurm.log_error("job_submit: cannot load %s: %s", SJP, tostring(sjp))
+    sjp = nil
+end
+if sjp then                          -- where sjpd writes, from sjp.toml
+    sjp.config.table_path = "{{ (sjp_config.general | default({})).state_dir | default('/run/sjp') }}/policy.lua"
+    sjp.config.disable_path = "{{ sjp_config_dir }}/disable"
+end
+
+local function wants_gpu(job_desc)
+    for _, f in ipairs({ "tres_per_node", "tres_per_job", "tres_per_task" }) do
+        local v = job_desc[f]
+        if v and string.find(string.lower(v), "gpu") then return true end
+    end
+    return false
+end
+
+function slurm_job_submit(job_desc, part_list, submit_uid)
+    local batch = job_desc.script and job_desc.script ~= ""
+
+    if not batch then
+        if INTERACTIVE ~= "" and part_list[INTERACTIVE] then
+            job_desc.partition = INTERACTIVE
+            if INTERACTIVE_QOS ~= "" then job_desc.qos = INTERACTIVE_QOS end
+        end
+        return slurm.SUCCESS
+    end
+
+    if GPU_PARTITION ~= "" and wants_gpu(job_desc) then
+        job_desc.partition = GPU_PARTITION
+        return slurm.SUCCESS
+    end
+
+    -- batch jobs do not belong in the interactive partition
+    if INTERACTIVE ~= "" and job_desc.partition == INTERACTIVE then
+        slurm.log_user("Batch jobs are not allowed in the '%s' partition; choosing another.",
+                       INTERACTIVE)
+        job_desc.partition = ""          -- "" clears it; nil would raise
+    end
+
+    if sjp and sjp.place(job_desc, submit_uid) then return slurm.SUCCESS end
+
+    -- sjp did not place it: the fixed rule, if set
+    if SLIM ~= "" and FAT ~= "" then
+        local cpus = job_desc.min_cpus
+        if not cpus or cpus == 0 or cpus == slurm.NO_VAL then cpus = 1 end
+        local per_cpu = job_desc.min_mem_per_cpu
+        if not per_cpu or per_cpu == slurm.NO_VAL64 then
+            local per_node = job_desc.min_mem_per_node
+            per_cpu = (per_node and per_node ~= slurm.NO_VAL64) and per_node / cpus or 0
+        end
+        job_desc.partition = (per_cpu >= FAT_ABOVE) and FAT or SLIM
+    end
+    return slurm.SUCCESS
+end
+
+function slurm_job_modify(job_desc, job_rec, part_list, modify_uid)
+    return slurm.SUCCESS
+end
+
+return slurm.SUCCESS

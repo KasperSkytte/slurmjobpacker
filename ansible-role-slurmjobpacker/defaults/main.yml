@@ -29,6 +29,24 @@ sjp_service_state: started
 # rules in your job_submit.lua apply.
 sjp_disabled: false
 
+# slurm.conf on the controllers. The role checks it has JobSubmitPlugins=lua:
+# a warning in observe mode, an error in advise and enforce, where sjp has no
+# effect without it. Slurm reads job_submit.lua from the same directory.
+sjp_slurm_conf: /etc/slurm/slurm.conf
+
+# Install the example job_submit.lua (templates/job_submit.lua.j2) next to
+# slurm.conf. Leave false if you have your own; add the sjp.place() call to it.
+# When true, an existing job_submit.lua is backed up before it is replaced.
+sjp_job_submit_install: false
+sjp_interactive_partition: interactive   # for salloc/srun, if it exists; "" leaves them alone
+sjp_interactive_qos: ""                  # QOS for them too; "" keeps theirs
+sjp_gpu_partition: ""                    # for GPU jobs, e.g. "gpu"; "" leaves them alone
+# Fallback when sjp does not place a batch job: SLIM below FAT_ABOVE MB of
+# memory per CPU, FAT from it. "" for either leaves the job as submitted.
+sjp_fallback_slim: ""                    # e.g. "slim1,slim2"
+sjp_fallback_fat: ""                     # e.g. "fat1,fat2"
+sjp_fallback_fat_above: 6000
+
 # Run `scontrol reconfigure` when a new version is checked out, so slurmctld
-# loads the new sjp.lua. Set this once your job_submit.lua calls sjp.
-sjp_reconfigure_slurm: false
+# loads the new sjp.lua. Needed once job_submit.lua calls sjp.
+sjp_reconfigure_slurm: "{{ sjp_job_submit_install }}"

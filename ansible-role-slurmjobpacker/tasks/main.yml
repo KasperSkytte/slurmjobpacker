@@ -34,6 +34,41 @@
     modification_time: preserve
     access_time: preserve
 
+- name: Look for JobSubmitPlugins=lua in {{ sjp_slurm_conf }}
+  ansible.builtin.command:
+    argv: [grep, -Eiq, '^[[:space:]]*JobSubmitPlugins[[:space:]]*=.*lua', "{{ sjp_slurm_conf }}"]
+  register: sjp_lua_plugin
+  changed_when: false
+  failed_when: sjp_lua_plugin.rc > 1
+  check_mode: false
+
+- name: Require JobSubmitPlugins=lua outside observe mode
+  ansible.builtin.assert:
+    that: sjp_lua_plugin.rc == 0
+    fail_msg: >-
+      {{ sjp_slurm_conf }} has no JobSubmitPlugins=lua line, so slurmctld never
+      runs job_submit.lua and sjp places no jobs. Add it and run scontrol reconfigure.
+      (If it is set in a file that slurm.conf includes, set sjp_slurm_conf to that file.)
+    quiet: true
+  when: ((sjp_config.general | default({})).mode | default('observe')) != 'observe'
+
+- name: Warn that sjp will not place jobs without JobSubmitPlugins=lua
+  ansible.builtin.debug:
+    msg: >-
+      {{ sjp_slurm_conf }} has no JobSubmitPlugins=lua line. That is fine in
+      observe mode, but add it before switching to advise or enforce.
+  when: sjp_lua_plugin.rc != 0
+
+- name: Install the example job_submit.lua
+  ansible.builtin.template:
+    src: job_submit.lua.j2
+    dest: "{{ sjp_slurm_conf | dirname }}/job_submit.lua"
+    owner: root
+    group: root
+    mode: "0644"
+    backup: true
+  when: sjp_job_submit_install | bool
+
 - name: Install sjpd
   ansible.builtin.include_tasks: daemon.yml
   when: inventory_hostname == sjp_daemon_host
