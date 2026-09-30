@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.4.0](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.3.0...v1.4.0) (2026-09-30)
+
+
+### Features
+
+* add an example Ansible role that installs sjp ([ba64a03](https://github.com/KasperSkytte/slurmjobpacker/commit/ba64a03b55f4b4da29bb990c24ddd2627e99e2b6))
+* the Ansible role can install an example job_submit.lua and checks slurm.conf ([469c413](https://github.com/KasperSkytte/slurmjobpacker/commit/469c413f0f9decdf3ca2876074d764b64d1f5d2d))
+
+
+### Bug Fixes
+
+* leave jobs with --constraint to the site's rules ([5057f40](https://github.com/KasperSkytte/slurmjobpacker/commit/5057f405823061796571bf1cbde3394c8e84c8c3))
+
 ## [1.3.0](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.2.0...v1.3.0) (2026-09-30)
 
 
