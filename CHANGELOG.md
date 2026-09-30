@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.0](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.2.0...v1.3.0) (2026-09-30)
+
+
+### Features
+
+* sjp.place() reports whether it placed the job, leaving fallbacks to the site ([eedf345](https://github.com/KasperSkytte/slurmjobpacker/commit/eedf3454247dbdde5c5d76f081270d765cbe023c))
+
 ## [1.2.0](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.1.0...v1.2.0) (2026-09-29)
 
 
