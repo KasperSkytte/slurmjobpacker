@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.0](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.5.0...v1.6.0) (2026-10-01)
+
+
+### Features
+
+* AdminComment tells what sjp did with the job ([37c9a4d](https://github.com/KasperSkytte/slurmjobpacker/commit/37c9a4d5d889c71d95462c43f60d5ac370ef1c86))
+
 ## [1.5.0](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.4.0...v1.5.0) (2026-10-01)
 
 

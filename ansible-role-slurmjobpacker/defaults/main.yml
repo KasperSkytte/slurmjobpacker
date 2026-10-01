@@ -2,7 +2,7 @@
 # Where the checkout goes. Install it on every slurmctld host, so whichever
 # controller is active can load lua/sjp.lua from job_submit.lua.
 sjp_repo: https://github.com/KasperSkytte/slurmjobpacker.git
-sjp_version: v1.5.0  # x-release-please-version
+sjp_version: v1.6.0  # x-release-please-version
 sjp_install_dir: /opt/slurmjobpacker
 sjp_python: /usr/bin/python3
 
