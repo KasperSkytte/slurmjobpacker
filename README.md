@@ -120,7 +120,7 @@ Then run `scontrol reconfigure` (again after every sjp upgrade). If you have no
 `sjp.place()` never rejects a job. It returns `true` when it placed the job, or `false`
 and a reason (such as `"no room"`) when it left the job for your own rules. What sjp did
 is noted in the job's `AdminComment` and in the `slurmctld` log. See
-[Using sjp in job_submit](https://github.com/KasperSkytte/slurmjobpacker/wiki/Using-sjp-in-job-submit) and
+[Using sjp in job_submit.lua](https://github.com/KasperSkytte/slurmjobpacker/wiki/Using-sjp-in-job-submit.lua) and
 [Logs and AdminComment](https://github.com/KasperSkytte/slurmjobpacker/wiki/Logs-and-AdminComment).
 
 To switch it off, `sudo touch /etc/sjp/disable`: from the next submission
