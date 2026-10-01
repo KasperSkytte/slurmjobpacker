@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.5.0](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.4.0...v1.5.0) (2026-10-01)
+
+
+### Features
+
+* flex mode skips jobs of users who may not use the flex QOS, and logs them ([1b79689](https://github.com/KasperSkytte/slurmjobpacker/commit/1b79689271255a3ead63ebcd416a7297ee3d25ab))
+* flex QOS mode, verbose placement log, and QOS caps changed by hand are followed ([13e0d91](https://github.com/KasperSkytte/slurmjobpacker/commit/13e0d91d7995efdb9f0c2cf594d45e798079083f))
+
 ## [1.4.0](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.3.0...v1.4.0) (2026-09-30)
 
 
