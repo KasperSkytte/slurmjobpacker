@@ -21,10 +21,10 @@ sjp_config_dir: /etc/sjp
 sjp_config:
   general:
     mode: observe                  # observe -> advise -> enforce
-  # limits:
-  #   mode: flex                   # off | global | flex: help jobs held by QOS CPU caps
-  #   flex_qos_name: flex          # flex: create this QOS and allow it for all users,
-  #                                # e.g. sacctmgr -i modify account root set qos+=flex
+  limits:
+    mode: "off"                    # off | global | flex: help jobs held by QOS CPU caps
+    flex_qos_name: flex            # for flex: create this QOS and allow it for all users,
+                                   # e.g. sacctmgr -i modify account root set qos+=flex
 
 sjp_service_enabled: true
 sjp_service_state: started

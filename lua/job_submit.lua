@@ -33,7 +33,7 @@ if not ok then
     sjp = nil
 end
 if sjp then                          -- settings: see sjp.config in lua/sjp.lua
-    -- sjp.config.verbose = true     -- log each job's shape and node in detail
+    sjp.config.verbose = false       -- true: log each job's shape and node in detail
 end
 
 local function wants_gpu(job_desc)
