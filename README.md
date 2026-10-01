@@ -41,8 +41,10 @@ flowchart TD
 ```
 
 Slurm still schedules, orders the queue and applies fair-share. Optionally, `sjpd` also
-widens the partitions of sjp's jobs that have waited long, and briefly lifts per-user CPU
-caps when jobs held only by those caps would fit on idle nodes.
+widens the partitions of sjp's jobs that have waited long, and helps jobs held only by
+per-user CPU caps when they would fit on idle nodes.
+
+The [wiki](https://github.com/KasperSkytte/slurmjobpacker/wiki) explains all of this in detail.
 
 ## Installation
 Follow the below steps manually, or use the provided ansible role under [ansible-role-slurmjobpacker](./ansible-role-slurmjobpacker/).
@@ -76,38 +78,18 @@ It starts in `observe` mode: it only reads the cluster and logs what it would do
 
 ## Configuration
 
-`sjpd` reads `/etc/sjp/sjp.toml`; restart it after a change. `--print-config` lists
-every setting with its default; [`sjp/config.py`](sjp/config.py) explains each one.
-Partitions, their `PriorityTier`, nodes and QOS caps are read from Slurm. The
-settings that matter most:
+`sjpd` reads `/etc/sjp/sjp.toml`; restart it after a change. Partitions, nodes and QOS
+caps are read from Slurm, so most sites only set how far sjp may go:
 
-**`[general] mode`**, how far sjp goes:
-
-| mode | chooses partitions | pins nodes, widens long waits | helps jobs held by CPU caps |
+| `[general] mode` | chooses partitions | pins nodes, widens long waits | helps jobs held by CPU caps |
 |---|---|---|---|
 | `observe` (default) | no | no | no |
 | `advise` | yes | no | no |
 | `enforce` | yes | yes | if `[limits] mode` is set |
 
-**`[limits] mode`**, what to do in `enforce` when jobs are held only by the per-user or
-per-account CPU cap of their QOS, yet would fit on idle nodes:
-
-- `"off"` (default): nothing;
-- `"global"`: raise both caps of that QOS, for everyone, for one minute;
-- `"flex"`: move those jobs, as many as fit now, to a QOS of your own (`flex_qos_name`,
-  default `flex`) with the caps you want on top of the normal ones. If jobs don't start within a minute it is reverted back. Ensure the QOS is created and allow
-  it for all users first with: `sacctmgr -i modify account root set qos+=flex`. Adjust for individual users if necessary.
-
-Either way, jobs started over the cap keep running until they end, so a user can stay
-above the cap for as long as those jobs run. To make that use truly temporary, make the
-flex QOS preemptible (`PreemptType=preempt/qos` and `PreemptMode=REQUEUE` in
-`slurm.conf`, and `sacctmgr modify qos normal set preempt=flex`): flex jobs then use idle
-nodes, and are requeued when jobs in the normal QOS need the room.
-
-**`[pin] time_aware`** (default `false`): also weigh time limits when choosing a node.
-sjp then prefers a node whose running jobs end around when the new job would, so long
-jobs gather on the same nodes and nodes running short jobs empty out together, leaving
-room for big jobs. Empty nodes are kept for jobs that need them.
+Every setting is described in the [configuration reference](https://github.com/KasperSkytte/slurmjobpacker/wiki/Configuration-reference).
+Helping jobs held by QOS CPU caps (`[limits] mode`) has its own page:
+[QOS limits and flex](https://github.com/KasperSkytte/slurmjobpacker/wiki/QOS-limits-and-flex).
 
 ## Using sjp from job_submit.lua
 
@@ -136,75 +118,19 @@ Then run `scontrol reconfigure` (again after every sjp upgrade). If you have no
 `slurm.conf` and set the few variables at its top.
 
 `sjp.place()` never rejects a job. It returns `true` when it placed the job, or `false`
-and a reason when it left the job untouched:
+and a reason (such as `"no room"`) when it left the job for your own rules. What sjp did
+is noted in the job's `AdminComment` and in the `slurmctld` log. See
+[Using sjp in job_submit](https://github.com/KasperSkytte/slurmjobpacker/wiki/Using-sjp-in-job-submit) and
+[Logs and AdminComment](https://github.com/KasperSkytte/slurmjobpacker/wiki/Logs-and-AdminComment).
 
-| reason | meaning |
-|---|---|
-| `"no room"` | no node that could hold the job has room for it right now |
-| `"no table"` | `sjpd` is not running, or `/etc/sjp/disable` exists |
-| `"stale"` | `sjpd` has not updated its data in the last few seconds |
-| `"not batch"` | an interactive job (`salloc`, `srun`) |
-| `"gpu"` | the job asks for GPUs |
-| `"reservation"` | the job runs in a reservation |
-| `"constraint"` | the job asks for node features (`--constraint`) |
-| `"multi-node"` | the job asks for more than one node (`-N 2` or more) |
-| `"no memory"` | the job asks for all of a node's memory (`--mem=0`) |
-| `"error"` | something went wrong; the error is in the `slurmctld` log |
-
-Use the reason if you want different fallbacks, for example:
-
-```lua
-local placed, why = sjp.place(job_desc, submit_uid)
-if not placed and why == "no room" then ... end
-```
-
-sjp notes what it did in the job's `AdminComment`, so `scontrol show job` shows it:
-
-```
-AdminComment=sjp:placed=zen3,zen5;job=4c,16G,4.0G/c;v=20
-AdminComment=sjp:pin=bio-node01;from=zen3,zen5;job=4c,16G,4.0G/c;free=60c,293G,4.9G/c;v=20
-```
-
-The partitions it set; the job's CPUs, memory and memory per CPU (in GB); for a pinned job the
-node and its free CPUs, memory and memory per CPU at that moment; and the version of the
-placement table. With `[pin] time_aware`, a pin also notes the job's time limit and how
-long the node's jobs still ran (`;time=336h;busy=336h`). A pin released later reads
-`sjp:released=...`; a job moved to the flex
-QOS gets `;flex=<its own QOS>`. Each submission is also logged in the `slurmctld` log, for
-example:
-
-```
-sjp: uid=1000 name='wrap' -> zen3 (v20 b0,1,1 pin=bio-node01)
-```
-
-placed in `zen3` and pinned to `bio-node01`, by version 20 of the placement table. Set
-`sjp.config.verbose = true` after loading `sjp.lua` to also log the job's CPUs, memory
-and memory per CPU, the partitions the table gave, and the node's free space before
-and after.
-
-**Turning it off.** `sudo touch /etc/sjp/disable` makes `sjp.place()` return `false` from
-the next submission, so only your own rules apply.
+To switch it off, `sudo touch /etc/sjp/disable`: from the next submission
+`sjp.place()` returns `false`, so only your own rules apply.
 
 ## Limitations
 
-- **Single-node jobs only.** sjp sizes each job against single nodes. Jobs asking for
-  several nodes (`-N 2` or more), GPUs, node features (`--constraint`) or a reservation,
-  and interactive jobs, are left to your own rules.
-- **Node pins are for plain jobs.** sjp chooses the node only for a job that can start
-  at once, on one node, with an explicit memory request. Not for arrays, `--nodelist`,
-  `--exclude`, `--exclusive`, held jobs, or several tasks without `-N 1`.
-- **"Room" means free CPUs and memory now,** not that the job starts first: jobs with
-  higher priority that are already queued can still go before it.
-- **Jobs without a memory request** count as 512 MB, as sjp cannot see the memory Slurm
-  will give them by default.
-- **Time limits are taken at face value** (`[pin] time_aware`): jobs whose users ask for
-  far more time than they need count as long.
-- **Over-cap jobs keep running.** With `[limits] mode`, jobs started over a CPU cap run
-  until they end (see [Configuration](#configuration)).
-- **One `sjpd` per cluster,** on one controller. A backup controller's `sjp.place()`
-  finds no fresh data and returns `false`, so your own rules apply there.
-- **Upgrades need `scontrol reconfigure`:** `slurmctld` loads `sjp.lua` once, with your
-  `job_submit.lua`.
+Currently, sjp places single-node batch jobs only; jobs asking for several nodes, GPUs, node
+features or a reservation are left to your own rules. See
+[Limitations](https://github.com/KasperSkytte/slurmjobpacker/wiki/Limitations) for the rest.
 
 ## Analysing your own cluster
 
