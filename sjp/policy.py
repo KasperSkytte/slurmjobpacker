@@ -21,10 +21,6 @@ def stranded(fc: float, fm: float, q50: float) -> float:
     return max(0.0, fc - fm / q50)
 
 
-def phi_cluster(free, demand) -> float:
-    return sum(phi_node(fc, fm, demand) for fc, fm in free)
-
-
 def feasible(cpus: int, mem_mb: int, nodes_by_part) -> list[str]:
     """Partitions holding at least one node physically big enough for the job.
 
@@ -70,8 +66,7 @@ def largest_partitions(nodes_by_part) -> list[str]:
     return [p for p, v in nodes_by_part.items() if v and max(m for _, m in v) == best]
 
 
-def choose(cpus, mem_mb, nodes_by_part, free_by_part, demand,
-           tolerance=0.25, starving=False):
+def choose(cpus, mem_mb, nodes_by_part, free_by_part, demand, tolerance=0.25):
     """The feasible *set* to hand Slurm. Slurm's PriorityTier still orders it.
 
     Never returns an empty list: the top shape buckets can describe jobs no node
@@ -86,8 +81,6 @@ def choose(cpus, mem_mb, nodes_by_part, free_by_part, demand,
     # PriorityTier order regardless of list order, so the order here is free --
     # and making it deterministic keeps the rendered table stable, so an
     # unchanged decision cannot masquerade as a change and trigger a rewrite.
-    if starving:
-        return sorted(p for _, p in scored)
     lo = scored[0][0]
     return sorted(p for c, p in scored if c <= lo + tolerance * cpus)
 

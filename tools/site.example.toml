@@ -5,8 +5,8 @@
 name = "example"            # shown in figure titles
 since = "2025-10-09"        # analyse jobs from this date, e.g. when the partitions were set up
 ratio_threshold = 6000      # MB per CPU at which your current rule switches slim -> fat
-# demand = [[800, 0.1], ...] # optional: `python3 -m sjp.fit` output; sjp's defaults otherwise
-# demand_median = 4267
+demand_median = 4267        # MB per CPU of the median job
+# Also optional: demand, the demand mix from `python3 -m sjp.fit`; without it, sjp's defaults.
 
 [qos]                       # the per-user and per-account CPU caps jobs run under
 max_cpu_per_user = 864

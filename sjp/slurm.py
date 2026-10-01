@@ -156,10 +156,6 @@ def expand_hostlist(s: str) -> list[str]:
     return out
 
 
-def pending() -> list[dict]:
-    return queue("PD")
-
-
 def _epoch(s: str) -> float | None:
     """Slurm's local '2026-09-24T12:23:58' -> epoch seconds."""
     try:
@@ -305,10 +301,6 @@ def cmd_set_job_qos(jobid: str, qos: str, note: str | None = None) -> list[str]:
     return argv + [f"admincomment={note}"] if note is not None else argv
 
 
-def cmd_set_array_throttle(jobid: str, n: int) -> list[str]:
-    return ["scontrol", "update", f"jobid={jobid}", f"arraytaskthrottle={n}"]
-
-
 def cmd_release_pin(jobid: str, parts: str, note: str) -> list[list[str]]:
     """Undo a pin: drop the node requirement, then restore the partitions.
 
@@ -325,17 +317,3 @@ def cmd_set_qos_cpu_limits(qos: str, per_user: int, per_account: int) -> list[st
             f"MaxTRESPU=cpu={int(per_user)}", f"MaxTRESPA=cpu={int(per_account)}"]
 
 
-def set_job_partitions(jobid: str, parts: list[str]) -> bool:
-    return apply(cmd_set_job_partitions(jobid, parts))
-
-
-def set_job_qos(jobid: str, qos: str) -> bool:
-    return apply(cmd_set_job_qos(jobid, qos))
-
-
-def set_array_throttle(jobid: str, n: int) -> bool:
-    return apply(cmd_set_array_throttle(jobid, n))
-
-
-def set_qos_cpu_limits(qos: str, per_user: int, per_account: int) -> bool:
-    return apply(cmd_set_qos_cpu_limits(qos, per_user, per_account), timeout=30.0)

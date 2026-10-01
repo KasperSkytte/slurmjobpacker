@@ -4,8 +4,9 @@
 #
 # Start in mode = "observe": the daemon computes and logs every decision and
 # changes nothing. "advise" lets the plugin choose partitions; "enforce" also
-# pins nodes and, with [limits] mode = "global", pulses the QOS caps. Creating
-# the disable_file returns the plugin to its fallback on the next submission.
+# pins nodes, widens long waits and, with [limits] mode set, helps jobs held by
+# QOS CPU caps. While disable_file exists, sjp.place() returns false, so only
+# the site's own rules in job_submit.lua apply.
 
 [general]
 mode = "observe"
@@ -19,7 +20,6 @@ score_interval = 1.0
 node_poll_interval = 1.0
 queue_poll_interval = 8.0
 act_interval = 15.0
-max_actions_per_interval = 5
 policy_max_age = 300.0
 
 [topology]
@@ -65,15 +65,4 @@ pulse_seconds = 60.0
 cooldown_seconds = 300.0
 flex_qos_name = "flex"
 flex_revert_after = 60.0
-
-[cohorts]
-key = ["user", "name", "cpus", "mem"]
-min_members = 50
-max_queue_share = 0.5
-
-[runtime_model]
-quantile = 0.95
-min_members = 20
-refresh_hours = 6
-margin = 1.25
 

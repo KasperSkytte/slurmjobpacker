@@ -22,7 +22,6 @@ DEFAULTS: dict = {
         "node_poll_interval": 1.0,    # scontrol show nodes - small, cheap
         "queue_poll_interval": 8.0,   # squeue - takes a job-table lock, keep slow
         "act_interval": 15.0,         # how often the actor may issue updates
-        "max_actions_per_interval": 5,
         "policy_max_age": 300.0,      # plugin ignores a table older than this
     },
     "topology": {
@@ -107,17 +106,6 @@ DEFAULTS: dict = {
         "cooldown_seconds": 300.0,    # minimum time at base between pulses
         "flex_qos_name": "flex",      # flex mode moves held jobs into this QOS
         "flex_revert_after": 60.0,    # seconds a moved job may stay pending there
-    },
-    "cohorts": {
-        "key": ["user", "name", "cpus", "mem"],
-        "min_members": 50,
-        "max_queue_share": 0.5,       # one cohort may hold at most this much queue
-    },
-    "runtime_model": {
-        "quantile": 0.95,
-        "min_members": 20,
-        "refresh_hours": 6,
-        "margin": 1.25,
     },
 }
 

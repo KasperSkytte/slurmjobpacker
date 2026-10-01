@@ -60,12 +60,6 @@ check("same job admitted to every partition that fits it", len(loaded) > len(idl
       and set(loaded) == set(policy.feasible(1, 32768, TOTAL)),
       f"idle={len(idle)} loaded={len(loaded)}: {','.join(loaded)}")
 
-print("\n4. starvation guard widens the set")
-narrow = policy.choose(16, 131072, TOTAL, scale(0.5), DEMAND, 0.25, starving=False)
-wide = policy.choose(16, 131072, TOTAL, scale(0.5), DEMAND, 0.25, starving=True)
-check("starving job gets every feasible partition", len(wide) >= len(narrow),
-      f"{len(narrow)} -> {len(wide)}")
-
 print("\n5. the table only changes when the decisions change")
 d = daemon.Daemon(CFG)
 d.mode = "observe"
@@ -167,10 +161,12 @@ try:
           r["placed"] is False and r["would"] == "" and r["verdict"] == "not placed"
           and r["pin"] is None, r["why"])
     check("apply() refuses while actuation is off",
-          slurm.set_qos_cpu_limits("sjp-test-no-such-qos", 1, 1) is False and ran == [])
+          slurm.apply(slurm.cmd_set_qos_cpu_limits("sjp-test-no-such-qos", 1, 1)) is False
+          and ran == [])
     slurm.set_actuation(True)
     check("apply() runs once actuation is on",
-          slurm.set_qos_cpu_limits("sjp-test-no-such-qos", 1, 1) is True and len(ran) == 1)
+          slurm.apply(slurm.cmd_set_qos_cpu_limits("sjp-test-no-such-qos", 1, 1)) is True
+          and len(ran) == 1)
 finally:
     slurm._run, slurm.qos_cpu_limits = real_run, real_q
     slurm.set_actuation(False)
@@ -355,15 +351,17 @@ subprocess.run = lambda args, **kw: launched.append(args) or subprocess.Complete
 try:
     slurm.set_actuation(False)
     refused = 0
-    for argv in (slurm.cmd_set_qos_cpu_limits("sjp-test-no-such-qos", 1, 1),
-                 slurm.cmd_set_job_partitions("1", ["slim2"]),
-                 slurm.cmd_set_job_qos("1", "flex"), slurm.cmd_set_array_throttle("1", 5)):
+    writes = [slurm.cmd_set_qos_cpu_limits("sjp-test-no-such-qos", 1, 1),
+              slurm.cmd_set_job_partitions("1", ["slim2"]),
+              slurm.cmd_set_job_qos("1", "flex"),
+              *slurm.cmd_release_pin("1", "slim1", "sjp:released=n1")]
+    for argv in writes:
         try:
             slurm._run(argv)
         except slurm.SlurmError:
             refused += 1
     check("every state-changing command is refused before a process starts",
-          refused == 4 and launched == [], f"refused={refused} launched={launched}")
+          refused == len(writes) and launched == [], f"refused={refused} launched={launched}")
     slurm._run(["scontrol", "show", "nodes", "--oneliner"])
     check("read-only commands still run", len(launched) == 1)
 finally:

@@ -86,10 +86,6 @@ class LimitPulse:
         self.cur_u, self.cur_a = self.base_u, self.base_a
         return self.cur_u, self.cur_a
 
-    @property
-    def multiple(self) -> float:
-        return self.cur_u / self.base_u if self.known else 1.0
-
     def state(self) -> dict:
         return dict(qos=self.qos, per_user=self.cur_u, per_account=self.cur_a,
                     raised=self.raised, streak=self.streak)

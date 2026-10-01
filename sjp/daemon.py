@@ -10,7 +10,7 @@ surface is ~300 buckets and takes single-digit milliseconds; what must never
 block is the tick, and a slow `scontrol` call otherwise would.
 """
 from __future__ import annotations
-import argparse, collections, json, os, pwd, signal, sys, threading, time, traceback
+import argparse, collections, json, os, pwd, signal, sys, threading, time
 
 from . import config, limits, narrate, policy, slurm
 
