@@ -78,7 +78,7 @@ It starts in `observe` mode: it only reads the cluster and logs what it would do
 
 `sjpd` reads `/etc/sjp/sjp.toml`; restart it after a change. `--print-config` lists
 every setting with its default; [`sjp/config.py`](sjp/config.py) explains each one.
-Partitions, their `PriorityTier`, nodes and QOS caps are read from Slurm. The two
+Partitions, their `PriorityTier`, nodes and QOS caps are read from Slurm. The
 settings that matter most:
 
 **`[general] mode`**, how far sjp goes:
@@ -97,6 +97,11 @@ per-account CPU cap of their QOS, yet would fit on idle nodes:
 - `"flex"`: move those jobs, as many as fit now, to a QOS of your own (`flex_qos_name`,
   default `flex`) with the caps you want on top of the normal ones. If jobs don't start within a minute it is reverted back. Ensure the QOS is created and allow
   it for all users first with: `sacctmgr -i modify account root set qos+=flex`. Adjust for individual users if necessary.
+
+**`[pin] time_aware`** (default `false`): also weigh time limits when choosing a node.
+sjp then prefers a node whose running jobs end around when the new job would, so long
+jobs gather on the same nodes and nodes running short jobs empty out together, leaving
+room for big jobs. Empty nodes are kept for jobs that need them.
 
 ## Using sjp from job_submit.lua
 
@@ -155,7 +160,9 @@ AdminComment=sjp:pin=bio-node01;from=zen3,zen5;job=4c,16G,4.0G/c;free=60c,293G,4
 
 The partitions it set; the job's CPUs, memory and memory per CPU (in GB); for a pinned job the
 node and its free CPUs, memory and memory per CPU at that moment; and the version of the
-placement table. A pin released later reads `sjp:released=...`; a job moved to the flex
+placement table. With `[pin] time_aware`, a pin also notes the job's time limit and how
+long the node's jobs still ran (`;time=336h;busy=336h`). A pin released later reads
+`sjp:released=...`; a job moved to the flex
 QOS gets `;flex=<its own QOS>`. Each submission is also logged in the `slurmctld` log, for
 example:
 

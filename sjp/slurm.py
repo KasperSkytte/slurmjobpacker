@@ -109,7 +109,7 @@ PENDING_FMT = ("JobID:|,UserName:|,Account:|,NumCPUs:|,MinMemory:|,"
 # *requested* TRES for a job that has not started; its mem is the job's total,
 # which MinMemory is not when the job used --mem-per-cpu.
 QUEUE_FMT = PENDING_FMT + (",StateCompact:|,tres-alloc:|,ReqNodes:|,NodeList:|,"
-                           "SubmitTime:|,NumTasks:|,EligibleTime:|,Feature:|")
+                           "SubmitTime:|,NumTasks:|,EligibleTime:|,Feature:|,EndTime:|")
 
 
 def queue(states: str = "PD,R,CF") -> list[dict]:
@@ -118,7 +118,7 @@ def queue(states: str = "PD,R,CF") -> list[dict]:
     out = []
     for line in txt.splitlines():
         f = [x.strip() for x in line.split("|")]
-        if len(f) < 19:
+        if len(f) < 20:
             continue
         try:
             tres = dict(kv.split("=", 1) for kv in f[12].split(",") if "=" in kv)
@@ -132,11 +132,27 @@ def queue(states: str = "PD,R,CF") -> list[dict]:
                             gpu=any(k.startswith("gres/gpu") for k in tres),
                             req_nodes=f[13], nodelist=f[14], submit=_epoch(f[15]),
                             ntasks=int(f[16] or 1), eligible=_epoch(f[17]),
-                            features="" if f[18] == "(null)" else f[18]))
+                            features="" if f[18] == "(null)" else f[18],
+                            end=_epoch(f[19])))
         except ValueError:
             continue
     if txt.strip() and not out:
         raise SlurmError(f"squeue returned {len(txt.splitlines())} lines, none parsable")
+    return out
+
+
+def expand_hostlist(s: str) -> list[str]:
+    """'n[01-03,07],gpu1' -> ['n01', 'n02', 'n03', 'n07', 'gpu1']."""
+    out = []
+    for m in re.finditer(r"([^,\[]+)(?:\[([^\]]*)\])?([^,]*)", s):
+        head, ranges, tail = m.groups()
+        if not ranges:
+            out.append(head + tail)
+            continue
+        for r in ranges.split(","):
+            a, _, b = r.partition("-")
+            for i in range(int(a), int(b or a) + 1):
+                out.append(f"{head}{i:0{len(a)}d}{tail}")
     return out
 
 

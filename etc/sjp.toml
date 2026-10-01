@@ -44,6 +44,7 @@ min_gain = 1.0
 min_ratio_gain = 0.1
 release_after = 60.0
 max_age = 10.0
+time_aware = false
 
 [starvation]
 enabled = true

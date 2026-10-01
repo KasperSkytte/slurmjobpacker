@@ -65,6 +65,11 @@ DEFAULTS: dict = {
         "release_after": 60.0,    # seconds a pinned job may stay pending before sjpd
                                   # drops the pin and restores its partitions
         "max_age": 10.0,          # plugin places and pins only from node state this fresh
+        # Also weigh time when choosing the node: prefer one whose running jobs
+        # end around when the job would, so long jobs gather on the same nodes
+        # and nodes running short jobs empty out together, leaving room for big
+        # jobs. Uses the jobs' time limits.
+        "time_aware": False,
     },
     "starvation": {
         # A job placed in few partitions can wait while another partition would

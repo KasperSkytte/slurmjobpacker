@@ -445,6 +445,29 @@ lua = policy.render_lua(tbl, CFG, time.time(), 1, TOTAL, dict(nodes=nf, tiers=TI
 check("free space is emitted without pinning too, marked as such",
       'enabled = false' in lua and '["n16"] = {256, 1500000, "slim1"}' in lua)
 
+print("\n12a. with [pin] time_aware, long jobs join nodes whose jobs run long")
+two = {"short": (64, 256000, ["slim1"]), "long": (64, 256000, ["slim1"])}
+busy = {"short": 3600, "long": 14 * 86400}
+args = (4, 16000, ["slim1"], two, {"slim1": 1}, CFG["policy"]["demand"], 1.0, 0.1)
+check("off by default: two equal nodes, no pin", policy.pick_node(*args)[0] is None)
+check("a 2-week job goes to the node whose jobs run for weeks",
+      policy.pick_node(*args, busy, 14 * 1440)[0] == "long",
+      policy.pick_node(*args, busy, 14 * 1440)[2]["why"])
+check("a 30-minute job extends neither: no pin", policy.pick_node(*args, busy, 30)[0] is None)
+check("an empty node counts as busy for a minute, so a long job avoids it",
+      policy.pick_node(*args, {"long": 7 * 86400}, 2 * 1440)[0] == "long")
+check("node busy times come from running jobs' end times and node lists",
+      daemon.Daemon.busy_until([dict(state="R", end=100.0, nodelist="n[1-2]"),
+                                dict(state="R", end=300.0, nodelist="n2"),
+                                dict(state="PD", end=900.0, nodelist="")], 0)
+      == {"n1": 100.0, "n2": 300.0})
+lua_t = policy.render_lua(tbl, CFG, time.time(), 1, TOTAL,
+                          dict(nodes=nf, tiers=TIERS, room=None, busy={"n16": 1790000000}))
+check("busy times are emitted only when time_aware is on",
+      'time_aware = true' in lua_t and '["n16"] = 1790000000' in lua_t
+      and 'time_aware' not in policy.render_lua(tbl, CFG, time.time(), 1, TOTAL,
+                                                dict(nodes=nf, tiers=TIERS, room=None)))
+
 print("\n13. stale pins are released, and only sjp's own")
 real_ac, real_apply = slurm.admin_comment, slurm.apply
 comments = {"7": "sjp:pin=n16;from=slim1,slim2;job=4c,16G,4.0G/c;v=3", "8": ""}

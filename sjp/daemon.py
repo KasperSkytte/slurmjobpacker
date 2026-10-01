@@ -196,6 +196,19 @@ class Daemon:
                           max(0, d["mem"] - d["alloc_mem"]), ps)
         return out
 
+    @staticmethod
+    def busy_until(jobs, now) -> dict:
+        """node -> when its running jobs end (epoch seconds), from their time
+        limits. A job without a limit counts as running for a year."""
+        out = {}
+        for j in jobs:
+            if j["state"] not in ("R", "CF"):
+                continue
+            end = j.get("end") or now + 365 * 86400
+            for n in slurm.expand_hostlist(j.get("nodelist") or ""):
+                out[n] = max(out.get(n, 0), end)
+        return out
+
     def uid(self, user):
         if user not in self.uids:
             try:
@@ -312,14 +325,15 @@ class Daemon:
             jobs = list(self.sh.jobs)
         state = dict(nodes=self.node_free(nodes, parts),
                      tiers={p: parts[p]["tier"] for p in total},
-                     room=self.user_room(jobs), enabled=self.pin_active())
+                     room=self.user_room(jobs), enabled=self.pin_active(),
+                     busy=self.busy_until(jobs, now) if self.cfg["pin"]["time_aware"] else None)
         # Free space goes out always: the plugin places a job only where some
         # node has room for it now, and pins from it when pinning is on.
         pin = state
         pin_sig = hash(repr(pin))
         self.snap = dict(table=table, cap=policy.caps(total), total=total, free=free,
                          version=self.version, node_free=state["nodes"],
-                         tiers=state["tiers"], room=state["room"])
+                         tiers=state["tiers"], room=state["room"], busy=state["busy"])
         # Rewrite when the partition decisions or the free space change, and
         # often enough that the plugin never sees the table or its free space
         # as stale: policy max_age/3, or pin max_age/2.
@@ -460,9 +474,14 @@ class Daemon:
         elif room is not None and room < cpus:
             pin_why = f"the user is at the per-user CPU cap ({room} CPUs left)"
         else:
+            busy = None
+            if s.get("busy") is not None:
+                t = (j.get("submit") or time.time()) if running else time.time()
+                busy = {n: until - t for n, until in s["busy"].items()}
             pin, pin_parts, info = policy.pick_node(cpus, mem, allowed, nf, s["tiers"],
                                                    self.demand, self.cfg["pin"]["min_gain"],
-                                                   self.cfg["pin"]["min_ratio_gain"])
+                                                   self.cfg["pin"]["min_ratio_gain"],
+                                                   busy, j["timelimit"])
             pin_why = info["why"]
             if pin and node:
                 pin_why += ("; Slurm chose the same node" if pin == node

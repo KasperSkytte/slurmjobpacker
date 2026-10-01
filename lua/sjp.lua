@@ -150,7 +150,26 @@ end
 -- first with room, so the node is chosen inside the highest-ranked allowed
 -- partition that has room: of the nodes destroying the least placeable capacity
 -- (within min_gain), the one whose free memory per CPU is closest to the job's.
-local function pick_node(pin, parts, cpus, mem)
+-- Mirrors sjp.policy.time_cost: how far the job would outlast the jobs already
+-- on the node, as a log ratio; 0 unless [pin] time_aware is on.
+-- Jobs this plugin pinned in the last 30 s: node -> {until, pinned at}. sjpd
+-- reads the queue only every few seconds, so its busy_until can miss them.
+local recent = {}
+
+local function busy_until(pin, name)
+    local t = (type(pin.busy_until) == "table" and pin.busy_until[name]) or 0
+    local r = recent[name]
+    if r and os.time() - r[2] < 30 then t = math.max(t, r[1]) end
+    return t
+end
+
+local function time_cost(pin, name, minutes)
+    if not pin.time_aware or type(pin.busy_until) ~= "table" or not minutes then return 0 end
+    local busy = busy_until(pin, name) - os.time()
+    return math.max(0, math.log(minutes * 60 / math.max(busy, 60)))
+end
+
+local function pick_node(pin, parts, cpus, mem, minutes)
     local allowed, ranks, seen = {}, {}, {}
     for p in string.gmatch(parts, "[^,]+") do
         allowed[p] = true
@@ -177,7 +196,7 @@ local function pick_node(pin, parts, cpus, mem)
             local want = mem / cpus
             local function mismatch(name)
                 local n = pin.nodes[name]
-                return math.abs(math.log((n[2] / n[1]) / want))
+                return math.abs(math.log((n[2] / n[1]) / want)) + time_cost(pin, name, minutes)
             end
             local lo, hi, worst_mis = math.huge, -math.huge, -math.huge
             for _, c in ipairs(cands) do
@@ -302,6 +321,13 @@ local function gb(mb)
     return string.format("%.0fG", g)
 end
 
+-- Seconds as hours, rounded the same way.
+local function hours(sec)
+    local h = sec / 3600
+    if h < 10 then return string.format("%.1fh", h) end
+    return string.format("%.0fh", h)
+end
+
 local function mpc(cpus, mem)
     if cpus <= 0 then return "-" end
     return string.format("%.0f", mem / cpus)
@@ -319,8 +345,9 @@ local function place(job_desc, submit_uid)
     local mem, mem_given = job_mem(job_desc, cpus)
     if not mem then return false, "no memory" end
     local minutes = job_desc.time_limit
+    local has_limit = true
     if not minutes or minutes == slurm.NO_VAL or minutes == slurm.INFINITE then
-        minutes = 60
+        minutes, has_limit = 60, false
     end
     local detail = string.format("job %d CPUs x %d MB (%s MB/CPU%s), %d min",
                                  cpus, mem, mpc(cpus, mem),
@@ -347,7 +374,7 @@ local function place(job_desc, submit_uid)
     local pok, node, pparts = pcall(function()
         local ok_pin, no = pin_eligible(job_desc, submit_uid, cpus, tbl, mem_given)
         if not ok_pin then return nil, no end
-        return pick_node(tbl.pin, parts, cpus, mem)
+        return pick_node(tbl.pin, parts, cpus, mem, has_limit and minutes or nil)
     end)
     if pok and node and pparts then
         job_desc.req_nodes = node
@@ -357,6 +384,15 @@ local function place(job_desc, submit_uid)
         local n = tbl.pin.nodes[node]
         mark = string.format("sjp:pin=%s;from=%s;%s;free=%dc,%s,%s/c;%s", node, parts,
                              shape, n[1], gb(n[2]), gb(n[2] / math.max(n[1], 1)), version)
+        if tbl.pin.time_aware and type(tbl.pin.busy_until) == "table" then
+            -- the job's time limit, and how long the node's jobs still ran
+            local until_ = busy_until(tbl.pin, node)
+            mark = mark .. ";time=" .. hours(minutes * 60)
+                        .. ";busy=" .. hours(math.max(0, until_ - os.time()))
+            if has_limit then
+                recent[node] = { math.max(until_, os.time() + minutes * 60), os.time() }
+            end
+        end
         detail = detail .. string.format(
             "; node %s free %d CPUs x %d MB (%s MB/CPU), after %d x %d (%s MB/CPU)",
             node, n[1], n[2], mpc(n[1], n[2]), n[1] - cpus, n[2] - mem,

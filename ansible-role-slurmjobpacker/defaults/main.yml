@@ -25,6 +25,8 @@ sjp_config:
     mode: "off"                    # off | global | flex: help jobs held by QOS CPU caps
     flex_qos_name: flex            # for flex: create this QOS and allow it for all users,
                                    # e.g. sacctmgr -i modify account root set qos+=flex
+  pin:
+    time_aware: false              # true: weigh time limits when choosing a node
 
 sjp_service_enabled: true
 sjp_service_state: started

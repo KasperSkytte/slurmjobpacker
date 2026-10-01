@@ -92,8 +92,18 @@ def choose(cpus, mem_mb, nodes_by_part, free_by_part, demand,
     return sorted(p for c, p in scored if c <= lo + tolerance * cpus)
 
 
+def time_cost(minutes, busy_seconds) -> float:
+    """How far a job would extend the time its node stays busy, as a log ratio:
+    0 if it ends before the node's running jobs do, more the longer it outlasts
+    them. A node running nothing counts as busy for a minute, so long jobs keep
+    off empty nodes and join other long jobs."""
+    if not minutes:
+        return 0.0
+    return max(0.0, math.log(minutes * 60 / max(busy_seconds, 60)))
+
+
 def pick_node(cpus, mem_mb, allowed, node_free, tiers, demand, min_gain=1.0,
-              min_ratio_gain=0.1):
+              min_ratio_gain=0.1, busy=None, minutes=None):
     """Which node a job that can start now should start on. Authoritative;
     lua/sjp.lua's pick_node mirrors it.
 
@@ -104,7 +114,9 @@ def pick_node(cpus, mem_mb, allowed, node_free, tiers, demand, min_gain=1.0,
     1. the nodes that destroy the least placeable capacity (phi), within
        min_gain of the best, are the contenders;
     2. of those, the one whose free memory per CPU is closest to the job's
-       (|log ratio|) wins, then the lower phi loss, then the name.
+       (|log ratio|) wins, then the lower phi loss, then the name. With busy
+       ([pin] time_aware), the closeness adds time_cost: how far the job would
+       outlast the jobs already on the node.
 
     Phi already favours matching shapes, but it is blind beyond the demand mix
     (every ratio above its top quantile scores alike) and near-indifferent between
@@ -113,6 +125,7 @@ def pick_node(cpus, mem_mb, allowed, node_free, tiers, demand, min_gain=1.0,
     nor min_ratio_gain better by ratio than the worst candidate.
 
     node_free: name -> (free_cpus, free_mem_mb, [partitions]).
+    busy: name -> seconds until the node's running jobs end; None to ignore time.
     Returns (node or None, partitions for the pinned job, info dict with "why").
     """
     ranks = sorted({tiers.get(p, 1) for p in allowed}, reverse=True)
@@ -130,7 +143,10 @@ def pick_node(cpus, mem_mb, allowed, node_free, tiers, demand, min_gain=1.0,
 
     def mismatch(n):
         fc, fm, _ = node_free[n]
-        return abs(math.log((fm / fc) / want))
+        m = abs(math.log((fm / fc) / want))
+        if busy is not None:
+            m += time_cost(minutes, busy.get(n, 0))
+        return m
     near = [(mismatch(n), loss, n) for loss, n in cands if loss - cands[0][0] < min_gain]
     mis, loss, best = min(near)
     phi_gain = cands[-1][0] - loss
@@ -150,6 +166,9 @@ def pick_node(cpus, mem_mb, allowed, node_free, tiers, demand, min_gain=1.0,
         info["why"] = (f"{len(cands)} {tier} nodes could start it now and would leave about "
                        f"as much room; {best}'s free memory per CPU ({have:.1f} GB) is closest "
                        f"to the job's ({want / 1024:.1f} GB)")
+        if busy is not None:
+            info["why"] += (f", counting how long its jobs run ({busy.get(best, 0) / 3600:.1f} h "
+                            f"left, the job asks {(minutes or 0) / 60:.1f} h)")
     else:
         info["why"] = f"the {len(cands)} {tier} nodes with room are about equally good"
         return None, [], info
@@ -311,6 +330,12 @@ def render_pin(cfg, pin) -> list[str]:
     for n, (fc, fm, parts) in sorted(pin["nodes"].items()):
         out.append('      ["%s"] = {%d, %d, "%s"},' % (n, fc, fm, ",".join(parts)))
     out += ["    },"]
+    if pin.get("busy") is not None:
+        # [pin] time_aware: when each node's running jobs end, as epoch seconds
+        out += ["    time_aware = true,", "    busy_until = {"]
+        for n, t in sorted(pin["busy"].items()):
+            out.append('      ["%s"] = %d,' % (n, t))
+        out.append("    },")
     if pin.get("room") is not None:
         # CPUs each user has left under the per-user cap, per QOS; and the QOS
         # a user's running jobs are in, for jobs submitted without --qos
