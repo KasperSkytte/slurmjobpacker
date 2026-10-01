@@ -72,8 +72,16 @@ sudo cp systemd/sjpd.service /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now sjpd
 ```
 
-It starts in `observe` mode: it only reads the cluster and logs what it would do. Set
-`mode` in `sjp.toml` and restart `sjpd` to go further:
+It starts in `observe` mode: it only reads the cluster and logs what it would do.
+
+## Configuration
+
+`sjpd` reads `/etc/sjp/sjp.toml`; restart it after a change. `--print-config` lists
+every setting with its default; [`sjp/config.py`](sjp/config.py) explains each one.
+Partitions, their `PriorityTier`, nodes and QOS caps are read from Slurm. The two
+settings that matter most:
+
+**`[general] mode`**, how far sjp goes:
 
 | mode | chooses partitions | pins nodes, widens long waits | helps jobs held by CPU caps |
 |---|---|---|---|
@@ -81,17 +89,14 @@ It starts in `observe` mode: it only reads the cluster and logs what it would do
 | `advise` | yes | no | no |
 | `enforce` | yes | yes | if `[limits] mode` is set |
 
-`[limits] mode` decides what to do when jobs are held only by the per-user or
+**`[limits] mode`**, what to do in `enforce` when jobs are held only by the per-user or
 per-account CPU cap of their QOS, yet would fit on idle nodes:
 
 - `"off"` (default): nothing;
 - `"global"`: raise both caps of that QOS, for everyone, for one minute;
 - `"flex"`: move those jobs, as many as fit now, to a QOS of your own (`flex_qos_name`,
-  default `flex`) with the caps you want on top of the normal ones. Create it and allow
-  it for all users first. A moved job that has not started within a minute goes back.
-
-With Ansible, the example role in [`ansible-role-slurmjobpacker/`](ansible-role-slurmjobpacker/)
-does all of the above.
+  default `flex`) with the caps you want on top of the normal ones. If jobs don't start within a minute it is reverted back. Ensure the QOS is created and allow
+  it for all users first with: `sacctmgr -i modify account root set qos+=flex`. Adjust for individual users if necessary.
 
 ## Using sjp from job_submit.lua
 

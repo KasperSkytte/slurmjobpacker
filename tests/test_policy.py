@@ -294,12 +294,16 @@ notes = {"1": "sjp:placed", "2": "", "3": "", "4": "", "5": "sjp:placed;flex=nor
          "6": ""}
 ran = []
 real_ac, real_apply = slurm.admin_comment, slurm.apply
+real_uq, real_cn = slurm.user_qos, slurm.cluster_name
+assoc = {("u", "a"): {"normal", "flex"}, ("v", "a"): {"normal"}}
+slurm.user_qos = lambda cluster: {k: set(v) for k, v in assoc.items()}
+slurm.cluster_name = lambda: "c"
 slurm.admin_comment = lambda jid: notes[jid]
 slurm.apply = lambda argv, timeout=10.0: ran.append(argv) or True
 def fj(jid, cpus, prio, reason="QOSMaxCpuPerUserLimit", qos="normal", **kw):
     return dict(dict(jobid=jid, cpus=cpus, mem=cpus * 4000, req_mem=cpus * 4000,
                      priority=prio, reason=reason, qos=qos, partition="slim1",
-                     gpu=False, req_nodes=""), **kw)
+                     gpu=False, req_nodes="", user="u", account="a"), **kw)
 nf10 = {"a": (64, 512000, ["slim1"]), "b": (16, 64000, ["slim1", "slim2"])}
 pend = [fj("1", 48, 9), fj("2", 32, 8), fj("3", 16, 7),
         fj("4", 8, 6, reason="Resources"), fj("6", 4, 5, partition="fat1")]
@@ -327,8 +331,13 @@ try:
     notes["7"] = ""
     d.unflex([fj("7", 8, 9, qos="flex")], 500.0)
     check("a job someone else put in flex is left alone", ran == [])
+    notes["8"] = ""
+    d.flex([fj("8", 4, 9, user="v")], nf10, 1000.0)
+    check("a user who may not use the flex QOS: the job is not moved, and the log says so",
+          ran == [] and "user v (account a) may not use QOS flex" in d.log_fh.getvalue())
 finally:
     slurm.admin_comment, slurm.apply = real_ac, real_apply
+    slurm.user_qos, slurm.cluster_name = real_uq, real_cn
 check("sjp marks parse and extend",
       slurm.sjp_marks("x;sjp:pin=n1;from=a,b") == {"pin": "n1", "from": "a,b"}
       and slurm.add_mark("site note", "flex", "normal") == "site note;sjp:flex=normal"

@@ -54,6 +54,9 @@ class Daemon:
         self.flexed: dict = {}       # jobid -> (when, node, cpus, mem): moved to the flex
                                      # QOS this run, not seen running yet
         self.flex_seen: dict = {}    # jobid -> when flex mode last moved it either way
+        self.flex_users = None       # (read at, {(user, account): {qos}}), a cache
+        self.flex_warned: set = set()  # (user, account) already named as missing it
+        self.cluster = ""
         self.version = 0
         self.last_rendered = None
         self.last_sig = None      # content signature, excluding the timestamp
@@ -700,7 +703,7 @@ class Daemon:
             parts = set(j["partition"].split(","))
             fits = [n for n, (fc, fm, ps) in free.items()
                     if fc >= cpus and fm >= mem and ps & parts]
-            if not fits:
+            if not fits or not self.flex_allowed(j["user"], j["account"], target):
                 continue
             node = min(fits, key=lambda n: free[n][0])      # the tightest fit
             free[node][0] -= cpus
@@ -719,6 +722,30 @@ class Daemon:
                         jobid=jid, before=j["qos"], after=target, node=node)
             if self.mode == "enforce":
                 self.flexed[jid] = (now, node, cpus, mem)
+
+    def flex_allowed(self, user, account, target) -> bool:
+        """Whether this user may use the flex QOS under this account, read from
+        sacctmgr every ten minutes. If not, the job is not moved, and the user is
+        named in the log once."""
+        now = time.time()
+        try:
+            if self.flex_users is None or now - self.flex_users[0] > 600:
+                if not self.cluster:
+                    self.cluster = slurm.cluster_name()
+                self.flex_users = (now, slurm.user_qos(self.cluster))
+        except slurm.SlurmError as e:
+            self.log("error", where="flex", detail=repr(e))
+            return False
+        have = self.flex_users[1].get((user, account))
+        if have is None or target in have:
+            return True                  # unknown association: let Slurm decide
+        if (user, account) not in self.flex_warned:
+            self.flex_warned.add((user, account))
+            self.log("error", where="flex",
+                     detail=f"user {user} (account {account}) may not use QOS {target}, "
+                            f"so their jobs held by the CPU cap are not moved there; "
+                            f"allow it with: sacctmgr modify user {user} set qos+={target}")
+        return False
 
     def unflex(self, pend, now):
         """Put jobs back in their own QOS if they were moved to the flex QOS and

@@ -212,6 +212,27 @@ def _mins(s: str) -> int:
 
 
 # ---------------------------------------------------------------- read-only
+def cluster_name() -> str:
+    for line in _run(["scontrol", "show", "config"]).splitlines():
+        k, _, v = line.partition("=")
+        if k.strip() == "ClusterName":
+            return v.strip()
+    return ""
+
+
+def user_qos(cluster: str) -> dict:
+    """(user, account) -> the QOS that user may use under that account, on this
+    cluster, as sacctmgr shows them (inherited ones included)."""
+    txt = _run(["sacctmgr", "-nP", "show", "assoc", "where", f"cluster={cluster}",
+                "format=Account,User,QOS"], timeout=30.0)
+    out = {}
+    for line in txt.splitlines():
+        acct, user, qos = (line.split("|") + ["", "", ""])[:3]
+        if user:
+            out[(user, acct)] = set(q for q in qos.split(",") if q)
+    return out
+
+
 def qos_exists(qos: str) -> bool:
     return bool(_run(["sacctmgr", "-nP", "show", "qos", f"name={qos}", "format=Name"],
                      timeout=30.0).strip())
