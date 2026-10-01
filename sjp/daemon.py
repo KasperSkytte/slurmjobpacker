@@ -733,7 +733,10 @@ class Daemon:
             free[node][1] -= mem
             self.flex_seen[jid] = now
             try:
-                note = slurm.add_mark(slurm.admin_comment(jid), "flex", j["qos"])
+                # qos=<own>><flex>: where it came from, so it can go back. The
+                # "flex" key is what older versions wrote.
+                note = slurm.set_mark(slurm.admin_comment(jid), "qos",
+                                      f"{j['qos']}>{target}", drop=("flex",))
             except slurm.SlurmError as e:
                 self.log("error", where="flex", detail=repr(e))
                 continue
@@ -784,7 +787,8 @@ class Daemon:
             if moved is not None and now - moved < c["flex_revert_after"]:
                 continue
             try:
-                orig = slurm.sjp_marks(slurm.admin_comment(jid)).get("flex")
+                marks = slurm.sjp_marks(slurm.admin_comment(jid))
+                orig = marks.get("qos", "").partition(">")[0] or marks.get("flex")
             except slurm.SlurmError as e:
                 self.log("error", where="flex", detail=repr(e))
                 continue

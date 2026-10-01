@@ -178,11 +178,15 @@ def sjp_marks(comment: str) -> dict:
     return out
 
 
-def add_mark(comment: str, key: str, value: str) -> str:
-    """comment with key=value added to its sjp marks."""
-    if "sjp:" in comment:
-        return f"{comment};{key}={value}"
-    return f"{comment};sjp:{key}={value}" if comment else f"sjp:{key}={value}"
+def set_mark(comment: str, key: str, value: str, drop=()) -> str:
+    """comment with key=value in its sjp marks, replacing any earlier value of
+    key, and without the keys in drop."""
+    i = comment.find("sjp:")
+    if i < 0:
+        return f"{comment};sjp:{key}={value}" if comment else f"sjp:{key}={value}"
+    gone = {key, *drop}
+    parts = [p for p in comment[i + 4:].split(";") if p and p.partition("=")[0] not in gone]
+    return comment[:i + 4] + ";".join(parts + [f"{key}={value}"])
 
 
 def admin_comment(jobid: str) -> str:

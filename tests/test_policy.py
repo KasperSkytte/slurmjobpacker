@@ -287,7 +287,7 @@ cfg = config.defaults()
 cfg["limits"]["mode"] = "flex"
 cfg["general"]["state_dir"] = tempfile.mkdtemp()
 d = daemon.Daemon(cfg); d.log_fh = io.StringIO(); d.mode = "enforce"
-notes = {"1": "sjp:placed", "2": "", "3": "", "4": "", "5": "sjp:placed;flex=normal",
+notes = {"1": "sjp:placed", "2": "", "3": "", "4": "", "5": "sjp:placed;qos=normal>flex",
          "6": ""}
 ran = []
 real_ac, real_apply = slurm.admin_comment, slurm.apply
@@ -310,13 +310,13 @@ try:
     check("capped jobs that fit move, highest priority first, until the space is used",
           moved == ["jobid=1", "jobid=3"], str(moved))
     check("the move keeps the job's own QOS in its sjp mark",
-          ran[0][3:] == ["qos=flex", "admincomment=sjp:placed;flex=normal"]
-          and ran[1][4] == "admincomment=sjp:flex=normal", str(ran))
+          ran[0][3:] == ["qos=flex", "admincomment=sjp:placed;qos=normal>flex"]
+          and ran[1][4] == "admincomment=sjp:qos=normal>flex", str(ran))
     ran.clear()
     d.flex(pend, nf10, 110.0)
     check("a moved job is not moved again during the cooldown", ran == [])
     pend2 = [fj("1", 48, 9, qos="flex"), fj("5", 8, 9, qos="flex")]
-    notes["1"] = "sjp:placed;flex=normal"
+    notes["1"] = "sjp:placed;qos=normal>flex"
     d.unflex(pend2, 120.0)
     check("still pending in flex: a job moved this run waits flex_revert_after; "
           "one from before a restart goes back now",
@@ -328,6 +328,11 @@ try:
     notes["7"] = ""
     d.unflex([fj("7", 8, 9, qos="flex")], 500.0)
     check("a job someone else put in flex is left alone", ran == [])
+    notes["9"] = "sjp:placed;flex=normal"
+    d.unflex([fj("9", 8, 9, qos="flex")], 600.0)
+    check("the mark older versions wrote still brings a job back",
+          [a[2:] for a in ran] == [["jobid=9", "qos=normal"]], str(ran))
+    ran.clear()
     notes["8"] = ""
     d.flex([fj("8", 4, 9, user="v")], nf10, 1000.0)
     check("a user who may not use the flex QOS: the job is not moved, and the log says so",
@@ -340,7 +345,11 @@ check("the marks the plugin writes parse back",
       == {"placed": "a,b", "job": "4c,16G,4.0G/c", "v": "20"})
 check("sjp marks parse and extend",
       slurm.sjp_marks("x;sjp:pin=n1;from=a,b") == {"pin": "n1", "from": "a,b"}
-      and slurm.add_mark("site note", "flex", "normal") == "site note;sjp:flex=normal"
+      and slurm.set_mark("site note", "qos", "normal>flex") == "site note;sjp:qos=normal>flex"
+      and slurm.set_mark("sjp:placed=a;qos=normal>flex", "qos", "normal>flex")
+      == "sjp:placed=a;qos=normal>flex"
+      and slurm.set_mark("sjp:placed=a;flex=normal", "qos", "normal>flex", drop=("flex",))
+      == "sjp:placed=a;qos=normal>flex"
       and slurm.sjp_marks("") == {})
 
 print("\n10b. the process launcher itself refuses writes while actuation is off")
