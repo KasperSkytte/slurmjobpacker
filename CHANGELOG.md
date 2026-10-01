@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.7.0](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.6.0...v1.7.0) (2026-10-01)
+
+
+### Features
+
+* optional time-aware node choice ([pin] time_aware) ([c4bbee3](https://github.com/KasperSkytte/slurmjobpacker/commit/c4bbee32fe890251a4851510066c190407d72205))
+
+
+### Bug Fixes
+
+* leave multi-node jobs to the site's rules ([ac49170](https://github.com/KasperSkytte/slurmjobpacker/commit/ac49170e16212e788a5000d755f52e83df440693))
+* mark flex moves once, as qos=&lt;own&gt;&gt;&lt;flex&gt; ([36fa690](https://github.com/KasperSkytte/slurmjobpacker/commit/36fa6909b116b4ba80735173c63a252d3ee32771))
+
 ## [1.6.0](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.5.0...v1.6.0) (2026-10-01)
 
 
