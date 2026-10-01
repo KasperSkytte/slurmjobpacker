@@ -147,6 +147,7 @@ and a reason when it left the job untouched:
 | `"gpu"` | the job asks for GPUs |
 | `"reservation"` | the job runs in a reservation |
 | `"constraint"` | the job asks for node features (`--constraint`) |
+| `"multi-node"` | the job asks for more than one node (`-N 2` or more) |
 | `"no memory"` | the job asks for all of a node's memory (`--mem=0`) |
 | `"error"` | something went wrong; the error is in the `slurmctld` log |
 
@@ -183,6 +184,27 @@ and after.
 
 **Turning it off.** `sudo touch /etc/sjp/disable` makes `sjp.place()` return `false` from
 the next submission, so only your own rules apply.
+
+## Limitations
+
+- **Single-node jobs only.** sjp sizes each job against single nodes. Jobs asking for
+  several nodes (`-N 2` or more), GPUs, node features (`--constraint`) or a reservation,
+  and interactive jobs, are left to your own rules.
+- **Node pins are for plain jobs.** sjp chooses the node only for a job that can start
+  at once, on one node, with an explicit memory request. Not for arrays, `--nodelist`,
+  `--exclude`, `--exclusive`, held jobs, or several tasks without `-N 1`.
+- **"Room" means free CPUs and memory now,** not that the job starts first: jobs with
+  higher priority that are already queued can still go before it.
+- **Jobs without a memory request** count as 512 MB, as sjp cannot see the memory Slurm
+  will give them by default.
+- **Time limits are taken at face value** (`[pin] time_aware`): jobs whose users ask for
+  far more time than they need count as long.
+- **Over-cap jobs keep running.** With `[limits] mode`, jobs started over a CPU cap run
+  until they end (see [Configuration](#configuration)).
+- **One `sjpd` per cluster,** on one controller. A backup controller's `sjp.place()`
+  finds no fresh data and returns `false`, so your own rules apply there.
+- **Upgrades need `scontrol reconfigure`:** `slurmctld` loads `sjp.lua` once, with your
+  `job_submit.lua`.
 
 ## Analysing your own cluster
 

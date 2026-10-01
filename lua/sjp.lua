@@ -29,6 +29,7 @@
     "reservation" the job runs in a reservation
     "constraint"  the job asks for node features (--constraint), which sjp
                   does not know; the site's own rule places it
+    "multi-node"  the job asks for more than one node (-N 2 or more)
     "no memory"   --mem=0, all of a node's memory
     "error"       anything raised; the error is logged
 
@@ -339,6 +340,9 @@ local function place(job_desc, submit_uid)
     if has_gpu(job_desc) then return false, "gpu" end
     if not blank(job_desc.reservation) then return false, "reservation" end
     if not blank(job_desc.features) then return false, "constraint" end
+    -- sjp sizes a job against single nodes; one spanning several is the site's.
+    local nodes = job_desc.min_nodes
+    if nodes and nodes ~= slurm.NO_VAL and nodes > 1 then return false, "multi-node" end
 
     local cpus = job_desc.min_cpus
     if not cpus or cpus == 0 or cpus == slurm.NO_VAL then cpus = 1 end

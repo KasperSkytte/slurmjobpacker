@@ -268,7 +268,8 @@ jobs = [pjob("1", "slim1", 5),                     # slim, over its 4 h budget
         pjob("5_[1-9]", "slim1", 9),               # array: left alone
         pjob("6", "gpu", 9),                       # not a batch partition sjp assigns
         pjob("7", "slim1", 9, req_nodes="node12"), # pinned: left alone
-        pjob("8", "slim1", 9)]                     # placed by the site's own rule
+        pjob("8", "slim1", 9),                     # placed by the site's own rule
+        pjob("9", "slim1", 9, nnodes=2)]           # multi-node: not sjp's
 try:
     d.widen_starving(jobs, now)
 finally:
@@ -305,7 +306,7 @@ def fj(jid, cpus, prio, reason="QOSMaxCpuPerUserLimit", qos="normal", **kw):
                      priority=prio, reason=reason, qos=qos, partition="slim1",
                      gpu=False, req_nodes="", user="u", account="a"), **kw)
 nf10 = {"a": (64, 512000, ["slim1"]), "b": (16, 64000, ["slim1", "slim2"])}
-pend = [fj("1", 48, 9), fj("2", 32, 8), fj("3", 16, 7),
+pend = [fj("0", 8, 10, nnodes=2), fj("1", 48, 9), fj("2", 32, 8), fj("3", 16, 7),
         fj("4", 8, 6, reason="Resources"), fj("6", 4, 5, partition="fat1")]
 try:
     d.flex(pend, nf10, 100.0)
