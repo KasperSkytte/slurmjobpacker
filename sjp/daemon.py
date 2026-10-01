@@ -427,8 +427,8 @@ class Daemon:
                 note = slurm.admin_comment(j["jobid"])
             except slurm.SlurmError:
                 note = ""
-            if note.startswith("sjp:pin="):
-                sjp_pin, _, sjp_from = note[len("sjp:pin="):].partition(";from=")
+            marks = slurm.sjp_marks(note)
+            sjp_pin, sjp_from = marks.get("pin", ""), marks.get("from", "")
         # Recompute against what the job was given: sjp's partitions before the
         # pin, or, once the plugin acts, the partitions it set.
         allowed = sjp_from.split(",") if sjp_from else \
@@ -517,7 +517,8 @@ class Daemon:
             if "pin" not in marks:
                 continue                 # the user's own --nodelist: never touch it
             node, parts = marks["pin"], marks.get("from", "")
-            argvs = slurm.cmd_release_pin(jid, parts, f"sjp:released={node}")
+            argvs = slurm.cmd_release_pin(jid, parts,
+                                          note.replace("sjp:pin=", "sjp:released=", 1))
             self.intend("release_pin", " && ".join(slurm.cmdline(a) for a in argvs),
                         f"pinned at submission but still pending after "
                         f"{now - j['submit']:.0f} s ({j['reason']})",

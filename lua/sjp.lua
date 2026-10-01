@@ -295,6 +295,13 @@ local function has_room(tbl, parts, cpus, mem)
     return false
 end
 
+-- MB as GB, rounded; one decimal below 10 GB, so 512 MB is 0.5G, not 0G.
+local function gb(mb)
+    local g = mb / 1024
+    if g < 10 then return string.format("%.1fG", g) end
+    return string.format("%.0fG", g)
+end
+
 local function mpc(cpus, mem)
     if cpus <= 0 then return "-" end
     return string.format("%.0f", mem / cpus)
@@ -330,7 +337,11 @@ local function place(job_desc, submit_uid)
     end
 
     job_desc.partition = parts
-    local mark = "sjp:placed"
+    -- What sjp did, for `scontrol show job`: the job's shape and the table
+    -- version, and for a pin the node's free space when it was chosen.
+    local shape = string.format("job=%dc,%s,%s/c", cpus, gb(mem), gb(mem / cpus))
+    local version = string.format("v=%d", tbl.version or 0)
+    local mark = "sjp:placed=" .. parts .. ";" .. shape .. ";" .. version
     -- Pin the node only when the job can start now. Any failure here leaves
     -- the partition choice above as it is.
     local pok, node, pparts = pcall(function()
@@ -341,10 +352,11 @@ local function place(job_desc, submit_uid)
     if pok and node and pparts then
         job_desc.req_nodes = node
         job_desc.partition = pparts
-        mark = "sjp:pin=" .. node .. ";from=" .. parts
         -- Count it against the node until the next table arrives, so a burst
         -- of submissions is not all pinned to the same free space.
         local n = tbl.pin.nodes[node]
+        mark = string.format("sjp:pin=%s;from=%s;%s;free=%dc,%s,%s/c;%s", node, parts,
+                             shape, n[1], gb(n[2]), gb(n[2] / math.max(n[1], 1)), version)
         detail = detail .. string.format(
             "; node %s free %d CPUs x %d MB (%s MB/CPU), after %d x %d (%s MB/CPU)",
             node, n[1], n[2], mpc(n[1], n[2]), n[1] - cpus, n[2] - mem,

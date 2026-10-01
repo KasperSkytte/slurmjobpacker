@@ -338,6 +338,9 @@ try:
 finally:
     slurm.admin_comment, slurm.apply = real_ac, real_apply
     slurm.user_qos, slurm.cluster_name = real_uq, real_cn
+check("the marks the plugin writes parse back",
+      slurm.sjp_marks("sjp:placed=a,b;job=4c,16G,4.0G/c;v=20")
+      == {"placed": "a,b", "job": "4c,16G,4.0G/c", "v": "20"})
 check("sjp marks parse and extend",
       slurm.sjp_marks("x;sjp:pin=n1;from=a,b") == {"pin": "n1", "from": "a,b"}
       and slurm.add_mark("site note", "flex", "normal") == "site note;sjp:flex=normal"
@@ -444,7 +447,7 @@ check("free space is emitted without pinning too, marked as such",
 
 print("\n13. stale pins are released, and only sjp's own")
 real_ac, real_apply = slurm.admin_comment, slurm.apply
-comments = {"7": "sjp:pin=n16;from=slim1,slim2", "8": ""}
+comments = {"7": "sjp:pin=n16;from=slim1,slim2;job=4c,16G,4.0G/c;v=3", "8": ""}
 slurm.admin_comment = lambda jid: comments[jid]
 applied = []
 slurm.apply = lambda argv, timeout=10.0: applied.append(argv) or True
@@ -467,7 +470,7 @@ try:
             check("enforce: releases the stale sjp pin and restores its partitions",
                   applied == [["scontrol", "update", "jobid=7", "reqnodelist="],
                               ["scontrol", "update", "jobid=7", "partition=slim1,slim2",
-                               "admincomment=sjp:released=n16"]],
+                               "admincomment=sjp:released=n16;from=slim1,slim2;job=4c,16G,4.0G/c;v=3"]],
                   str(applied))
     check("a user's own --nodelist (job 8) and a fresh pin (job 9) are left alone",
           all("jobid=8" not in a and "jobid=9" not in a for a in applied))

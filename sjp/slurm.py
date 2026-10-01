@@ -154,7 +154,7 @@ def _epoch(s: str) -> float | None:
 
 def sjp_marks(comment: str) -> dict:
     """The marks sjp keeps in a job's AdminComment, from "sjp:" on:
-    "sjp:pin=n1;from=a,b" -> {"pin": "n1", "from": "a,b"}; "sjp:placed" -> {"placed": ""}."""
+    "sjp:pin=n1;from=a,b;job=4c,16G,4.0G/c" -> {"pin": "n1", "from": "a,b", "job": ...}."""
     i = comment.find("sjp:")
     if i < 0:
         return {}

@@ -146,8 +146,18 @@ local placed, why = sjp.place(job_desc, submit_uid)
 if not placed and why == "no room" then ... end
 ```
 
-A placed job is marked `sjp:...` in its `AdminComment`. Each submission is logged in
-the `slurmctld` log, for example:
+sjp notes what it did in the job's `AdminComment`, so `scontrol show job` shows it:
+
+```
+AdminComment=sjp:placed=zen3,zen5;job=4c,16G,4.0G/c;v=20
+AdminComment=sjp:pin=bio-node01;from=zen3,zen5;job=4c,16G,4.0G/c;free=60c,293G,4.9G/c;v=20
+```
+
+The partitions it set; the job's CPUs, memory and memory per CPU (in GB); for a pinned job the
+node and its free CPUs, memory and memory per CPU at that moment; and the version of the
+placement table. A pin released later reads `sjp:released=...`; a job moved to the flex
+QOS gets `;flex=<its own QOS>`. Each submission is also logged in the `slurmctld` log, for
+example:
 
 ```
 sjp: uid=1000 name='wrap' -> zen3 (v20 b0,1,1 pin=bio-node01)
