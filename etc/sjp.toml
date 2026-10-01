@@ -63,8 +63,7 @@ hysteresis = 5
 pulse_seconds = 60.0
 cooldown_seconds = 300.0
 flex_qos_name = "flex"
-flex_reserve = 0.05
-flex_phi_tolerance = 1.0
+flex_revert_after = 60.0
 
 [cohorts]
 key = ["user", "name", "cpus", "mem"]

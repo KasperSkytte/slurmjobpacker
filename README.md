@@ -1,8 +1,8 @@
 # slurmjobpacker
 
-Slurm plugin for automatic partition and compute node selection that packs jobs optimally on shared compute nodes (i.e. nodes that run multiple jobs concurrently). It does so by matching the memory:CPU ratio of each job to what is currently available on the nodes, reducing waste from starvation of either CPUs or memory. Furthermore, it can dynamically adjust per-user or per-account CPU limits depending on the overall partition or cluster load. 
+Slurm plugin for automatic partition and compute node selection that also packs jobs optimally on clusters where compute nodes are shared by multiple users (i.e. no forced exclusive node access). It does so by matching the memory:CPU ratio of each job to what is currently available on the nodes, reducing waste from starvation of either CPUs or memory. Furthermore, it can dynamically adjust per-user or -account CPU limits temporarily depending on the overall partition or cluster load, or assign a different QOS, to better balance usage over time (fx clusters may have max CPU limits in place merely to prevent a few users from blocking the whole cluster, but during periods of low activity CPUs shouldn't be idle when somebody needs them).
 
-`slurmjobpacker` is simply a single sourced Lua function to use among your existing job submission logics defined in the [job submit Lua script](https://slurm.schedmd.com/job_submit_plugins.html), if any, so it easily integrates in any slurm configuration. 
+`slurmjobpacker` is a single sourced Lua function to use among your existing job submission logics defined in the [job submit Lua script](https://slurm.schedmd.com/job_submit_plugins.html), if any, so it easily integrates in any slurm configuration. It does not interfere with the normal scheduling by the slurm controller, priorities, fair-share, etc, it simply sets the partition and nodelist automatically at job submission.
 
 ## The problem with sharing nodes
 
@@ -45,15 +45,16 @@ widens the partitions of sjp's jobs that have waited long, and briefly lifts per
 caps when jobs held only by those caps would fit on idle nodes.
 
 ## Installation
+Follow the below steps manually, or use the provided ansible role under [ansible-role-slurmjobpacker](./ansible-role-slurmjobpacker/).
 
 Needs Python 3.11+ (standard library only). Tested on Slurm 26.05.
 
 ```sh
-sudo git clone https://github.com/kasperskytte/slurmjobpacker /opt/slurmjobpacker
+sudo git clone --branch v1.4.0 https://github.com/kasperskytte/slurmjobpacker /opt/slurmjobpacker
 cd /opt/slurmjobpacker && python3 tests/test_policy.py        # ends in ALL PASS
 ```
 
-**Try it without changing anything.** As your own user:
+**Try it out in observe mode first.** As your own user:
 
 ```sh
 python3 -m sjp.daemon --dry-run --state-dir ~/sjp-dry
@@ -74,11 +75,20 @@ sudo systemctl daemon-reload && sudo systemctl enable --now sjpd
 It starts in `observe` mode: it only reads the cluster and logs what it would do. Set
 `mode` in `sjp.toml` and restart `sjpd` to go further:
 
-| mode | chooses partitions | pins nodes, widens long waits | lifts CPU caps |
+| mode | chooses partitions | pins nodes, widens long waits | helps jobs held by CPU caps |
 |---|---|---|---|
 | `observe` (default) | no | no | no |
 | `advise` | yes | no | no |
-| `enforce` | yes | yes | if `[limits] mode = "global"` |
+| `enforce` | yes | yes | if `[limits] mode` is set |
+
+`[limits] mode` decides what to do when jobs are held only by the per-user or
+per-account CPU cap of their QOS, yet would fit on idle nodes:
+
+- `"off"` (default): nothing;
+- `"global"`: raise both caps of that QOS, for everyone, for one minute;
+- `"flex"`: move those jobs, as many as fit now, to a QOS of your own (`flex_qos_name`,
+  default `flex`) with the caps you want on top of the normal ones. Create it and allow
+  it for all users first. A moved job that has not started within a minute goes back.
 
 With Ansible, the example role in [`ansible-role-slurmjobpacker/`](ansible-role-slurmjobpacker/)
 does all of the above.
@@ -131,7 +141,17 @@ local placed, why = sjp.place(job_desc, submit_uid)
 if not placed and why == "no room" then ... end
 ```
 
-A placed job is marked `sjp:...` in its `AdminComment`.
+A placed job is marked `sjp:...` in its `AdminComment`. Each submission is logged in
+the `slurmctld` log, for example:
+
+```
+sjp: uid=1000 name='wrap' -> zen3 (v20 b0,1,1 pin=bio-node01)
+```
+
+placed in `zen3` and pinned to `bio-node01`, by version 20 of the placement table. Set
+`sjp.config.verbose = true` after loading `sjp.lua` to also log the job's CPUs, memory
+and memory per CPU, the partitions the table gave, and the node's free space before
+and after.
 
 **Turning it off.** `sudo touch /etc/sjp/disable` makes `sjp.place()` return `false` from
 the next submission, so only your own rules apply.

@@ -21,6 +21,9 @@ sjp_config_dir: /etc/sjp
 sjp_config:
   general:
     mode: observe                  # observe -> advise -> enforce
+  # limits:
+  #   mode: flex                   # off | global | flex: help jobs held by QOS CPU caps
+  #   flex_qos_name: flex          # flex: create this QOS and allow it for all users
 
 sjp_service_enabled: true
 sjp_service_state: started
@@ -46,6 +49,9 @@ sjp_gpu_partition: ""                    # for GPU jobs, e.g. "gpu"; "" leaves t
 sjp_fallback_slim: ""                    # e.g. "slim1,slim2"
 sjp_fallback_fat: ""                     # e.g. "fat1,fat2"
 sjp_fallback_fat_above: 6000
+# Log each job's shape (CPUs, memory, memory per CPU) and its node's free space
+# in the slurmctld log, not only where it went.
+sjp_verbose_log: false
 
 # Run `scontrol reconfigure` when a new version is checked out, so slurmctld
 # loads the new sjp.lua. Needed once job_submit.lua calls sjp.

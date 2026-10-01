@@ -152,6 +152,27 @@ def _epoch(s: str) -> float | None:
         return None
 
 
+def sjp_marks(comment: str) -> dict:
+    """The marks sjp keeps in a job's AdminComment, from "sjp:" on:
+    "sjp:pin=n1;from=a,b" -> {"pin": "n1", "from": "a,b"}; "sjp:placed" -> {"placed": ""}."""
+    i = comment.find("sjp:")
+    if i < 0:
+        return {}
+    out = {}
+    for part in comment[i + 4:].split(";"):
+        k, _, v = part.partition("=")
+        if k:
+            out[k] = v
+    return out
+
+
+def add_mark(comment: str, key: str, value: str) -> str:
+    """comment with key=value added to its sjp marks."""
+    if "sjp:" in comment:
+        return f"{comment};{key}={value}"
+    return f"{comment};sjp:{key}={value}" if comment else f"sjp:{key}={value}"
+
+
 def admin_comment(jobid: str) -> str:
     """A job's AdminComment, which squeue cannot print."""
     txt = _run(["scontrol", "show", "job", jobid, "--oneliner"])
@@ -191,6 +212,11 @@ def _mins(s: str) -> int:
 
 
 # ---------------------------------------------------------------- read-only
+def qos_exists(qos: str) -> bool:
+    return bool(_run(["sacctmgr", "-nP", "show", "qos", f"name={qos}", "format=Name"],
+                     timeout=30.0).strip())
+
+
 def qos_cpu_limits(qos: str) -> tuple[int | None, int | None]:
     """Current (MaxTRESPU cpu, MaxTRESPA cpu) on a QOS; None where unset."""
     txt = _run(["sacctmgr", "-nP", "show", "qos", f"name={qos}",
@@ -237,8 +263,9 @@ def cmd_set_job_partitions(jobid: str, parts: list[str]) -> list[str]:
     return ["scontrol", "update", f"jobid={jobid}", f"partition={','.join(parts)}"]
 
 
-def cmd_set_job_qos(jobid: str, qos: str) -> list[str]:
-    return ["scontrol", "update", f"jobid={jobid}", f"qos={qos}"]
+def cmd_set_job_qos(jobid: str, qos: str, note: str | None = None) -> list[str]:
+    argv = ["scontrol", "update", f"jobid={jobid}", f"qos={qos}"]
+    return argv + [f"admincomment={note}"] if note is not None else argv
 
 
 def cmd_set_array_throttle(jobid: str, n: int) -> list[str]:

@@ -11,7 +11,8 @@ An example role that installs slurmjobpacker (sjp) on your Slurm controllers:
 - optionally (`sjp_job_submit_install: true`) installs an example `job_submit.lua` next
   to `slurm.conf`, from [`templates/job_submit.lua.j2`](templates/job_submit.lua.j2):
   interactive jobs to an interactive partition, GPU jobs to a GPU partition, every other
-  batch job to sjp, and a fixed memory-per-CPU fallback rule when sjp does not place it;
+  batch job to sjp, and a fixed memory-per-CPU fallback rule when sjp does not place it
+  (`sjp_verbose_log: true` adds each job's shape and node to the `slurmctld` log);
 - after an upgrade, restarts `sjpd` and, if `sjp_reconfigure_slurm` is true, runs
   `scontrol reconfigure` so `slurmctld` loads the new `sjp.lua`.
 

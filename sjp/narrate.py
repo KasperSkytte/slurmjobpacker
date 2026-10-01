@@ -97,6 +97,10 @@ def action(r) -> str | None:
         verb = _did(r, "released", "would release", "tried to release")
         return (f"{t}  job {r['jobid']}: {verb} its pin to {r['node']}, putting it back "
                 f"in partitions {r['parts']}: {r['why']}\n    command: {r['cmd']}" + _blocked(r))
+    if a in ("flex_job", "unflex_job"):
+        verb = _did(r, "moved", "would move", "tried to move")
+        return (f"{t}  job {r['jobid']}: {verb} it from QOS {r['before']} to {r['after']}: "
+                f"{r['why']}\n    command: {r['cmd']}" + _blocked(r))
     if a == "widen_partitions":
         verb = _did(r, "widened", "would widen", "tried to widen")
         return (f"{t}  job {r['jobid']}: {verb} its partitions {r['before']} -> "

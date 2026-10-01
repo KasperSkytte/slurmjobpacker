@@ -80,7 +80,7 @@ EOF
       -e 's#^local GPU_PARTITION = ""#local GPU_PARTITION = "gpu"#' \
       -e 's#^local SLIM = ""#local SLIM = "slim1,slim2"#' \
       -e 's#^local FAT = ""#local FAT = "fat1,fat2"#' \
-      -e "s#^    -- sjp.config.table_path = .*#    sjp.config.table_path, sjp.config.disable_path = \"$D/policy.lua\", \"$D/disable\"#" \
+      -e "s#^    -- sjp.config.verbose = .*#    sjp.config.table_path, sjp.config.disable_path = \"$D/policy.lua\", \"$D/disable\"; sjp.config.verbose = true#" \
       "$REPO/lua/job_submit.lua" > "$D/job_submit.lua"
 
   cat > "$D/sjp.toml" <<EOF

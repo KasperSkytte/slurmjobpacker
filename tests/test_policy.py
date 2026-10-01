@@ -223,6 +223,29 @@ try:
     live["nocap"] = (None, None)
     check("a QOS without caps: nothing to pulse", not d3.limiter("nocap").known
           and d3.limiter("nocap").observe(0.9, 5) is None)
+
+    # Caps changed by hand are followed, with no restart.
+    cfg["general"]["state_dir"] = tempfile.mkdtemp()
+    d4 = daemon.Daemon(cfg); d4.log_fh = io.StringIO(); d4.mode = "enforce"
+    live["normal"] = (1000, 2000)
+    lim = d4.limiter("normal")
+    live["normal"] = (500, 1000)                         # the admin lowers them
+    ch = lim.observe(0.9, 5, now=0)
+    for t in range(1, cfg["limits"]["hysteresis"]):
+        ch = lim.observe(0.9, 5, now=t * 1.0)
+    check("a pulse starts from the caps as they are now",
+          d4.follow_admin("normal", lim, ch, (1000, 2000)) == ((1000, 2000), (500, 1000))
+          and (lim.base_u, lim.base_a) == (500, 1000), str((lim.base_u, lim.cur_u)))
+    live["normal"] = (700, 1400)                         # changed again during the pulse
+    ch = lim.observe(0.9, 5, now=1000.0)                 # the pulse is over
+    check("caps changed during a pulse are kept and become the base",
+          d4.follow_admin("normal", lim, ch, (1000, 2000)) == (None, (1000, 2000))
+          and (lim.base_u, lim.cur_u) == (700, 700))
+    live["normal"] = (1000, 2000)                        # still raised: a normal end
+    lim.raised_at, lim.cur_u, lim.cur_a = 2000.0, 1000, 2000
+    ch = lim.observe(0.9, 5, now=3000.0)
+    check("otherwise the pulse ends back at base",
+          d4.follow_admin("normal", lim, ch, (1000, 2000)) == ((700, 1400), (1000, 2000)))
 finally:
     slurm.qos_cpu_limits = real_q
 
@@ -261,6 +284,55 @@ check("a dry run only says what it would do", not w["1"]["executed"]
       and w["1"]["cmd"].startswith("scontrol update jobid=1 partition="))
 d.widen_starving(jobs, now)
 check("each job is considered once", d.log_fh.getvalue().count("widen_partitions") == 2)
+
+print("\n10e. flex mode moves capped jobs that fit now to the flex QOS, and back")
+cfg = config.defaults()
+cfg["limits"]["mode"] = "flex"
+cfg["general"]["state_dir"] = tempfile.mkdtemp()
+d = daemon.Daemon(cfg); d.log_fh = io.StringIO(); d.mode = "enforce"
+notes = {"1": "sjp:placed", "2": "", "3": "", "4": "", "5": "sjp:placed;flex=normal",
+         "6": ""}
+ran = []
+real_ac, real_apply = slurm.admin_comment, slurm.apply
+slurm.admin_comment = lambda jid: notes[jid]
+slurm.apply = lambda argv, timeout=10.0: ran.append(argv) or True
+def fj(jid, cpus, prio, reason="QOSMaxCpuPerUserLimit", qos="normal", **kw):
+    return dict(dict(jobid=jid, cpus=cpus, mem=cpus * 4000, req_mem=cpus * 4000,
+                     priority=prio, reason=reason, qos=qos, partition="slim1",
+                     gpu=False, req_nodes=""), **kw)
+nf10 = {"a": (64, 512000, ["slim1"]), "b": (16, 64000, ["slim1", "slim2"])}
+pend = [fj("1", 48, 9), fj("2", 32, 8), fj("3", 16, 7),
+        fj("4", 8, 6, reason="Resources"), fj("6", 4, 5, partition="fat1")]
+try:
+    d.flex(pend, nf10, 100.0)
+    moved = [a[2] for a in ran]
+    check("capped jobs that fit move, highest priority first, until the space is used",
+          moved == ["jobid=1", "jobid=3"], str(moved))
+    check("the move keeps the job's own QOS in its sjp mark",
+          ran[0][3:] == ["qos=flex", "admincomment=sjp:placed;flex=normal"]
+          and ran[1][4] == "admincomment=sjp:flex=normal", str(ran))
+    ran.clear()
+    d.flex(pend, nf10, 110.0)
+    check("a moved job is not moved again during the cooldown", ran == [])
+    pend2 = [fj("1", 48, 9, qos="flex"), fj("5", 8, 9, qos="flex")]
+    notes["1"] = "sjp:placed;flex=normal"
+    d.unflex(pend2, 120.0)
+    check("still pending in flex: a job moved this run waits flex_revert_after; "
+          "one from before a restart goes back now",
+          [a[2:] for a in ran] == [["jobid=5", "qos=normal"]], str(ran))
+    ran.clear()
+    d.unflex(pend2[:1], 100.0 + cfg["limits"]["flex_revert_after"] + 1)
+    check("then it goes back to its own QOS", [a[2:] for a in ran] == [["jobid=1", "qos=normal"]])
+    ran.clear()
+    notes["7"] = ""
+    d.unflex([fj("7", 8, 9, qos="flex")], 500.0)
+    check("a job someone else put in flex is left alone", ran == [])
+finally:
+    slurm.admin_comment, slurm.apply = real_ac, real_apply
+check("sjp marks parse and extend",
+      slurm.sjp_marks("x;sjp:pin=n1;from=a,b") == {"pin": "n1", "from": "a,b"}
+      and slurm.add_mark("site note", "flex", "normal") == "site note;sjp:flex=normal"
+      and slurm.sjp_marks("") == {})
 
 print("\n10b. the process launcher itself refuses writes while actuation is off")
 import subprocess

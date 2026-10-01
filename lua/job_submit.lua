@@ -32,8 +32,8 @@ if not ok then
     slurm.log_error("job_submit: cannot load %s: %s", SJP, tostring(sjp))
     sjp = nil
 end
-if sjp then                          -- only if sjpd's paths moved: see lua/sjp.lua
-    -- sjp.config.table_path = "/run/sjp/policy.lua"
+if sjp then                          -- settings: see sjp.config in lua/sjp.lua
+    -- sjp.config.verbose = true     -- log each job's shape and node in detail
 end
 
 local function wants_gpu(job_desc)

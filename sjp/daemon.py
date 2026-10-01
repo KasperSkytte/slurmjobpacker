@@ -51,7 +51,9 @@ class Daemon:
         self.qos_caps: dict = {}     # QOS -> (per_user, per_account, read at), a cache
         self.pulse_record: dict = {} # QOS -> base caps while a pulse is on (state_file)
         self.widened: set = set()    # jobs the starvation guard already widened
-        self.promoter = limits.PerJobPromoter(cfg)
+        self.flexed: dict = {}       # jobid -> (when, node, cpus, mem): moved to the flex
+                                     # QOS this run, not seen running yet
+        self.flex_seen: dict = {}    # jobid -> when flex mode last moved it either way
         self.version = 0
         self.last_rendered = None
         self.last_sig = None      # content signature, excluding the timestamp
@@ -201,12 +203,12 @@ class Daemon:
 
     def qos_cap(self, qos):
         """The per-user CPU cap a QOS has now: raised during its pulse, else read
-        from Slurm (cached for ten minutes). None if it has none."""
+        from Slurm (cached for a minute). None if it has none."""
         lim = self.limiters.get(qos)
-        if lim and lim.known:
+        if lim and lim.raised:
             return lim.cur_u
         cached = self.qos_caps.get(qos)
-        if not cached or time.time() - cached[2] > 600:
+        if not cached or time.time() - cached[2] > 60:
             try:
                 u, a = slurm.qos_cpu_limits(qos)
             except slurm.SlurmError:
@@ -508,9 +510,10 @@ class Daemon:
             except slurm.SlurmError as e:
                 self.log("error", where="release", detail=repr(e))
                 continue
-            if not note.startswith("sjp:pin="):
+            marks = slurm.sjp_marks(note)
+            if "pin" not in marks:
                 continue                 # the user's own --nodelist: never touch it
-            node, _, parts = note[len("sjp:pin="):].partition(";from=")
+            node, parts = marks["pin"], marks.get("from", "")
             argvs = slurm.cmd_release_pin(jid, parts, f"sjp:released={node}")
             self.intend("release_pin", " && ".join(slurm.cmdline(a) for a in argvs),
                         f"pinned at submission but still pending after "
@@ -554,9 +557,10 @@ class Daemon:
             # Only jobs sjp placed: a job the site's own rule placed keeps its
             # partitions (the plugin marks its jobs in AdminComment).
             try:
-                if not slurm.admin_comment(jid).startswith("sjp:"):
-                    continue
+                marks = slurm.sjp_marks(slurm.admin_comment(jid))
             except slurm.SlurmError:
+                continue
+            if not marks.keys() & {"placed", "pin", "released"}:
                 continue
             wide = sorted(policy.feasible(cpus, mem, total))
             if not wide or set(wide) <= set(current):
@@ -605,14 +609,21 @@ class Daemon:
                 info["warnings"].append("no partitions left to assign")
         except slurm.SlurmError as e:
             info["warnings"].append(f"partitions: {e}")
-        if self.cfg["limits"]["mode"] == "perjob":
-            info["warnings"].append(
-                "limits.mode = perjob is not implemented yet: no limits or QOS will be "
-                "changed. Use global or off.")
+        lm = self.cfg["limits"]["mode"]
+        if lm not in ("off", "global", "flex"):
+            info["warnings"].append(f"limits.mode = {lm} is unknown: use off, global or flex")
+        if lm == "flex":
+            q = self.cfg["limits"]["flex_qos_name"]
+            try:
+                if not slurm.qos_exists(q):
+                    info["warnings"].append(f"limits.mode = flex, but QOS {q} does not "
+                                            "exist: jobs cannot be moved there")
+            except slurm.SlurmError as e:
+                info["warnings"].append(f"QOS {q}: {e}")
         self.log("preflight", **info)
 
     def act(self):
-        """Elastic limits, and (in perjob mode) individual promotions."""
+        """Elastic limits: the global cap pulse, or flex-QOS moves."""
         iv = self.cfg["cadence"]["act_interval"]
         while not self.sh.stop.wait(0):
             t0 = time.time()
@@ -646,11 +657,17 @@ class Daemon:
             and any(fc >= j["cpus"] and fm >= (j.get("req_mem") or j["mem"])
                     for fc, fm, _ in nf.values()))
 
+        if self.cfg["limits"]["mode"] == "flex":
+            self.unflex(pend, time.time())
+            if idle_frac >= self.cfg["limits"]["raise_above"]:
+                self.flex(pend, nf, time.time())
         if self.cfg["limits"]["mode"] == "global":
             for qos in set(held) | set(self.limiters):
                 lim = self.limiter(qos)
                 before = (lim.cur_u, lim.cur_a)
                 change = lim.observe(idle_frac, held.get(qos, 0))
+                if change:
+                    change, before = self.follow_admin(qos, lim, change, before)
                 if change:
                     self.set_caps(qos, change, before, idle_frac, held.get(qos, 0))
         self._write_atomic(self.status_path, json.dumps(dict(
@@ -659,6 +676,117 @@ class Daemon:
             capped_jobs=len(capped), pending=len(pend),
             limits=[lim.state() for lim in self.limiters.values()],
             errors=self.sh.errors), indent=1))
+
+    def flex(self, pend, nf, now):
+        """Flex mode: move jobs held only by the CPU cap of their QOS to the flex
+        QOS, highest priority first, as many as fit in the free space now. Each
+        is counted against a node's free space, so the moves never add up to
+        more than the cluster can start."""
+        c = self.cfg["limits"]
+        target = c["flex_qos_name"]
+        free = {n: [fc, fm, set(ps)] for n, (fc, fm, ps) in nf.items()}
+        # Jobs moved earlier that have not started yet still claim their space.
+        for _, node, cpus, mem in self.flexed.values():
+            if node in free:
+                free[node][0] -= cpus
+                free[node][1] -= mem
+        for j in sorted(pend, key=lambda j: -j["priority"]):
+            jid = j["jobid"]
+            if (j["reason"] not in slurm.CAP_REASONS or j["qos"] == target
+                    or "[" in jid or j.get("gpu") or j.get("req_nodes")
+                    or now - self.flex_seen.get(jid, float("-inf")) < c["cooldown_seconds"]):
+                continue
+            cpus, mem = max(1, j["cpus"]), j.get("req_mem") or j["mem"]
+            parts = set(j["partition"].split(","))
+            fits = [n for n, (fc, fm, ps) in free.items()
+                    if fc >= cpus and fm >= mem and ps & parts]
+            if not fits:
+                continue
+            node = min(fits, key=lambda n: free[n][0])      # the tightest fit
+            free[node][0] -= cpus
+            free[node][1] -= mem
+            self.flex_seen[jid] = now
+            try:
+                note = slurm.add_mark(slurm.admin_comment(jid), "flex", j["qos"])
+            except slurm.SlurmError as e:
+                self.log("error", where="flex", detail=repr(e))
+                continue
+            argv = slurm.cmd_set_job_qos(jid, target, note)
+            self.intend("flex_job", slurm.cmdline(argv),
+                        f"held by the CPU cap of QOS {j['qos']} ({j['reason']}), and "
+                        f"{cpus} CPUs x {mem} MB fit on {node} now",
+                        self.blocked(("enforce",)), lambda: self.apply_retrying(argv),
+                        jobid=jid, before=j["qos"], after=target, node=node)
+            if self.mode == "enforce":
+                self.flexed[jid] = (now, node, cpus, mem)
+
+    def unflex(self, pend, now):
+        """Put jobs back in their own QOS if they were moved to the flex QOS and
+        have not started within flex_revert_after; and, after a restart, every
+        one still pending there. Allowed in enforce even with the disable file
+        present: it only undoes a change of sjp's."""
+        c = self.cfg["limits"]
+        for j in pend:
+            jid = j["jobid"]
+            if j["qos"] != c["flex_qos_name"]:
+                continue
+            moved = self.flexed.get(jid, (None,))[0]
+            if moved is not None and now - moved < c["flex_revert_after"]:
+                continue
+            try:
+                orig = slurm.sjp_marks(slurm.admin_comment(jid)).get("flex")
+            except slurm.SlurmError as e:
+                self.log("error", where="flex", detail=repr(e))
+                continue
+            self.flexed.pop(jid, None)
+            if not orig:
+                continue                 # put there by someone else: not sjp's to move
+            self.flex_seen[jid] = now
+            argv = slurm.cmd_set_job_qos(jid, orig)
+            self.intend("unflex_job", slurm.cmdline(argv),
+                        f"moved to QOS {j['qos']} but still pending ({j['reason']})"
+                        + (f" after {now - moved:.0f} s" if moved else " when sjpd started"),
+                        None if self.mode == "enforce" else f"mode={self.mode}",
+                        lambda: self.apply_retrying(argv),
+                        jobid=jid, before=j["qos"], after=orig)
+        live = {j["jobid"] for j in pend}
+        self.flexed = {k: v for k, v in self.flexed.items() if k in live}
+        self.flex_seen = {k: v for k, v in self.flex_seen.items()
+                          if now - v < c["cooldown_seconds"]}
+
+    def follow_admin(self, qos, lim, change, before):
+        """Caps an admin set by hand win. Before a pulse, its base is re-read from
+        the QOS, so the raise starts from the caps as they are now. At the end of
+        one, caps that differ from the raised ones were changed by hand during
+        the pulse: they are kept, and become the base. Returns the (change,
+        before) to apply; change is None when there is nothing to do."""
+        try:
+            live = slurm.qos_cpu_limits(qos)
+        except slurm.SlurmError as e:
+            self.log("error", where="limits", detail=repr(e))
+            # Lowering with the caps we know is safe; raising blind is not.
+            return (change if not lim.raised else None), before
+        if not lim.raised:                       # the pulse just ended
+            if live not in (before, (lim.base_u, lim.base_a)) and self.mode == "enforce":
+                lim.set_base(*live)
+                self.remember_pulse(qos, False)
+                self.log("limits", qos=qos, per_user=live[0], per_account=live[1],
+                         source="changed by hand during the pulse; kept as base")
+                return None, before
+            return change, before
+        if live != (lim.base_u, lim.base_a):     # about to raise
+            self.log("limits", qos=qos, per_user=live[0], per_account=live[1],
+                     source="changed by hand; new base")
+            raised_at = lim.raised_at
+            lim.raised_at = None
+            lim.set_base(*live)
+            if not lim.known:
+                return None, before
+            lim.raised_at = raised_at
+            lim.cur_u = int(lim.base_u * lim.ceiling)
+            lim.cur_a = int(lim.base_a * lim.ceiling)
+            change = (lim.cur_u, lim.cur_a)
+        return change, live
 
     def set_caps(self, qos, caps, before, idle_frac=None, held=None):
         """Log and, in enforce, apply a change of the per-user/per-account caps.

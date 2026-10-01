@@ -38,10 +38,11 @@
 
 local sjp = {}
 
--- Where sjpd writes; override only if sjp.toml moves them.
+-- Where sjpd writes (override only if sjp.toml moves them), and how much to log.
 sjp.config = {
     table_path = "/run/sjp/policy.lua",    -- <state_dir>/policy.lua in sjp.toml
     disable_path = "/etc/sjp/disable",     -- disable_file in sjp.toml
+    verbose = false,                       -- log each job's shape and node in detail
 }
 
 local cache = { body = nil, tbl = nil }
@@ -134,7 +135,7 @@ local function packed_choice(mem_mb, cpus, minutes)
     if type(kept) ~= "string" or kept == "" then return nil, "infeasible" end
     local note = ""
     if kept ~= parts then note = " refit" end
-    return kept, string.format("v%d b%d,%d,%d%s", tbl.version or 0, i, j, k, note), tbl
+    return kept, string.format("v%d b%d,%d,%d%s", tbl.version or 0, i, j, k, note), tbl, parts
 end
 
 -- ---------------------------------------------------------------- node pins
@@ -172,7 +173,7 @@ local function pick_node(pin, parts, cpus, mem)
             end
         end
         if #cands > 0 then
-            if #cands == 1 then return nil, "one candidate" end
+            if #cands == 1 then return nil, "only one node has room, so Slurm picks it anyway" end
             local want = mem / cpus
             local function mismatch(name)
                 local n = pin.nodes[name]
@@ -194,7 +195,7 @@ local function pick_node(pin, parts, cpus, mem)
                 end
             end
             if hi - win[1] < pin.min_gain and worst_mis - win[3] < pin.min_ratio_gain then
-                return nil, "equal"
+                return nil, "the nodes with room are about equally good"
             end
             local best, ps = win[2], {}
             for p in string.gmatch(pin.nodes[best][3], "[^,]+") do
@@ -212,31 +213,35 @@ local function blank(v) return v == nil or v == "" end
 -- Pin only plain jobs that can start the moment they are submitted.
 local function pin_eligible(job_desc, submit_uid, cpus, tbl, mem_given)
     local pin = tbl.pin
-    if type(pin) ~= "table" or not pin.enabled then return false end
+    if type(pin) ~= "table" or not pin.enabled then return false, "pinning is off" end
     -- Without a memory request Slurm applies its own default, which sjp cannot
     -- see, so it cannot know whether the job fits the node.
-    if not mem_given then return false end
-    if type(pin.nodes) ~= "table" then return false end
+    if not mem_given then return false, "no memory request" end
+    if type(pin.nodes) ~= "table" then return false, "no node data" end
     if not tbl.generated_at or (os.time() - tbl.generated_at) > pin.max_age then
-        return false
+        return false, "node data too old"
     end
-    if not blank(job_desc.req_nodes) or not blank(job_desc.exc_nodes) then return false end
+    if not blank(job_desc.req_nodes) or not blank(job_desc.exc_nodes) then
+        return false, "--nodelist or --exclude"
+    end
     -- A job with a dependency is treated like any other: if it has not started
     -- by [pin] release_after, sjpd releases the pin.
-    if not blank(job_desc.array_inx) then return false end
-    if not blank(job_desc.admin_comment) then return false end
-    if not blank(job_desc.tres_per_node) then return false end
+    if not blank(job_desc.array_inx) then return false, "array" end
+    if not blank(job_desc.admin_comment) then return false, "has an admin comment" end
+    if not blank(job_desc.tres_per_node) then return false, "--gres" end
     if job_desc.min_nodes and job_desc.min_nodes ~= slurm.NO_VAL
-       and job_desc.min_nodes > 1 then return false end
+       and job_desc.min_nodes > 1 then return false, "several nodes" end
     -- --nodelist means "include this node", not "only this node": a job of
     -- several tasks that may span nodes would be split around the pin.
     local tasks = job_desc.num_tasks
     if tasks and tasks ~= slurm.NO_VAL and tasks > 1 and job_desc.max_nodes ~= 1 then
-        return false
+        return false, "several tasks without -N 1"
     end
-    if job_desc.begin_time and job_desc.begin_time > os.time() then return false end
-    if job_desc.priority == 0 then return false end                  -- held
-    if job_desc.shared == 0 then return false end                    -- --exclusive
+    if job_desc.begin_time and job_desc.begin_time > os.time() then
+        return false, "--begin in the future"
+    end
+    if job_desc.priority == 0 then return false, "held" end
+    if job_desc.shared == 0 then return false, "--exclusive" end
     -- At the per-user CPU cap of its QOS it would not start whichever node it
     -- got. Without --qos, assume the QOS the user's running jobs are in.
     if type(pin.room) == "table" then
@@ -244,7 +249,9 @@ local function pin_eligible(job_desc, submit_uid, cpus, tbl, mem_given)
         local qos = job_desc.qos
         if blank(qos) and type(pin.user_qos) == "table" then qos = pin.user_qos[uid] end
         local left = qos and pin.room[qos] and pin.room[qos][uid]
-        if left and left < cpus then return false end
+        if left and left < cpus then
+            return false, string.format("user at the CPU cap of QOS %s (%d CPUs left)", qos, left)
+        end
     end
     return true
 end
@@ -288,6 +295,12 @@ local function has_room(tbl, parts, cpus, mem)
     return false
 end
 
+local function mpc(cpus, mem)
+    if cpus <= 0 then return "-" end
+    return string.format("%.0f", mem / cpus)
+end
+
+-- place() returns placed, why, and the details the verbose log adds.
 local function place(job_desc, submit_uid)
     if not job_desc.script or job_desc.script == "" then return false, "not batch" end
     if has_gpu(job_desc) then return false, "gpu" end
@@ -302,21 +315,28 @@ local function place(job_desc, submit_uid)
     if not minutes or minutes == slurm.NO_VAL or minutes == slurm.INFINITE then
         minutes = 60
     end
+    local detail = string.format("job %d CPUs x %d MB (%s MB/CPU%s), %d min",
+                                 cpus, mem, mpc(cpus, mem),
+                                 mem_given and "" or ", no memory request", minutes)
 
-    local parts, why, tbl = packed_choice(mem, cpus, minutes)
-    if not parts then return false, why end
+    local parts, why, tbl, looked_up = packed_choice(mem, cpus, minutes)
+    if not parts then return false, why, detail end
+    detail = detail .. "; table " .. looked_up
+    if parts ~= looked_up then detail = detail .. ", refit to " .. parts end
     local room = has_room(tbl, parts, cpus, mem)
-    if room == nil then return false, "stale" end
-    if not room then return false, "no room" end
+    if room == nil then return false, "stale", detail end
+    if not room then
+        return false, "no room", detail .. "; no node there has the CPUs and memory free"
+    end
 
     job_desc.partition = parts
     local mark = "sjp:placed"
     -- Pin the node only when the job can start now. Any failure here leaves
     -- the partition choice above as it is.
     local pok, node, pparts = pcall(function()
-        if pin_eligible(job_desc, submit_uid, cpus, tbl, mem_given) then
-            return pick_node(tbl.pin, parts, cpus, mem)
-        end
+        local ok_pin, no = pin_eligible(job_desc, submit_uid, cpus, tbl, mem_given)
+        if not ok_pin then return nil, no end
+        return pick_node(tbl.pin, parts, cpus, mem)
     end)
     if pok and node and pparts then
         job_desc.req_nodes = node
@@ -325,23 +345,32 @@ local function place(job_desc, submit_uid)
         -- Count it against the node until the next table arrives, so a burst
         -- of submissions is not all pinned to the same free space.
         local n = tbl.pin.nodes[node]
+        detail = detail .. string.format(
+            "; node %s free %d CPUs x %d MB (%s MB/CPU), after %d x %d (%s MB/CPU)",
+            node, n[1], n[2], mpc(n[1], n[2]), n[1] - cpus, n[2] - mem,
+            mpc(n[1] - cpus, n[2] - mem))
         n[1], n[2] = n[1] - cpus, n[2] - mem
         why = why .. " pin=" .. node
+    else
+        detail = detail .. "; no pin: " .. tostring(pok and pparts or node or "")
     end
     if blank(job_desc.admin_comment) then job_desc.admin_comment = mark end
-    return true, why
+    return true, why, detail
 end
 
 -- Place a batch job where it fits now. Returns true, or false and a reason
 -- (see the top of this file); a job that is not placed is left untouched.
 function sjp.place(job_desc, submit_uid)
-    local ok, placed, why = pcall(place, job_desc, submit_uid)
+    local ok, placed, why, detail = pcall(place, job_desc, submit_uid)
     if not ok then
         slurm.log_error("sjp: %s", tostring(placed))
         return false, "error"
     end
-    slurm.log_info("sjp: uid=%.0f name='%s' -> %s (%s)", submit_uid, job_desc.name or "?",
-                   placed and job_desc.partition or "not placed", tostring(why))
+    local line = string.format("sjp: uid=%.0f name='%s' -> %s (%s)", submit_uid,
+                               job_desc.name or "?",
+                               placed and job_desc.partition or "not placed", tostring(why))
+    if sjp.config.verbose and detail then line = line .. ": " .. detail end
+    slurm.log_info("%s", line)
     return placed, why
 end
 

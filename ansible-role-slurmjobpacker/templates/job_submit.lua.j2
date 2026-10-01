@@ -28,6 +28,7 @@ end
 if sjp then                          -- where sjpd writes, from sjp.toml
     sjp.config.table_path = "{{ (sjp_config.general | default({})).state_dir | default('/run/sjp') }}/policy.lua"
     sjp.config.disable_path = "{{ sjp_config_dir }}/disable"
+    sjp.config.verbose = {{ sjp_verbose_log | bool | lower }}
 end
 
 local function wants_gpu(job_desc)

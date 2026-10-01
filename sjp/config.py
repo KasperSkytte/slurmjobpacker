@@ -77,15 +77,17 @@ DEFAULTS: dict = {
         "fat_ratio_threshold": 6000,  # MB/CPU above which a job counts as "fat"
     },
     "limits": {
-        # off | global | perjob
-        #   global - when jobs are held only by the per-user or per-account CPU
-        #            cap of their QOS and would fit in idle hardware, raise both
-        #            caps of that QOS, for EVERYONE, for pulse_seconds, then put
-        #            them back. The caps are read from each QOS itself; they are at
-        #            base the rest of the time, and after a restart.
-        #   perjob - move individual pending jobs to a flex QOS. NOT YET
-        #            IMPLEMENTED: currently changes nothing.
-        # Off by default: it edits QOSes.
+        # What to do, in enforce mode, when jobs are held only by the per-user or
+        # per-account CPU cap of their QOS and would fit in idle hardware:
+        #   off    - nothing.
+        #   global - raise both caps of that QOS, for EVERYONE, for pulse_seconds,
+        #            then put them back. The caps are read from each QOS itself;
+        #            they are at base the rest of the time, and after a restart.
+        #   flex   - move those jobs, one by one, to the QOS flex_qos_name, as
+        #            many as fit in the free space now. Create that QOS first,
+        #            with the caps you want on top of the normal ones, and allow
+        #            it for every user (sacctmgr ... set qos+=flex). A moved job
+        #            that has not started within flex_revert_after goes back.
         "mode": "off",
         # While a pulse is on, the real caps are kept here, so that if sjpd stops
         # mid-pulse the next start restores them rather than taking the raised
@@ -97,9 +99,8 @@ DEFAULTS: dict = {
         "hysteresis": 5,              # consecutive checks meeting both conditions
         "pulse_seconds": 60.0,        # how long the caps stay raised
         "cooldown_seconds": 300.0,    # minimum time at base between pulses
-        "flex_qos_name": "flex",      # perjob mode promotes into this QOS
-        "flex_reserve": 0.05,
-        "flex_phi_tolerance": 1.0,
+        "flex_qos_name": "flex",      # flex mode moves held jobs into this QOS
+        "flex_revert_after": 60.0,    # seconds a moved job may stay pending there
     },
     "cohorts": {
         "key": ["user", "name", "cpus", "mem"],
