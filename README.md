@@ -98,6 +98,12 @@ per-account CPU cap of their QOS, yet would fit on idle nodes:
   default `flex`) with the caps you want on top of the normal ones. If jobs don't start within a minute it is reverted back. Ensure the QOS is created and allow
   it for all users first with: `sacctmgr -i modify account root set qos+=flex`. Adjust for individual users if necessary.
 
+Either way, jobs started over the cap keep running until they end, so a user can stay
+above the cap for as long as those jobs run. To make that use truly temporary, make the
+flex QOS preemptible (`PreemptType=preempt/qos` and `PreemptMode=REQUEUE` in
+`slurm.conf`, and `sacctmgr modify qos normal set preempt=flex`): flex jobs then use idle
+nodes, and are requeued when jobs in the normal QOS need the room.
+
 **`[pin] time_aware`** (default `false`): also weigh time limits when choosing a node.
 sjp then prefers a node whose running jobs end around when the new job would, so long
 jobs gather on the same nodes and nodes running short jobs empty out together, leaving
