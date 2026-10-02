@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.9.0](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.8.0...v1.9.0) (2026-10-02)
+
+
+### Features
+
+* rename [limits] raise_above to min_idle_share ([4e97c57](https://github.com/KasperSkytte/slurmjobpacker/commit/4e97c57b50da9d51fa095343430d0b06bc0282f2))
+
 ## [1.8.0](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.7.0...v1.8.0) (2026-10-02)
 
 
