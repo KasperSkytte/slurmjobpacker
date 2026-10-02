@@ -99,7 +99,8 @@ DEFAULTS: dict = {
         # ones as base.
         "state_file": "/var/lib/sjp/limits.json",
         "ceiling": 2.0,               # the raised caps, as a multiple of base
-        "raise_above": 0.25,          # idle placeable fraction needed to pulse
+        "min_idle_share": 0.25,       # act only while at least this share of the
+                                      # cluster's placeable capacity is idle
         "lower_below": 0.10,          # end a pulse early if idle falls below this
         "hysteresis": 5,              # consecutive checks meeting both conditions
         "pulse_seconds": 60.0,        # how long the caps stay raised
@@ -125,12 +126,28 @@ def defaults() -> dict:
     return copy.deepcopy(DEFAULTS)
 
 
+# Settings that were renamed: (section, old name, new name). A config that still
+# uses an old name keeps working, and sjpd says so when it starts.
+RENAMED = [("limits", "raise_above", "min_idle_share")]
+
+
 def load(path: str | None = None) -> dict:
     path = path or os.environ.get("SJP_CONFIG", "/etc/sjp/sjp.toml")
     if not os.path.exists(path):
         return copy.deepcopy(DEFAULTS)
     with open(path, "rb") as f:
-        return _merge(DEFAULTS, tomllib.load(f))
+        return _merge(DEFAULTS, upgrade(tomllib.load(f)))
+
+
+def upgrade(over: dict) -> dict:
+    """Move settings from their old names to their new ones."""
+    for section, old, new in RENAMED:
+        sec = over.get(section)
+        if isinstance(sec, dict) and old in sec:
+            value = sec.pop(old)
+            sec.setdefault(new, value)
+            over.setdefault("_renamed", []).append(f"[{section}] {old} is now {new}")
+    return over
 
 
 def dump_defaults() -> str:

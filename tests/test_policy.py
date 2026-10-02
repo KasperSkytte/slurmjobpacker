@@ -282,6 +282,13 @@ check("a dry run only says what it would do", not w["1"]["executed"]
 d.widen_starving(jobs, now)
 check("each job is considered once", d.log_fh.getvalue().count("widen_partitions") == 2)
 
+print("\n10f. a setting's old name keeps working")
+import tomllib as _t
+old = config._merge(config.DEFAULTS, config.upgrade(_t.loads("[limits]\nraise_above = 0.1\n")))
+check("raise_above becomes min_idle_share, and sjpd is told",
+      old["limits"]["min_idle_share"] == 0.1 and "raise_above" not in old["limits"]
+      and old["_renamed"] == ["[limits] raise_above is now min_idle_share"])
+
 print("\n10e. flex mode moves capped jobs that fit now to the flex QOS, and back")
 cfg = config.defaults()
 cfg["limits"]["mode"] = "flex"

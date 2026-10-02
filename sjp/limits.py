@@ -22,7 +22,7 @@ class LimitPulse:
         c = cfg["limits"]
         self.base_u, self.base_a = base                    # None: the QOS has no cap
         self.ceiling = c["ceiling"]
-        self.raise_above = c["raise_above"]
+        self.min_idle_share = c["min_idle_share"]
         self.lower_below = c["lower_below"]
         self.hysteresis = c["hysteresis"]
         self.pulse = c["pulse_seconds"]
@@ -66,7 +66,7 @@ class LimitPulse:
                 return None
             return self.reset(now)
 
-        idle = idle_fraction >= self.raise_above
+        idle = idle_fraction >= self.min_idle_share
         self.streak = self.streak + 1 if idle and held_that_fit else 0
         if self.streak < self.hysteresis or now - self.lowered_at < self.cooldown:
             return None

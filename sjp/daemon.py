@@ -664,7 +664,8 @@ class Daemon:
         info = dict(actuation=slurm.actuation(),
                     writes_table=self.blocked(("advise", "enforce")) is None,
                     table_path=self.table_path, limits_mode=self.cfg["limits"]["mode"],
-                    disable_file_present=self.disabled(), warnings=[])
+                    disable_file_present=self.disabled(),
+                    warnings=[f"{r}; please update sjp.toml" for r in self.cfg.get("_renamed", [])])
         try:
             nodes = slurm.nodes()
             keep, dropped = self.partition_filter(slurm.partitions(), nodes)
@@ -726,7 +727,7 @@ class Daemon:
 
         if self.cfg["limits"]["mode"] == "flex":
             self.unflex(pend, time.time())
-            if idle_frac >= self.cfg["limits"]["raise_above"]:
+            if idle_frac >= self.cfg["limits"]["min_idle_share"]:
                 later = {n: nodes[n]["later"] for n in nf if nodes[n].get("later")}
                 self.flex(pend, nf, time.time(), later)
         if self.cfg["limits"]["mode"] == "global":
