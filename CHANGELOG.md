@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.8.0](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.7.0...v1.8.0) (2026-10-02)
+
+
+### Features
+
+* count reservations against nodes' free space ([6ec5cb6](https://github.com/KasperSkytte/slurmjobpacker/commit/6ec5cb6abfaacb8f8851c2a0b1b2c377fdc368f4))
+
 ## [1.7.0](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.6.0...v1.7.0) (2026-10-01)
 
 
