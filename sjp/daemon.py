@@ -180,6 +180,38 @@ class Daemon:
                 by_part_free[p] = free
         return by_part_total, by_part_free
 
+    @staticmethod
+    def reserve(nodes, resvs, jobs, now):
+        """Count reservations like jobs planned on their nodes. Memory cannot be
+        reserved, so a reservation's share of it is taken at the node's own
+        memory per CPU. An active reservation's cores, less those its own jobs
+        use, are added to the node's allocation, so every decision sees them as
+        taken. An upcoming one is kept in the node's "later" list as
+        (start, cpus, mem), for jobs that would still run when it starts."""
+        used = collections.Counter()               # (reservation, node) -> CPUs
+        for j in jobs:
+            if j["state"] in ("R", "CF") and j.get("reservation"):
+                ns = slurm.expand_hostlist(j.get("nodelist") or "")
+                for n in ns:
+                    used[(j["reservation"], n)] += j["cpus"] / max(len(ns), 1)
+        for d in nodes.values():
+            d["later"] = []
+        for r in resvs:
+            if r["end"] <= now:
+                continue
+            for n, cores in r["nodes"].items():
+                d = nodes.get(n)
+                if d is None or not d["cpus"]:
+                    continue
+                cpus = d["cpus"] if cores is None else min(d["cpus"], cores * d["threads"])
+                per_cpu = d["mem"] / d["cpus"]
+                if r["start"] <= now:
+                    left = max(0, round(cpus - used[(r["name"], n)]))
+                    d["alloc_cpus"] += left
+                    d["alloc_mem"] += int(left * per_cpu)
+                else:
+                    d["later"].append((r["start"], cpus, int(cpus * per_cpu)))
+
     def pin_active(self) -> bool:
         """Pins need sjpd to release the ones that do not start, which is an
         enforce-mode action. observe shows what enforce would do; advise never pins."""
@@ -261,6 +293,10 @@ class Daemon:
             try:
                 n = slurm.nodes()
                 p = slurm.partitions()
+                r = slurm.reservations()
+                with self.sh.lock:
+                    jobs = list(self.sh.jobs)
+                self.reserve(n, r, jobs, time.time())
                 with self.sh.lock:
                     self.sh.nodes, self.sh.parts, self.sh.nodes_at = n, p, time.time()
             except Exception as e:                      # never let a poll kill the loop
@@ -323,7 +359,9 @@ class Daemon:
                                 for v_ in (",".join(vs),))))
         with self.sh.lock:
             jobs = list(self.sh.jobs)
-        state = dict(nodes=self.node_free(nodes, parts),
+        nf = self.node_free(nodes, parts)
+        state = dict(nodes=nf,
+                     later={n: nodes[n]["later"] for n in nf if nodes[n].get("later")},
                      tiers={p: parts[p]["tier"] for p in total},
                      room=self.user_room(jobs), enabled=self.pin_active(),
                      busy=self.busy_until(jobs, now) if self.cfg["pin"]["time_aware"] else None)
@@ -333,7 +371,8 @@ class Daemon:
         pin_sig = hash(repr(pin))
         self.snap = dict(table=table, cap=policy.caps(total), total=total, free=free,
                          version=self.version, node_free=state["nodes"],
-                         tiers=state["tiers"], room=state["room"], busy=state["busy"])
+                         tiers=state["tiers"], room=state["room"], busy=state["busy"],
+                         later=state["later"])
         # Rewrite when the partition decisions or the free space change, and
         # often enough that the plugin never sees the table or its free space
         # as stale: policy max_age/3, or pin max_age/2.
@@ -452,7 +491,10 @@ class Daemon:
         # The node. A running job's own allocation is added back to its node, so
         # the choice is made against the cluster as it was just before it started.
         node = j.get("nodelist") if running else ""
-        nf = dict(s["node_free"])
+        # Reservations that start before this job would end are taken as well.
+        nf = policy.free_for(s["node_free"], s.get("later"),
+                             (j.get("submit") or time.time()) if running else time.time(),
+                             j["timelimit"])
         if node in nf:
             fc, fm, ps = nf[node]
             nf[node] = (fc + cpus, fm + mem, ps)
@@ -685,7 +727,8 @@ class Daemon:
         if self.cfg["limits"]["mode"] == "flex":
             self.unflex(pend, time.time())
             if idle_frac >= self.cfg["limits"]["raise_above"]:
-                self.flex(pend, nf, time.time())
+                later = {n: nodes[n]["later"] for n in nf if nodes[n].get("later")}
+                self.flex(pend, nf, time.time(), later)
         if self.cfg["limits"]["mode"] == "global":
             for qos in set(held) | set(self.limiters):
                 lim = self.limiter(qos)
@@ -702,7 +745,7 @@ class Daemon:
             limits=[lim.state() for lim in self.limiters.values()],
             errors=self.sh.errors), indent=1))
 
-    def flex(self, pend, nf, now):
+    def flex(self, pend, nf, now, later=None):
         """Flex mode: move jobs held only by the CPU cap of their QOS to the flex
         QOS, highest priority first, as many as fit in the free space now. Each
         is counted against a node's free space, so the moves never add up to
@@ -724,8 +767,11 @@ class Daemon:
                 continue
             cpus, mem = max(1, j["cpus"]), j.get("req_mem") or j["mem"]
             parts = set(j["partition"].split(","))
+            # Reservations that start before the job would end count against it.
+            soon = policy.reserved_before(later, now, j.get("timelimit"))
             fits = [n for n, (fc, fm, ps) in free.items()
-                    if fc >= cpus and fm >= mem and ps & parts]
+                    if fc - soon.get(n, (0, 0))[0] >= cpus
+                    and fm - soon.get(n, (0, 0))[1] >= mem and ps & parts]
             if not fits or not self.flex_allowed(j["user"], j["account"], target):
                 continue
             node = min(fits, key=lambda n: free[n][0])      # the tightest fit

@@ -476,6 +476,55 @@ check("busy times are emitted only when time_aware is on",
       and 'time_aware' not in policy.render_lua(tbl, CFG, time.time(), 1, TOTAL,
                                                 dict(nodes=nf, tiers=TIERS, room=None)))
 
+print("\n12b. reservations count as jobs planned on their nodes")
+real_run = slurm._run
+slurm._run = lambda args, timeout=10.0: (
+    "ReservationName=whole StartTime=2026-10-02T10:00:00 EndTime=2026-10-03T10:00:00 "
+    "Duration=1-00:00:00 Nodes=a NodeCnt=1 CoreCnt=8 Features=(null) PartitionName=(null) "
+    "Flags=MAINT TRES=cpu=8 Users=root\n"
+    "ReservationName=part StartTime=2026-10-02T10:00:00 EndTime=2026-10-03T10:00:00 "
+    "Duration=1-00:00:00 Nodes=b,c NodeCnt=2 CoreCnt=6 Features=(null) PartitionName=(null) "
+    "Flags=SPEC_NODES   NodeName=b CoreIDs=0-3   NodeName=c CoreIDs=4,6 TRES=cpu=12 Users=u\n"
+    "ReservationName=licenses StartTime=2026-10-02T10:00:00 EndTime=2026-10-03T10:00:00 "
+    "Duration=1-00:00:00 Nodes=(null) NodeCnt=0 CoreCnt=0 Licenses=x:1\n")
+try:
+    rs = {r["name"]: r for r in slurm.reservations()}
+finally:
+    slurm._run = real_run
+check("whole-node and per-core reservations are read; ones without nodes skipped",
+      sorted(rs) == ["part", "whole"] and rs["whole"]["nodes"] == {"a": None}
+      and rs["part"]["nodes"] == {"b": 4, "c": 2}, str(rs))
+t0 = 1_000_000.0
+def rnode(cpus, mem, alloc=0, threads=1):
+    return dict(cpus=cpus, mem=mem, alloc_cpus=alloc, alloc_mem=alloc * mem // cpus,
+                threads=threads, partitions=["slim1"], up=True)
+nodes12 = {"a": rnode(8, 32000), "b": rnode(16, 64000, threads=2), "c": rnode(16, 64000),
+           "d": rnode(16, 64000)}
+resv12 = [dict(name="whole", start=t0 - 60, end=t0 + 3600, nodes={"a": None}),
+          dict(name="part", start=t0 - 60, end=t0 + 3600, nodes={"b": 4, "c": 2}),
+          dict(name="soon", start=t0 + 7200, end=t0 + 9000, nodes={"d": None})]
+jobs12 = [dict(state="R", reservation="part", nodelist="c", cpus=1)]
+daemon.Daemon.reserve(nodes12, resv12, jobs12, t0)
+check("an active whole-node reservation takes the whole node",
+      nodes12["a"]["alloc_cpus"] == 8 and nodes12["a"]["alloc_mem"] == 32000)
+check("reserved cores count with the node's threads, memory at its memory per CPU",
+      nodes12["b"]["alloc_cpus"] == 8 and nodes12["b"]["alloc_mem"] == 32000)
+check("CPUs the reservation's own jobs use are not counted twice",
+      nodes12["c"]["alloc_cpus"] == 1, str(nodes12["c"]))
+check("a reservation still to start is kept for later, not taken now",
+      nodes12["d"]["alloc_cpus"] == 0 and nodes12["d"]["later"] == [(t0 + 7200, 16, 64000)])
+nf12 = {"d": (16, 64000, ["slim1"]), "e": (16, 64000, ["slim1"])}
+later12 = {"d": nodes12["d"]["later"]}
+check("a job ending before the reservation starts can use the node",
+      policy.free_for(nf12, later12, t0, 60)["d"] == (16, 64000, ["slim1"]))
+check("a job running into it, or without a time limit, cannot",
+      policy.free_for(nf12, later12, t0, 180)["d"][:2] == (0, 0)
+      and policy.free_for(nf12, later12, t0, None)["d"][:2] == (0, 0))
+lua_r = policy.render_lua(tbl, CFG, time.time(), 1, TOTAL,
+                          dict(nodes=nf, tiers=TIERS, room=None, later=later12))
+check("upcoming reservations are passed to the plugin",
+      '["d"] = {{%d, 16, 64000}},' % (t0 + 7200) in lua_r)
+
 print("\n13. stale pins are released, and only sjp's own")
 real_ac, real_apply = slurm.admin_comment, slurm.apply
 comments = {"7": "sjp:pin=n16;from=slim1,slim2;job=4c,16G,4.0G/c;v=3", "8": ""}

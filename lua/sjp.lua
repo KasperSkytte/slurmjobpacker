@@ -170,6 +170,23 @@ local function time_cost(pin, name, minutes)
     return math.max(0, math.log(minutes * 60 / math.max(busy, 60)))
 end
 
+-- Mirrors sjp.policy.free_for: a node's free CPUs and memory, less the
+-- reservations that start before a job of this time limit would end (all of
+-- them when minutes is nil, a job without a limit). sjpd has already taken out
+-- the reservations that are active now.
+local function free_of(pin, name, minutes)
+    local n = pin.nodes[name]
+    local fc, fm = n[1], n[2]
+    local later = type(pin.later) == "table" and pin.later[name]
+    if later then
+        local ends = minutes and (os.time() + minutes * 60) or math.huge
+        for _, r in ipairs(later) do
+            if r[1] < ends then fc, fm = fc - r[2], fm - r[3] end
+        end
+    end
+    return math.max(fc, 0), math.max(fm, 0)
+end
+
 local function pick_node(pin, parts, cpus, mem, minutes)
     local allowed, ranks, seen = {}, {}, {}
     for p in string.gmatch(parts, "[^,]+") do
@@ -181,14 +198,15 @@ local function pick_node(pin, parts, cpus, mem, minutes)
     for _, r in ipairs(ranks) do
         local cands = {}
         for name, n in pairs(pin.nodes) do
-            if n[1] >= cpus and n[2] >= mem then
+            local fc, fm = free_of(pin, name, minutes)
+            if fc >= cpus and fm >= mem then
                 local hit = false
                 for p in string.gmatch(n[3], "[^,]+") do
                     if allowed[p] and (pin.tier[p] or 1) == r then hit = true end
                 end
                 if hit then
-                    cands[#cands + 1] = { phi(n[1], n[2], pin.demand)
-                                          - phi(n[1] - cpus, n[2] - mem, pin.demand), name }
+                    cands[#cands + 1] = { phi(fc, fm, pin.demand)
+                                          - phi(fc - cpus, fm - mem, pin.demand), name }
                 end
             end
         end
@@ -196,8 +214,8 @@ local function pick_node(pin, parts, cpus, mem, minutes)
             if #cands == 1 then return nil, "only one node has room, so Slurm picks it anyway" end
             local want = mem / cpus
             local function mismatch(name)
-                local n = pin.nodes[name]
-                return math.abs(math.log((n[2] / n[1]) / want)) + time_cost(pin, name, minutes)
+                local fc, fm = free_of(pin, name, minutes)
+                return math.abs(math.log((fm / fc) / want)) + time_cost(pin, name, minutes)
             end
             local lo, hi, worst_mis = math.huge, -math.huge, -math.huge
             for _, c in ipairs(cands) do
@@ -299,14 +317,15 @@ end
 
 -- Whether some node in the given partitions has room for the job right now,
 -- from the free space sjpd publishes with the table; nil if that is too old.
-local function has_room(tbl, parts, cpus, mem)
+local function has_room(tbl, parts, cpus, mem, minutes)
     local pin = tbl.pin
     if type(pin) ~= "table" or type(pin.nodes) ~= "table" then return true end
     if (os.time() - (tbl.generated_at or 0)) > (pin.max_age or 10) then return nil end
     local allowed = {}
     for p in string.gmatch(parts, "[^,]+") do allowed[p] = true end
-    for _, n in pairs(pin.nodes) do
-        if n[1] >= cpus and n[2] >= mem then
+    for name, n in pairs(pin.nodes) do
+        local fc, fm = free_of(pin, name, minutes)
+        if fc >= cpus and fm >= mem then
             for p in string.gmatch(n[3], "[^,]+") do
                 if allowed[p] then return true end
             end
@@ -361,7 +380,7 @@ local function place(job_desc, submit_uid)
     if not parts then return false, why, detail end
     detail = detail .. "; table " .. looked_up
     if parts ~= looked_up then detail = detail .. ", refit to " .. parts end
-    local room = has_room(tbl, parts, cpus, mem)
+    local room = has_room(tbl, parts, cpus, mem, has_limit and minutes or nil)
     if room == nil then return false, "stale", detail end
     if not room then
         return false, "no room", detail .. "; no node there has the CPUs and memory free"
@@ -386,8 +405,9 @@ local function place(job_desc, submit_uid)
         -- Count it against the node until the next table arrives, so a burst
         -- of submissions is not all pinned to the same free space.
         local n = tbl.pin.nodes[node]
+        local fc, fm = free_of(tbl.pin, node, has_limit and minutes or nil)
         mark = string.format("sjp:pin=%s;from=%s;%s;free=%dc,%s,%s/c;%s", node, parts,
-                             shape, n[1], gb(n[2]), gb(n[2] / math.max(n[1], 1)), version)
+                             shape, fc, gb(fm), gb(fm / math.max(fc, 1)), version)
         if tbl.pin.time_aware and type(tbl.pin.busy_until) == "table" then
             -- the job's time limit, and how long the node's jobs still ran
             local until_ = busy_until(tbl.pin, node)
@@ -399,8 +419,7 @@ local function place(job_desc, submit_uid)
         end
         detail = detail .. string.format(
             "; node %s free %d CPUs x %d MB (%s MB/CPU), after %d x %d (%s MB/CPU)",
-            node, n[1], n[2], mpc(n[1], n[2]), n[1] - cpus, n[2] - mem,
-            mpc(n[1] - cpus, n[2] - mem))
+            node, fc, fm, mpc(fc, fm), fc - cpus, fm - mem, mpc(fc - cpus, fm - mem))
         n[1], n[2] = n[1] - cpus, n[2] - mem
         why = why .. " pin=" .. node
     else

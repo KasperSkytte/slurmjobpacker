@@ -85,6 +85,33 @@ def choose(cpus, mem_mb, nodes_by_part, free_by_part, demand, tolerance=0.25):
     return sorted(p for c, p in scored if c <= lo + tolerance * cpus)
 
 
+def reserved_before(later, now, minutes) -> dict:
+    """node -> (cpus, mem) of the reservations that start before a job of this
+    time limit would end; all of them for a job without a limit (minutes None).
+    later: node -> [(start, cpus, mem)], as sjpd collects it."""
+    end = now + minutes * 60 if minutes else float("inf")
+    out = {}
+    for n, rs in (later or {}).items():
+        hit = [(c, m) for start, c, m in rs if start < end]
+        if hit:
+            out[n] = (sum(c for c, _ in hit), sum(m for _, m in hit))
+    return out
+
+
+def free_for(node_free, later, now, minutes):
+    """node_free less reserved_before(): the free space a job of this time
+    limit can count on."""
+    taken = reserved_before(later, now, minutes)
+    if not taken:
+        return node_free
+    out = dict(node_free)
+    for n, (c, m) in taken.items():
+        if n in out:
+            fc, fm, ps = out[n]
+            out[n] = (max(0, fc - c), max(0, fm - m), ps)
+    return out
+
+
 def time_cost(minutes, busy_seconds) -> float:
     """How far a job would extend the time its node stays busy, as a log ratio:
     0 if it ends before the node's running jobs do, more the longer it outlasts
@@ -323,6 +350,13 @@ def render_pin(cfg, pin) -> list[str]:
     for n, (fc, fm, parts) in sorted(pin["nodes"].items()):
         out.append('      ["%s"] = {%d, %d, "%s"},' % (n, fc, fm, ",".join(parts)))
     out += ["    },"]
+    if pin.get("later"):
+        # reservations still to start: node -> {start, cpus, mem}, ...
+        out.append("    later = {")
+        for n, rs in sorted(pin["later"].items()):
+            out.append('      ["%s"] = {%s},' % (n, ", ".join(
+                "{%d, %d, %d}" % r for r in sorted(rs))))
+        out.append("    },")
     if pin.get("busy") is not None:
         # [pin] time_aware: when each node's running jobs end, as epoch seconds
         out += ["    time_aware = true,", "    busy_until = {"]

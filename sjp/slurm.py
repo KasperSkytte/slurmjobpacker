@@ -60,7 +60,7 @@ def nodes() -> dict:
             cpus = int(d.get("CPUTot", 0))
             mem = int(d.get("RealMemory", 0)) - int(d.get("MemSpecLimit", 0) or 0)
             out[name] = dict(
-                cpus=cpus, mem=mem,
+                cpus=cpus, mem=mem, threads=int(d.get("ThreadsPerCore", 1) or 1),
                 alloc_cpus=int(d.get("CPUAlloc", 0)),
                 alloc_mem=int(d.get("AllocMem", 0)),
                 partitions=[p for p in d.get("Partitions", "").split(",") if p],
@@ -109,7 +109,7 @@ PENDING_FMT = ("JobID:|,UserName:|,Account:|,NumCPUs:|,MinMemory:|,"
 # *requested* TRES for a job that has not started; its mem is the job's total,
 # which MinMemory is not when the job used --mem-per-cpu.
 QUEUE_FMT = PENDING_FMT + (",StateCompact:|,tres-alloc:|,ReqNodes:|,NodeList:|,"
-                           "SubmitTime:|,NumTasks:|,EligibleTime:|,Feature:|,EndTime:|")
+                           "SubmitTime:|,NumTasks:|,EligibleTime:|,Feature:|,EndTime:|,Reservation:|")
 
 
 def queue(states: str = "PD,R,CF") -> list[dict]:
@@ -118,7 +118,7 @@ def queue(states: str = "PD,R,CF") -> list[dict]:
     out = []
     for line in txt.splitlines():
         f = [x.strip() for x in line.split("|")]
-        if len(f) < 20:
+        if len(f) < 21:
             continue
         try:
             tres = dict(kv.split("=", 1) for kv in f[12].split(",") if "=" in kv)
@@ -133,12 +133,40 @@ def queue(states: str = "PD,R,CF") -> list[dict]:
                             req_nodes=f[13], nodelist=f[14], submit=_epoch(f[15]),
                             ntasks=int(f[16] or 1), eligible=_epoch(f[17]),
                             features="" if f[18] == "(null)" else f[18],
-                            end=_epoch(f[19])))
+                            end=_epoch(f[19]),
+                            reservation="" if f[20] == "(null)" else f[20]))
         except ValueError:
             continue
     if txt.strip() and not out:
         raise SlurmError(f"squeue returned {len(txt.splitlines())} lines, none parsable")
     return out
+
+
+def reservations() -> list[dict]:
+    """Reservations that hold nodes: name, start, end (epoch seconds), and
+    nodes: {node: reserved cores, or None for the whole node}. A reservation of
+    part of a node lists its cores per node (NodeName=... CoreIDs=...)."""
+    out = []
+    for line in _run(["scontrol", "show", "reservations", "--oneliner"]).splitlines():
+        d = _kv(line)
+        start, end = _epoch(d.get("StartTime", "")), _epoch(d.get("EndTime", ""))
+        names = expand_hostlist(d.get("Nodes", "")) if d.get("Nodes", "(null)") != "(null)" else []
+        if not names or start is None or end is None:
+            continue
+        cores = {n: _count_ids(ids) for n, ids in
+                 re.findall(r"NodeName=(\S+) CoreIDs=(\S+)", line)}
+        out.append(dict(name=d.get("ReservationName", ""), start=start, end=end,
+                        nodes={n: cores.get(n) for n in names}))
+    return out
+
+
+def _count_ids(ids: str) -> int:
+    """'0-3,8' -> 5."""
+    n = 0
+    for r in ids.split(","):
+        a, _, b = r.partition("-")
+        n += int(b or a) - int(a) + 1
+    return n
 
 
 def expand_hostlist(s: str) -> list[str]:
