@@ -128,13 +128,29 @@ To switch it off, `sudo touch /etc/sjp/disable`: from the next submission
 
 ## Seeing it in 3D
 
-`python3 -m sjp.viz` serves a live 3D view of the cluster on `http://127.0.0.1:8650`:
-every node a box of CPUs × memory × time, every running job a box inside it, and the
-waiting jobs beside them. Click a job for its details. It only reads from Slurm, and
-answers only on the machine itself; use `ssh -L 8650:localhost:8650 <controller>` to see
-it from yours. A simpler 2D view, CPUs and memory as a pair of bars per node, is at
-`/2d`. `python3 -m sjp.viz --demo` shows a simulated cluster instead. See
-[Visualizer](https://github.com/KasperSkytte/slurmjobpacker/wiki/Visualizer).
+`sjp-viz` shows the cluster live in a web browser: every node a box of CPUs × memory ×
+time, every running job a box inside it, and the waiting jobs beside them. Click a job
+for its details. A simpler 2D view, CPUs and memory as a pair of bars per node, is at
+`/2d`. It only reads from Slurm, and it is optional: sjp works the same without it.
+
+To try it, run `python3 -m sjp.viz` (or `python3 -m sjp.viz --demo` for a simulated
+cluster), and open `http://127.0.0.1:8650`. To keep it running, install it as a service
+next to `sjpd`:
+
+```sh
+sudo cp systemd/sjp-viz.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now sjp-viz
+```
+
+It answers only on the machine itself, because the page shows users and job names. To
+see it from your own computer, open an SSH tunnel and browse to `http://localhost:8650`:
+
+```sh
+ssh -L 8650:localhost:8650 <controller>
+```
+
+With the Ansible role, set `sjp_viz_enabled: true`. See
+[Visualizer](https://github.com/KasperSkytte/slurmjobpacker/wiki/Visualizer) for more.
 
 ## Limitations
 

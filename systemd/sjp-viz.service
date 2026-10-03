@@ -1,0 +1,23 @@
+[Unit]
+Description=slurmjobpacker live view of the cluster (sjp-viz)
+After=network.target slurmctld.service
+
+[Service]
+Type=simple
+User=slurm
+Group=slurm
+# The checkout from README "Installation"; the sjp package is imported from here.
+WorkingDirectory=/opt/slurmjobpacker
+Environment=PYTHONPATH=/opt/slurmjobpacker
+# Answers only on this machine: the page shows users and job names. See an SSH
+# tunnel in the README, or change --bind if your network is trusted.
+ExecStart=/usr/bin/python3 -m sjp.viz -c /etc/sjp/sjp.toml --bind 127.0.0.1 --port 8650
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
