@@ -33,6 +33,7 @@
   #help { bottom: 16px; right: 16px; font-size: 12px; color: var(--muted); }
   #err { top: 50%; left: 50%; transform: translate(-50%, -50%); display: none; }
   body.clean #help, body.clean #info, body.clean .switch { display: none !important; }
+  body.bare .panel { display: none !important; }
 </style>
 <script type="importmap">
 { "imports": {
@@ -59,7 +60,7 @@
   <div class="ticks"><span>1</span><span>2</span><span>4</span><span>8</span><span>16</span><span>32+</span></div>
 </div>
 <div id="info" class="panel"><span class="close" id="close">✕</span><h2 id="info-title"></h2><table id="info-body"></table></div>
-<div id="help" class="panel">drag to turn · scroll to zoom · click a job · <b>R</b> rotate · <b>L</b> labels · <b>H</b> hide panels</div>
+<div id="help" class="panel">drag to turn · right-drag or <b>Ctrl</b>+drag to move · scroll to zoom · click a job · <b>R</b> rotate · <b>L</b> labels · <b>H</b> hide panels</div>
 <div id="err" class="panel"></div>
 
 <script type="module">
@@ -125,13 +126,16 @@ const sun = new THREE.DirectionalLight(0xffffff, 1.6);
 sun.position.set(30, 50, 40); scene.add(sun);
 const world = new THREE.Group(); scene.add(world);
 
-function textSprite(lines, { size = 48, color = "#e6edf3", sub = "#8b949e", width = 1024 } = {}) {
+function textSprite(lines, { size = 48, color = "#e6edf3", sub = "#8b949e" } = {}) {
+  // The canvas is as wide as the text, so a sprite anchored by its right or
+  // centre lines up with its text.
   const c = document.createElement("canvas"), g = c.getContext("2d");
-  c.width = width; c.height = Math.ceil(size * 1.35 * lines.length + 16);
+  const font = i => `${i ? 400 : 650} ${i ? size * 0.8 : size}px system-ui, sans-serif`;
+  const width = Math.max(...lines.map((l, i) => { g.font = font(i); return g.measureText(l).width; }));
+  c.width = Math.ceil(width + 8); c.height = Math.ceil(size * 1.35 * lines.length + 16);
   g.textBaseline = "top";
   lines.forEach((l, i) => {
-    g.font = `${i ? 400 : 650} ${i ? size * 0.8 : size}px system-ui, sans-serif`;
-    g.fillStyle = i ? sub : color; g.fillText(l, 4, 8 + i * size * 1.35);
+    g.font = font(i); g.fillStyle = i ? sub : color; g.fillText(l, 4, 8 + i * size * 1.35);
   });
   const tex = new THREE.CanvasTexture(c); tex.anisotropy = 4; tex.colorSpace = THREE.SRGBColorSpace;
   const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }));
@@ -158,7 +162,7 @@ function faceLabel(top, bottom) {
 
 // ------------------------------------------------------------------ nodes
 const nodeViews = new Map();   // name -> {group, origin, w, h, free, freeLabel}
-let queueLeft = -20, queueWidth = 40, queueBehind = false, sceneDepth = 0;
+let queueLeft = -20, queueWidth = 40, queueBehind = false, sceneDepth = 0, rowEnds = [];
 let layoutKey = "";
 
 function layoutNodes(nodes) {
@@ -174,6 +178,7 @@ function layoutNodes(nodes) {
   [...nodes].sort((a, b) => b.tier - a.tier || a.name.localeCompare(b.name, undefined, { numeric: true }))
     .forEach(n => { const k = n.partitions.join(","); if (!rows.has(k)) rows.set(k, []); rows.get(k).push(n); });
   let r = 0, widest = 0;
+  rowEnds = [];
   const rowWidths = [...rows.values()].map(ns => ns.reduce((w, n) => w + sx(n.cpus) + GAP_X, -GAP_X));
   widest = Math.max(...rowWidths);
   for (const [part, ns] of rows) {
@@ -198,8 +203,34 @@ function layoutNodes(nodes) {
         const tl = textSprite([l], { size: 40, color: "#6e7681" });
         tl.scale.multiplyScalar(0.6); tl.position.set(w + 0.15, 0.02, -sz(t)); g.add(tl);
       }
-      const label = textSprite([n.name, `${n.partitions.join(",")} · ${n.cpus} CPUs · ${gb(n.mem)} · ${gbc(n.mem / n.cpus)}`]);
-      label.center.set(0, 1); label.position.set(0, -0.35, 1.0); g.add(label);
+      const label = textSprite([n.name, `${n.cpus} CPUs · ${gb(n.mem)} · ${gbc(n.mem / n.cpus)}`]);
+      label.center.set(0, 1); label.position.set(0, -0.75, 1.0); g.add(label);
+      // Units on every axis: CPUs along the front edge, memory up the left one.
+      const axisText = (txt, x, y, z, cx, cy) => {
+        const t = textSprite([txt], { size: 40, color: "#6e7681" });
+        t.scale.multiplyScalar(0.6); t.center.set(cx, cy); t.position.set(x, y, z); g.add(t);
+      };
+      const edge = pts => g.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),
+        new THREE.LineBasicMaterial({ color: 0x6e7681 })));
+      for (const f of [0.5, 1]) {
+        edge([new THREE.Vector3(w * f, 0, 0.05), new THREE.Vector3(w * f, -0.18, 0.05)]);
+        axisText(f === 1 ? `${n.cpus} CPUs` : `${Math.round(n.cpus / 2)}`, w * f, -0.2, 0.05, 0.5, 1);
+        edge([new THREE.Vector3(0, h * f, 0.05), new THREE.Vector3(-0.18, h * f, 0.05)]);
+        axisText(f === 1 ? gb(n.mem) : num(n.mem / 2), -0.25, h * f, 0.05, 1, 0.5);
+      }
+      // The node's own memory per CPU: a dashed diagonal across its front face.
+      // Jobs are stacked corner to corner, so a stack that follows this line
+      // uses CPUs and memory at the rate the node has them.
+      const diag = new THREE.Line(new THREE.BufferGeometry().setFromPoints(
+        [new THREE.Vector3(0, 0, 0.03), new THREE.Vector3(w, h, 0.03)]),
+        new THREE.LineDashedMaterial({ color: 0xc9d1d9, dashSize: 0.25, gapSize: 0.18,
+                                       transparent: true, opacity: 0.55 }));
+      diag.computeLineDistances(); g.add(diag);
+      // A node running nothing at all says so, in the middle of its box.
+      const idle = textSprite(["idle"], { size: 72, color: "#3fb950" });
+      idle.scale.multiplyScalar(Math.min(2.6, w / idle.scale.x * 0.6));
+      idle.center.set(0.5, 0.5); idle.position.set(w / 2, h / 2, -NODE_D / 2); idle.visible = false;
+      g.add(idle);
       const tAxis = textSprite(["time →"], { size: 40, color: "#6e7681" });
       tAxis.scale.multiplyScalar(0.6); tAxis.position.set(w + 0.15, 0.02, -NODE_D * 0.5); g.add(tAxis);
       const free = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1),
@@ -210,9 +241,14 @@ function layoutNodes(nodes) {
       g.add(freeEdge);
       const freeLabel = faceLabel("room", ""); g.add(freeLabel);
       holder.add(g);
-      nodeViews.set(n.name, { group: g, w, h, node: n, free, freeEdge, freeLabel, freeKey: "", used: [0, 0] });
+      nodeViews.set(n.name, { group: g, w, h, node: n, free, freeEdge, freeLabel, freeKey: "",
+                              used: [0, 0], idle, floor });
       x += w + GAP_X;
     }
+    const rowLabel = textSprite([part], { size: 64, color: "#8b949e" });
+    rowLabel.center.set(0, 0.5); rowLabel.position.set(x - GAP_X + 1.6, 0.3, z - NODE_D / 2);
+    holder.add(rowLabel);
+    rowEnds.push([x - GAP_X, z]);
     world.add(holder); nodeViews.get(ns[0].name).holder = holder;
     r++;
   }
@@ -243,6 +279,7 @@ function layoutNodes(nodes) {
       const x = o.x + holder.x, z = o.z + holder.z;
       addBox(x, x + nv.w, -1.4, nv.h, z - NODE_D, z + 1.2);
     }
+    for (const [x, z] of rowEnds) addBox(x + 1.6, x + 6, 0, 1, z - NODE_D / 2 - 1, z - NODE_D / 2 + 1);
     if (queueBehind) addBox(queueLeft, queueLeft + queueWidth, QUEUE_UP, QUEUE_UP + 3,
                             -depth - QUEUE_BACK - NODE_D * 0.6, -depth - QUEUE_BACK + 1);
     else addBox(queueLeft, queueLeft + queueWidth, -1.4, 3, -NODE_D, 1.2);
@@ -318,6 +355,9 @@ function apply(s) {
       cx += j.cpus; cy += j.mem;
     }
     nv.used = [cx, cy];
+    const isIdle = js.length === 0 && nv.node.up;
+    nv.idle.visible = isIdle;
+    nv.floor.material.color.set(isIdle ? 0x14301c : 0x161b22);
     const fw = sx(Math.max(0, nv.node.cpus - cx)), fh = sy(Math.max(0, nv.node.mem - cy));
     for (const m of [nv.free, nv.freeEdge]) {
       m.visible = fw > 0.05 && fh > 0.05;
@@ -334,7 +374,7 @@ function apply(s) {
       nv.group.add(nv.freeLabel);
     }
     const ls = Math.min(fw * 0.85, fh * 1.7, 4.5);
-    nv.freeLabel.visible = ls > 0.8;
+    nv.freeLabel.visible = ls > 0.8 && !isIdle;     // "idle" says it all
     nv.freeLabel.scale.set(ls, ls / 2, 1);
     nv.freeLabel.position.set(sx(cx) + fw / 2, sy(cy) + fh / 2, 0.02);
   }
@@ -424,7 +464,7 @@ function select(v) {
 addEventListener("keydown", e => {
   if (e.key === "r" || e.key === "R") controls.autoRotate = !controls.autoRotate;
   if (e.key === "l" || e.key === "L") showLabels = !showLabels;
-  if (e.key === "h" || e.key === "H") document.body.classList.toggle("clean");
+  if (e.key === "h" || e.key === "H") document.body.classList.toggle("bare");
 });
 addEventListener("resize", () => {
   camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();

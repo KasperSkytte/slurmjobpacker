@@ -33,6 +33,7 @@
   #info .close { position: absolute; top: 8px; right: 10px; cursor: pointer; color: var(--muted); }
   #err { top: 50%; left: 50%; transform: translate(-50%, -50%); display: none; }
   body.clean #info, body.clean .switch { display: none !important; }
+  body.bare .panel { display: none !important; }
 </style>
 </head>
 <body>
@@ -344,7 +345,7 @@ function select(v) {
 }
 addEventListener("keydown", e => {
   if (e.key === "l" || e.key === "L") showLabels = !showLabels;
-  if (e.key === "h" || e.key === "H") document.body.classList.toggle("clean");
+  if (e.key === "h" || e.key === "H") document.body.classList.toggle("bare");
 });
 
 // ?manual=1: no polling and no clock; a recorder feeds states and steps frames.
