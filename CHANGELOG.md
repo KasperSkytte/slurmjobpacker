@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.0](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.9.0...v1.10.0) (2026-10-03)
+
+
+### Features
+
+* a live view of the cluster in 3D and 2D (python3 -m sjp.viz) ([edda413](https://github.com/KasperSkytte/slurmjobpacker/commit/edda41357995bf4339fe80d12136e662ff489cd6))
+
 ## [1.9.0](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.8.0...v1.9.0) (2026-10-02)
 
 
