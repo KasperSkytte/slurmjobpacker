@@ -49,12 +49,14 @@ The [wiki](https://github.com/KasperSkytte/slurmjobpacker/wiki) explains all of 
 ## Installation
 Follow the below steps manually, or use the provided ansible role under [ansible-role-slurmjobpacker](./ansible-role-slurmjobpacker/).
 
-Needs Python 3.11+ (standard library only). Tested on Slurm 26.05.
+Needs Python 3.11+ (standard library only). Tested on Slurm 24.11 and 26.05.
 
+<!-- x-release-please-start-version -->
 ```sh
-sudo git clone --branch v1.4.0 https://github.com/kasperskytte/slurmjobpacker /opt/slurmjobpacker
+sudo git clone --branch v1.10.0 https://github.com/kasperskytte/slurmjobpacker /opt/slurmjobpacker
 cd /opt/slurmjobpacker && python3 tests/test_policy.py        # ends in ALL PASS
 ```
+<!-- x-release-please-end -->
 
 **Try it out in observe mode first.** As your own user:
 
@@ -126,7 +128,7 @@ is noted in the job's `AdminComment` and in the `slurmctld` log. See
 To switch it off, `sudo touch /etc/sjp/disable`: from the next submission
 `sjp.place()` returns `false`, so only your own rules apply.
 
-## Seeing it in 3D
+## Seeing it live
 
 `sjp-viz` shows the cluster live in a web browser: every node a box of CPUs × memory ×
 time, every running job a box inside it, and the waiting jobs beside them. Click a job
