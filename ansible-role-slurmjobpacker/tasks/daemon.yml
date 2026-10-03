@@ -23,3 +23,29 @@
     enabled: "{{ sjp_service_enabled }}"
     state: "{{ sjp_service_state }}"
     daemon_reload: true
+
+- name: Install the sjp-viz systemd unit
+  ansible.builtin.template:
+    src: sjp-viz.service.j2
+    dest: /etc/systemd/system/sjp-viz.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart sjp-viz
+  when: sjp_viz_enabled | bool
+
+- name: Enable and start sjp-viz
+  ansible.builtin.systemd:
+    name: sjp-viz
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: sjp_viz_enabled | bool
+
+- name: Stop and disable sjp-viz, if it was installed
+  ansible.builtin.systemd:
+    name: sjp-viz
+    enabled: false
+    state: stopped
+  failed_when: false
+  when: not sjp_viz_enabled | bool

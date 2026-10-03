@@ -60,3 +60,9 @@ sjp_verbose_log: false
 # Run `scontrol reconfigure` when a new version is checked out, so slurmctld
 # loads the new sjp.lua. Needed once job_submit.lua calls sjp.
 sjp_reconfigure_slurm: "{{ sjp_job_submit_install }}"
+
+# The live 3D view of the cluster (python3 -m sjp.viz), as a service next to
+# sjpd. It answers only on sjp_viz_bind; the page shows users and job names.
+sjp_viz_enabled: false
+sjp_viz_bind: 127.0.0.1
+sjp_viz_port: 8650

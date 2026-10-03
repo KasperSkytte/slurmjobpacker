@@ -1,0 +1,21 @@
+# {{ ansible_managed }}
+[Unit]
+Description=slurmjobpacker 3D view of the cluster
+After=network.target slurmctld.service
+
+[Service]
+Type=simple
+User={{ sjp_user }}
+Group={{ sjp_user }}
+WorkingDirectory={{ sjp_install_dir }}
+Environment=PYTHONPATH={{ sjp_install_dir }}
+ExecStart={{ sjp_python }} -m sjp.viz -c {{ sjp_config_dir }}/sjp.toml --bind {{ sjp_viz_bind }} --port {{ sjp_viz_port }}
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

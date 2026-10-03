@@ -1,0 +1,473 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>slurmjobpacker</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: rgba(22, 27, 34, 0.86); --text: #e6edf3; --muted: #8b949e;
+    --line: #30363d; --accent: #58a6ff; --free: #3fb950;
+  }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; overflow: hidden; }
+  canvas { display: block; }
+  .panel { position: absolute; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 12px 14px; backdrop-filter: blur(4px); }
+  #head { top: 16px; left: 16px; max-width: 420px; }
+  #head h1 { margin: 0 0 2px; font-size: 18px; font-weight: 650; letter-spacing: .2px; }
+  #head .sub { color: var(--muted); font-size: 13px; }
+  .stats { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 10px;
+    margin-top: 10px; align-items: center; font-size: 13px; }
+  .bar { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; }
+  .bar i { display: block; height: 100%; background: var(--accent); width: 0; transition: width .4s; }
+  #legend { bottom: 16px; left: 16px; font-size: 12px; color: var(--muted); }
+  #legend .ramp { width: 220px; height: 10px; border-radius: 5px; margin: 6px 0 2px; }
+  #legend .ticks { display: flex; justify-content: space-between; width: 220px; }
+  #info { top: 16px; right: 16px; width: 260px; display: none; font-size: 13px; }
+  #info h2 { margin: 0 0 8px; font-size: 16px; }
+  #info table { border-collapse: collapse; width: 100%; }
+  #info td { padding: 2px 0; vertical-align: top; }
+  #info td:first-child { color: var(--muted); padding-right: 10px; white-space: nowrap; }
+  #info .close { position: absolute; top: 8px; right: 10px; cursor: pointer; color: var(--muted); }
+  #help { bottom: 16px; right: 16px; font-size: 12px; color: var(--muted); }
+  #err { top: 50%; left: 50%; transform: translate(-50%, -50%); display: none; }
+  body.clean #help, body.clean #info, body.clean .switch { display: none !important; }
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="head" class="panel">
+  <h1 id="title">slurmjobpacker</h1>
+  <div class="sub" id="subtitle">Every node a box of CPUs × memory × time; every job a box inside it.</div>
+  <div class="stats">
+    <span>CPUs</span><div class="bar"><i id="cpubar"></i></div><span id="cpu">–</span>
+    <span>Memory</span><div class="bar"><i id="membar"></i></div><span id="mem">–</span>
+    <span>Jobs</span><span id="jobs" style="grid-column: span 2">–</span>
+    <span>Time</span><span id="clock" style="grid-column: span 2">–</span>
+  </div>
+  <div class="sub switch" style="margin-top:8px"><a id="to2d" href="2d" style="color:var(--accent);text-decoration:none">2D view</a></div>
+</div>
+<div id="legend" class="panel">
+  Memory per CPU of each job
+  <div class="ramp" id="ramp"></div>
+  <div class="ticks"><span>1G</span><span>2G</span><span>4G</span><span>8G</span><span>16G</span><span>32G+</span></div>
+</div>
+<div id="info" class="panel"><span class="close" id="close">✕</span><h2 id="info-title"></h2><table id="info-body"></table></div>
+<div id="help" class="panel">drag to turn · scroll to zoom · click a job · <b>R</b> rotate · <b>L</b> labels · <b>H</b> hide panels</div>
+<div id="err" class="panel"></div>
+
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+
+const params = new URLSearchParams(location.search);
+if (params.get("clean") === "1") document.body.classList.add("clean");
+document.getElementById("to2d").href = "2d" + location.search;
+// ?ui=1.6 makes the text panels bigger, for small screens.
+const ui = parseFloat(params.get("ui") || "1");
+if (ui !== 1) for (const p of document.querySelectorAll(".panel")) p.style.zoom = ui;
+if (params.get("title")) document.getElementById("title").textContent = params.get("title");
+if (params.get("subtitle")) document.getElementById("subtitle").textContent = params.get("subtitle");
+
+// ------------------------------------------------------------------ scales
+const NODE_W = 10, NODE_H = 8, NODE_D = 12;        // the biggest node, in scene units
+const GAP_X = 3.5, GAP_ROW = 11, QUEUE_Z = 5;
+// On tall screens (phones) the rows sit closer, and the queue stands behind them.
+const tall = innerWidth / innerHeight < 0.9;
+const ROW_GAP = tall ? 4.5 : GAP_ROW;
+const QUEUE_BACK = 6;          // on tall screens: how far behind the last row the queue stands,
+const QUEUE_UP = NODE_H + 1.5;  // and how high, so it is seen above the nodes
+let maxCpus = 1, maxMem = 1, horizon = 14 * 86400;
+const sx = c => NODE_W * c / maxCpus;
+const sy = m => NODE_H * m / maxMem;
+// Time runs away from the viewer (along -z) on a square-root scale, so an hour
+// and two weeks both stay visible. The front face of a node is "now".
+const sz = t => NODE_D * Math.sqrt(Math.max(0, Math.min(t, horizon)) / horizon);
+
+const gb = mb => mb >= 10240 ? (mb / 1024).toFixed(0) + "G" : (mb / 1024).toFixed(1) + "G";
+const dur = s => s >= 86400 ? (s / 86400).toFixed(s >= 864000 ? 0 : 1) + " d"
+              : s >= 3600 ? (s / 3600).toFixed(s >= 36000 ? 0 : 1) + " h"
+              : Math.max(0, Math.round(s / 60)) + " min";
+
+// Colour by memory per CPU: 1 GB teal-blue through 32 GB orange-red, log scale.
+function ratioColor(mpcMb) {
+  const t = Math.max(0, Math.min(1, Math.log2(Math.max(mpcMb, 1024) / 1024) / 5));
+  const c = new THREE.Color(); c.setHSL((205 - 190 * t) / 360, 0.62, 0.52); return c;
+}
+document.getElementById("ramp").style.background = "linear-gradient(90deg," +
+  [0, .2, .4, .6, .8, 1].map(t => "#" + ratioColor(1024 * 2 ** (5 * t)).getHexString()).join(",") + ")";
+
+// ------------------------------------------------------------------ scene
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+document.body.prepend(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0d1117);
+scene.fog = new THREE.Fog(0x0d1117, 160, 320);
+const camera = new THREE.PerspectiveCamera(30, innerWidth / innerHeight, 0.1, 800);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.autoRotateSpeed = 0.6;
+controls.autoRotate = params.get("rotate") === "1";
+scene.add(new THREE.HemisphereLight(0xdfe8ff, 0x1a1f29, 1.1));
+const sun = new THREE.DirectionalLight(0xffffff, 1.6);
+sun.position.set(30, 50, 40); scene.add(sun);
+const world = new THREE.Group(); scene.add(world);
+
+function textSprite(lines, { size = 48, color = "#e6edf3", sub = "#8b949e", width = 1024 } = {}) {
+  const c = document.createElement("canvas"), g = c.getContext("2d");
+  c.width = width; c.height = Math.ceil(size * 1.35 * lines.length + 16);
+  g.textBaseline = "top";
+  lines.forEach((l, i) => {
+    g.font = `${i ? 400 : 650} ${i ? size * 0.8 : size}px system-ui, sans-serif`;
+    g.fillStyle = i ? sub : color; g.fillText(l, 4, 8 + i * size * 1.35);
+  });
+  const tex = new THREE.CanvasTexture(c); tex.anisotropy = 4; tex.colorSpace = THREE.SRGBColorSpace;
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }));
+  const h = 1.5 * lines.length * 0.55; s.scale.set(h * c.width / c.height, h, 1);
+  s.center.set(0, 0); return s;
+}
+
+// A label lying on the front face of a job box: job id, and its memory per CPU.
+function faceLabel(top, bottom) {
+  const c = document.createElement("canvas"), g = c.getContext("2d");
+  c.width = 256; c.height = 128;
+  g.textAlign = "center"; g.textBaseline = "middle";
+  const fit = (text, weight, size) => {           // shrink the font until it fits
+    g.font = `${weight} ${size}px system-ui, sans-serif`;
+    while (g.measureText(text).width > 240 && size > 12) g.font = `${weight} ${--size}px system-ui, sans-serif`;
+  };
+  fit(top, 700, 50); g.fillStyle = "rgba(255,255,255,0.95)"; g.fillText(top, 128, 44);
+  fit(bottom, 500, 40); g.fillStyle = "rgba(255,255,255,0.8)"; g.fillText(bottom, 128, 96);
+  const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 4;
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(1, 1),
+    new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false }));
+  return m;                               // faces +z, towards the viewer
+}
+
+// ------------------------------------------------------------------ nodes
+const nodeViews = new Map();   // name -> {group, origin, w, h, free, freeLabel}
+let queueLeft = -20, queueWidth = 40, queueBehind = false, sceneDepth = 0;
+let layoutKey = "";
+
+function layoutNodes(nodes) {
+  const key = nodes.map(n => n.name + n.cpus + n.mem).join();
+  if (key === layoutKey) return;
+  layoutKey = key;
+  for (const v of nodeViews.values()) world.remove(v.group);
+  nodeViews.clear();
+  maxCpus = Math.max(...nodes.map(n => n.cpus), 1);
+  maxMem = Math.max(...nodes.map(n => n.mem), 1);
+  // One row per partition group, highest PriorityTier nearest the viewer.
+  const rows = new Map();
+  [...nodes].sort((a, b) => b.tier - a.tier || a.name.localeCompare(b.name, undefined, { numeric: true }))
+    .forEach(n => { const k = n.partitions.join(","); if (!rows.has(k)) rows.set(k, []); rows.get(k).push(n); });
+  let r = 0, widest = 0;
+  const rowWidths = [...rows.values()].map(ns => ns.reduce((w, n) => w + sx(n.cpus) + GAP_X, -GAP_X));
+  widest = Math.max(...rowWidths);
+  for (const [part, ns] of rows) {
+    let x = -rowWidths[r] / 2;
+    const z = -r * (NODE_D + ROW_GAP);
+    const holder = new THREE.Group();
+    for (const n of ns) {
+      const w = sx(n.cpus), h = sy(n.mem), g = new THREE.Group();
+      g.position.set(x, 0, z);
+      const frame = new THREE.LineSegments(
+        new THREE.EdgesGeometry(new THREE.BoxGeometry(w, h, NODE_D)),
+        new THREE.LineBasicMaterial({ color: n.up ? 0x6e7681 : 0xf85149, transparent: true, opacity: 0.9 }));
+      frame.position.set(w / 2, h / 2, -NODE_D / 2); g.add(frame);
+      const floor = new THREE.Mesh(new THREE.PlaneGeometry(w, NODE_D),
+        new THREE.MeshBasicMaterial({ color: 0x161b22, transparent: true, opacity: 0.85, side: THREE.DoubleSide }));
+      floor.rotation.x = -Math.PI / 2; floor.position.set(w / 2, -0.01, -NODE_D / 2); g.add(floor);
+      for (const [t, l] of [[3600, "1 h"], [86400, "1 d"], [7 * 86400, "7 d"], [14 * 86400, "14 d"]]) {
+        const tick = new THREE.Line(new THREE.BufferGeometry().setFromPoints(
+          [new THREE.Vector3(0, 0, -sz(t)), new THREE.Vector3(w, 0, -sz(t))]),
+          new THREE.LineBasicMaterial({ color: 0x30363d }));
+        g.add(tick);
+        const tl = textSprite([l], { size: 40, color: "#6e7681" });
+        tl.scale.multiplyScalar(0.6); tl.position.set(w + 0.15, 0.02, -sz(t)); g.add(tl);
+      }
+      const label = textSprite([n.name, `${n.partitions.join(",")} · ${n.cpus} CPUs · ${gb(n.mem)} · ${gb(n.mem / n.cpus)}/CPU`]);
+      label.center.set(0, 1); label.position.set(0, -0.35, 1.0); g.add(label);
+      const tAxis = textSprite(["time →"], { size: 40, color: "#6e7681" });
+      tAxis.scale.multiplyScalar(0.6); tAxis.position.set(w + 0.15, 0.02, -NODE_D * 0.5); g.add(tAxis);
+      const free = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1),
+        new THREE.MeshBasicMaterial({ color: 0x3fb950, transparent: true, opacity: 0.16, depthWrite: false }));
+      g.add(free);
+      const freeEdge = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1)),
+        new THREE.LineBasicMaterial({ color: 0x3fb950, transparent: true, opacity: 0.6 }));
+      g.add(freeEdge);
+      const freeLabel = faceLabel("room", ""); g.add(freeLabel);
+      holder.add(g);
+      nodeViews.set(n.name, { group: g, w, h, node: n, free, freeEdge, freeLabel, freeKey: "", used: [0, 0] });
+      x += w + GAP_X;
+    }
+    world.add(holder); nodeViews.get(ns[0].name).holder = holder;
+    r++;
+  }
+  const depth = rows.size * (NODE_D + ROW_GAP);
+  // On a wide screen the waiting jobs stand in a column beside the nodes; on a
+  // tall one behind them, at the top of the screen, from where they drop in.
+  queueBehind = tall;
+  sceneDepth = depth;
+  if (queueBehind) { queueWidth = widest; queueLeft = -widest / 2; }
+  else { queueWidth = NODE_W * 1.1; queueLeft = -widest / 2 - 5.5 - queueWidth; }
+  if (!camera.userData.placed) {
+    // Fit the whole scene, queue included: look at its middle from the front
+    // and above, and move back until every corner of it is on screen.
+    const back = queueBehind ? depth + QUEUE_BACK + NODE_D * 0.8 : depth;
+    const box = new THREE.Box3(new THREE.Vector3(queueLeft, -1.5, -back),
+                               new THREE.Vector3(widest / 2 + 2, queueBehind ? QUEUE_UP + 4 : NODE_H + 1, 2));
+    const centre = box.getCenter(new THREE.Vector3());
+    const dir = new THREE.Vector3(queueBehind ? 0.15 : 0.25, 0.55, 0.82).normalize();
+    const corners = [];
+    for (const x of [box.min.x, box.max.x]) for (const y of [box.min.y, box.max.y])
+      for (const z of [box.min.z, box.max.z]) corners.push(new THREE.Vector3(x, y, z));
+    const fits = d => {
+      camera.position.copy(centre).addScaledVector(dir, d); camera.lookAt(centre);
+      camera.updateMatrixWorld(); camera.updateProjectionMatrix();
+      return corners.every(c => { const p = c.clone().project(camera);
+        return Math.abs(p.x) < 0.92 && p.y < 0.62 && p.y > -0.8; });  // room for the panels
+    };
+    let lo = 1, hi = 1000;
+    while (hi - lo > 0.5) { const mid = (lo + hi) / 2; if (fits(mid)) hi = mid; else lo = mid; }
+    controls.target.copy(centre); fits(hi);
+    camera.userData.placed = true;
+  }
+}
+
+// ------------------------------------------------------------------ jobs
+const views = new Map();       // key -> {mesh, label, target{pos,scale}, job, dying}
+const unit = new THREE.BoxGeometry(1, 1, 1);
+let showLabels = params.get("labels") !== "0";
+
+function jobView(key, job, from) {
+  const mpc = job.mem / Math.max(job.cpus, 1e-9);
+  const mat = new THREE.MeshStandardMaterial({ color: ratioColor(mpc), roughness: 0.55, metalness: 0.05,
+    transparent: true, opacity: 0.94 });
+  const mesh = new THREE.Mesh(unit, mat);
+  const edges = new THREE.LineSegments(new THREE.EdgesGeometry(unit),
+    new THREE.LineBasicMaterial({ color: 0x0d1117, transparent: true, opacity: 0.55 }));
+  mesh.add(edges);
+  const label = faceLabel(job.id, gb(mpc) + "/c");
+  world.add(mesh); world.add(label);
+  const v = { key, mesh, label, job, dying: false, opacity: 0,
+    pos: from ? from.clone() : new THREE.Vector3(), scale: new THREE.Vector3(0.01, 0.01, 0.01),
+    tpos: new THREE.Vector3(), tscale: new THREE.Vector3(1, 1, 1) };
+  mesh.userData.view = v;
+  views.set(key, v);
+  return v;
+}
+
+function place(v, x, y, z, w, h, d) {
+  v.tpos.set(x + w / 2, y + h / 2, z + d / 2);
+  v.tscale.set(Math.max(w, 0.02), Math.max(h, 0.02), Math.max(d, 0.02));
+}
+
+let state = null;
+const queueLabel = textSprite(["waiting"], { size: 64 }); world.add(queueLabel);
+function apply(s) {
+  state = s; horizon = s.horizon || horizon;
+  layoutNodes(s.nodes);
+  const seen = new Set();
+  // Running jobs: per node, stacked corner to corner in the order they
+  // started, so the stack ends where the node's free space begins.
+  const byNode = new Map();
+  for (const j of s.running) { if (!byNode.has(j.node)) byNode.set(j.node, []); byNode.get(j.node).push(j); }
+  for (const [name, nv] of nodeViews) {
+    const js = (byNode.get(name) || []).sort((a, b) => (+a.id || 0) - (+b.id || 0) || String(a.id).localeCompare(String(b.id)));
+    let cx = 0, cy = 0;
+    for (const j of js) {
+      const key = "r:" + j.id + "@" + name;
+      seen.add(key);
+      let v = views.get(key);
+      if (!v) {
+        const q = views.get("q:" + j.id);
+        const from = q ? q.pos.clone() : nv.group.getWorldPosition(new THREE.Vector3())
+          .add(new THREE.Vector3(sx(cx), NODE_H + 6, 0));
+        v = jobView(key, j, from);
+        if (q) { q.dying = true; q.instant = true; }
+      }
+      v.job = j;
+      const w = sx(j.cpus), h = sy(j.mem), d = sz(j.end - s.now);
+      const o = nv.group.getWorldPosition(new THREE.Vector3());
+      place(v, o.x + sx(cx), o.y + sy(cy), o.z - d, w, h, d);
+      cx += j.cpus; cy += j.mem;
+    }
+    nv.used = [cx, cy];
+    const fw = sx(Math.max(0, nv.node.cpus - cx)), fh = sy(Math.max(0, nv.node.mem - cy));
+    for (const m of [nv.free, nv.freeEdge]) {
+      m.visible = fw > 0.05 && fh > 0.05;
+      m.scale.set(Math.max(fw, 1e-3), Math.max(fh, 1e-3), 0.12);
+      m.position.set(sx(cx) + fw / 2, sy(cy) + fh / 2, -0.06);
+    }
+    // What still fits: the free CPUs and memory, and their memory per CPU.
+    const fc = Math.max(0, nv.node.cpus - cx), fm = Math.max(0, nv.node.mem - cy);
+    const fkey = `${Math.round(fc)} ${gb(fm)}`;
+    if (fkey !== nv.freeKey) {
+      nv.freeKey = fkey;
+      const old = nv.freeLabel; nv.group.remove(old); old.material.map.dispose(); old.material.dispose();
+      nv.freeLabel = faceLabel(`${Math.round(fc)} CPUs · ${gb(fm)}`, fc >= 1 ? `room: ${gb(fm / fc)}/CPU` : "full");
+      nv.group.add(nv.freeLabel);
+    }
+    const ls = Math.min(fw * 0.85, fh * 1.7, 4.5);
+    nv.freeLabel.visible = ls > 0.8;
+    nv.freeLabel.scale.set(ls, ls / 2, 1);
+    nv.freeLabel.position.set(sx(cx) + fw / 2, sy(cy) + fh / 2, 0.02);
+  }
+  // The queue, in front of the nodes, highest priority first.
+  let qx = queueLeft, qz = queueBehind ? -sceneDepth - QUEUE_BACK : 0, rowDepth = 0;
+  for (const j of s.pending.slice(0, 30)) {
+    const key = "q:" + j.id; seen.add(key);
+    let v = views.get(key);
+    if (!v) v = jobView(key, j, new THREE.Vector3(qx, NODE_H + 4, qz));
+    v.job = j;
+    const w = sx(j.cpus), h = sy(j.mem), d = sz(j.minutes * 60);
+    if (qx + w > queueLeft + queueWidth && qx > queueLeft) { qx = queueLeft; qz -= rowDepth + 0.8; rowDepth = 0; }
+    place(v, qx, queueBehind ? QUEUE_UP : 0, qz - d, w, h, d);
+    rowDepth = Math.max(rowDepth, d); qx += w + 0.6;
+  }
+  queueLabel.center.set(0, 1);
+  queueLabel.position.set(queueLeft, queueBehind ? QUEUE_UP - 0.35 : -0.35,
+                          queueBehind ? -sceneDepth - QUEUE_BACK + 1 : 1.0);
+  queueLabel.visible = s.pending_total > 0;
+  for (const [k, v] of views) if (!seen.has(k)) v.dying = true;
+  updatePanel(s);
+}
+
+function updatePanel(s) {
+  const cap = s.nodes.reduce((a, n) => [a[0] + n.cpus, a[1] + n.mem], [0, 0]);
+  const use = s.running.reduce((a, j) => [a[0] + j.cpus, a[1] + j.mem], [0, 0]);
+  const pc = 100 * use[0] / Math.max(cap[0], 1), pm = 100 * use[1] / Math.max(cap[1], 1);
+  document.getElementById("cpubar").style.width = pc + "%";
+  document.getElementById("membar").style.width = pm + "%";
+  document.getElementById("cpu").textContent = `${Math.round(use[0])} / ${cap[0]} (${pc.toFixed(0)}%)`;
+  document.getElementById("mem").textContent = `${gb(use[1])} / ${gb(cap[1])} (${pm.toFixed(0)}%)`;
+  const running = new Set(s.running.map(j => j.id)).size;
+  document.getElementById("jobs").textContent = `${running} running · ${s.pending_total} waiting`;
+  const d = new Date(s.now * 1000);
+  document.getElementById("clock").textContent = s.mode === "demo"
+    ? `demo, ${Math.round(s.speed)}× real time · ${d.toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" })}`
+    : d.toLocaleTimeString();
+  const err = document.getElementById("err");
+  err.style.display = s.error ? "block" : "none"; err.textContent = s.error ? "sjp-viz: " + s.error : "";
+}
+
+async function poll() {
+  try {
+    const r = await fetch("state.json", { cache: "no-store" });
+    apply(await r.json());
+  } catch (e) {
+    const err = document.getElementById("err");
+    err.style.display = "block"; err.textContent = "No connection to sjp-viz: " + e.message;
+  }
+  setTimeout(poll, (state && state.poll_ms) || 3000);
+}
+
+// ------------------------------------------------------------------ picking
+const ray = new THREE.Raycaster(), mouse = new THREE.Vector2();
+let selected = null, downAt = null;
+renderer.domElement.addEventListener("pointerdown", e => downAt = [e.clientX, e.clientY]);
+renderer.domElement.addEventListener("pointerup", e => {
+  if (!downAt || Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) > 5) return;
+  mouse.set(e.clientX / innerWidth * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+  ray.setFromCamera(mouse, camera);
+  const hit = ray.intersectObjects([...views.values()].filter(v => !v.dying).map(v => v.mesh), false)[0];
+  select(hit ? hit.object.userData.view : null);
+});
+document.getElementById("close").onclick = () => select(null);
+
+function select(v) {
+  if (selected) selected.mesh.children[0].material.color.set(0x0d1117);
+  selected = v;
+  const box = document.getElementById("info");
+  if (!v) { box.style.display = "none"; return; }
+  v.mesh.children[0].material.color.set(0xffffff);
+  const j = v.job, mpc = j.mem / Math.max(j.cpus, 1e-9), running = v.key.startsWith("r:");
+  document.getElementById("info-title").textContent = `Job ${j.id}`;
+  const rows = [
+    ["User", j.user], ["Name", j.name],
+    ["State", running ? `running on ${j.node}` + (j.nodes > 1 ? ` (+${j.nodes - 1} nodes)` : "") : `waiting (${j.reason})`],
+    ["CPUs", (+j.cpus).toFixed(j.cpus % 1 ? 1 : 0)], ["Memory", gb(j.mem)], ["Memory / CPU", gb(mpc)],
+    ["Time limit", dur(j.minutes * 60)],
+    running ? ["Time left", dur(j.end - state.now)] : ["Priority", j.priority ?? "–"],
+    ["Partition", j.partition || "–"], ["QOS", j.qos],
+  ];
+  document.getElementById("info-body").innerHTML = rows.map(([k, val]) =>
+    `<tr><td>${k}</td><td>${String(val).replace(/</g, "&lt;")}</td></tr>`).join("");
+  box.style.display = "block";
+}
+
+addEventListener("keydown", e => {
+  if (e.key === "r" || e.key === "R") controls.autoRotate = !controls.autoRotate;
+  if (e.key === "l" || e.key === "L") showLabels = !showLabels;
+  if (e.key === "h" || e.key === "H") document.body.classList.toggle("clean");
+});
+addEventListener("resize", () => {
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// ------------------------------------------------------------------ animate
+let last = performance.now();
+function step(dt) {
+  const k = 1 - Math.exp(-dt * 5);                  // ease towards the targets
+  for (const [key, v] of views) {
+    if (v.dying) {
+      v.opacity -= v.instant ? 1 : dt * 2.5;
+      if (v.opacity <= 0) {
+        world.remove(v.mesh); world.remove(v.label);
+        v.mesh.material.dispose(); v.label.material.map.dispose(); v.label.material.dispose();
+        if (selected === v) select(null);
+        views.delete(key); continue;
+      }
+    } else v.opacity = Math.min(1, v.opacity + dt * 3);
+    v.pos.lerp(v.tpos, k); v.scale.lerp(v.tscale, k);
+    v.mesh.position.copy(v.pos); v.mesh.scale.copy(v.scale);
+    v.mesh.material.opacity = 0.94 * v.opacity;
+    // The label sits on the front face, sized to fit it; on the top face when
+    // the front is too low to read (jobs with little memory); hidden if neither fits.
+    const fw = v.scale.x, front = Math.min(fw * 0.9, v.scale.y * 1.8),
+          top = Math.min(fw * 0.9, v.scale.z * 1.8);
+    if (front >= 0.55 || front >= top) {
+      v.label.rotation.x = 0;
+      v.label.scale.set(front, front / 2, 1);
+      v.label.position.set(v.pos.x, v.pos.y, v.pos.z + v.scale.z / 2 + 0.02);
+    } else {
+      v.label.rotation.x = -Math.PI / 2;
+      v.label.scale.set(top, top / 2, 1);
+      v.label.position.set(v.pos.x, v.pos.y + v.scale.y / 2 + 0.02, v.pos.z);
+    }
+    v.label.visible = showLabels && Math.max(front, top) > 0.55 && v.opacity > 0.5;
+    v.label.material.opacity = v.opacity;
+  }
+}
+function frame(now) {
+  step(Math.min((now - last) / 1000, 0.1)); last = now;
+  controls.update();
+  renderer.render(scene, camera);
+  requestAnimationFrame(frame);
+}
+// ?manual=1: no polling and no clock; a recorder feeds states and steps frames.
+const manual = params.get("manual") === "1";
+if (!manual) { poll(); requestAnimationFrame(frame); }
+window.sjpViz = { views, get state() { return state; }, camera, controls, apply,
+  frame(dt, orbit = 0) {                 // one recorded frame: dt seconds, orbit radians
+    step(dt);
+    if (orbit) {
+      const off = camera.position.clone().sub(controls.target);
+      off.applyAxisAngle(new THREE.Vector3(0, 1, 0), orbit);
+      camera.position.copy(controls.target).add(off); camera.lookAt(controls.target);
+    }
+    controls.update(); renderer.render(scene, camera);
+  } };
+</script>
+</body>
+</html>

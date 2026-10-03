@@ -14,3 +14,12 @@
   run_once: true
   changed_when: true
   when: sjp_reconfigure_slurm | bool
+
+- name: Restart sjp-viz
+  ansible.builtin.systemd:
+    name: sjp-viz
+    state: restarted
+    daemon_reload: true
+  when:
+    - inventory_hostname == sjp_daemon_host
+    - sjp_viz_enabled | bool

@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>slurmjobpacker</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: rgba(22, 27, 34, 0.9); --text: #e6edf3; --muted: #8b949e;
+    --line: #30363d; --accent: #58a6ff;
+  }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; overflow: hidden; }
+  canvas { display: block; }
+  .panel { position: absolute; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 12px 14px; }
+  #head { top: 16px; left: 16px; max-width: 420px; }
+  #head h1 { margin: 0 0 2px; font-size: 18px; font-weight: 650; letter-spacing: .2px; }
+  #head .sub { color: var(--muted); font-size: 13px; }
+  #head a { color: var(--accent); text-decoration: none; }
+  .stats { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 10px;
+    margin-top: 10px; align-items: center; font-size: 13px; }
+  .bar { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; }
+  .bar i { display: block; height: 100%; background: var(--accent); width: 0; transition: width .4s; }
+  #legend { bottom: 16px; left: 16px; font-size: 12px; color: var(--muted); }
+  #legend .ramp { width: 220px; height: 10px; border-radius: 5px; margin: 6px 0 2px; }
+  #legend .ticks { display: flex; justify-content: space-between; width: 220px; }
+  #info { top: 16px; right: 16px; width: 260px; display: none; font-size: 13px; }
+  #info h2 { margin: 0 0 8px; font-size: 16px; }
+  #info table { border-collapse: collapse; width: 100%; }
+  #info td { padding: 2px 0; vertical-align: top; }
+  #info td:first-child { color: var(--muted); padding-right: 10px; white-space: nowrap; }
+  #info .close { position: absolute; top: 8px; right: 10px; cursor: pointer; color: var(--muted); }
+  #err { top: 50%; left: 50%; transform: translate(-50%, -50%); display: none; }
+  body.clean #info, body.clean .switch { display: none !important; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="head" class="panel">
+  <h1 id="title">slurmjobpacker</h1>
+  <div class="sub" id="subtitle">Every node a pair of bars: CPUs above, memory below. Each job
+    takes its share of both; a slanted band means its memory per CPU differs from the node's.</div>
+  <div class="stats">
+    <span>CPUs</span><div class="bar"><i id="cpubar"></i></div><span id="cpu">–</span>
+    <span>Memory</span><div class="bar"><i id="membar"></i></div><span id="mem">–</span>
+    <span>Jobs</span><span id="jobs" style="grid-column: span 2">–</span>
+    <span>Time</span><span id="clock" style="grid-column: span 2">–</span>
+  </div>
+  <div class="sub switch" style="margin-top:8px"><a id="to3d" href="./">3D view</a></div>
+</div>
+<div id="legend" class="panel">
+  Memory per CPU of each job
+  <div class="ramp" id="ramp"></div>
+  <div class="ticks"><span>1G</span><span>2G</span><span>4G</span><span>8G</span><span>16G</span><span>32G+</span></div>
+</div>
+<div id="info" class="panel"><span class="close" id="close">✕</span><h2 id="info-title"></h2><table id="info-body"></table></div>
+<div id="err" class="panel"></div>
+
+<script>
+const params = new URLSearchParams(location.search);
+if (params.get("clean") === "1") document.body.classList.add("clean");
+if (params.get("title")) document.getElementById("title").textContent = params.get("title");
+if (params.get("subtitle")) document.getElementById("subtitle").textContent = params.get("subtitle");
+const ui = parseFloat(params.get("ui") || "1");
+if (ui !== 1) for (const p of document.querySelectorAll(".panel")) p.style.zoom = ui;
+document.getElementById("to3d").href = "./" + location.search;
+
+const gb = mb => mb >= 10240 ? (mb / 1024).toFixed(0) + "G" : (mb / 1024).toFixed(1) + "G";
+const dur = s => s >= 86400 ? (s / 86400).toFixed(s >= 864000 ? 0 : 1) + " d"
+              : s >= 3600 ? (s / 3600).toFixed(s >= 36000 ? 0 : 1) + " h"
+              : Math.max(0, Math.round(s / 60)) + " min";
+// Colour by memory per CPU: 1 GB blue through 32 GB orange, log scale; as the 3D view.
+function hue(mpcMb) {
+  const t = Math.max(0, Math.min(1, Math.log2(Math.max(mpcMb, 1024) / 1024) / 5));
+  return 205 - 190 * t;
+}
+const color = (mpc, a = 1) => `hsla(${hue(mpc)}, 62%, 52%, ${a})`;
+document.getElementById("ramp").style.background = "linear-gradient(90deg," +
+  [0, .2, .4, .6, .8, 1].map(t => color(1024 * 2 ** (5 * t))).join(",") + ")";
+
+// ------------------------------------------------------------------ canvas
+const cv = document.getElementById("c"), g = cv.getContext("2d");
+let W = 0, H = 0, dpr = 1;
+function resize() {
+  dpr = Math.min(devicePixelRatio || 1, 2); W = innerWidth; H = innerHeight;
+  cv.width = W * dpr; cv.height = H * dpr; cv.style.width = W + "px"; cv.style.height = H + "px";
+  layoutKey = "";
+}
+addEventListener("resize", resize);
+
+// ------------------------------------------------------------------ layout
+// Wide screens: the queue in a column on the left, under the title; the nodes
+// on the right, one row each. Tall screens: the queue on top, nodes below.
+let layoutKey = "", L = null;
+const panelBox = id => {
+  const r = document.getElementById(id).getBoundingClientRect();
+  return { top: r.top, bottom: r.bottom, right: r.right, height: r.height };
+};
+
+function layout(nodes) {
+  const key = W + "x" + H + ":" + nodes.map(n => n.name).join();
+  if (key === layoutKey) return;
+  layoutKey = key;
+  const tall = W / H < 0.9, head = panelBox("head"), legend = panelBox("legend");
+  const pad = 20 * Math.max(1, ui * 0.8), font = 13 * Math.max(1, ui * 0.75);
+  let queue, area;
+  if (tall) {
+    const qTop = head.bottom + pad, qH = Math.min(H * 0.17, 260 * ui);
+    queue = { x: pad, y: qTop + font * 1.8, w: W - 2 * pad, h: qH };
+    area = { x: pad, y: qTop + qH + font * 3, w: W - 2 * pad, h: legend.top - (qTop + qH + font * 3) - pad };
+  } else {
+    const qW = Math.max(head.right - pad, 300);
+    queue = { x: pad, y: head.bottom + pad + font * 1.8, w: qW, h: legend.top - head.bottom - 3 * pad - font * 1.8 };
+    area = { x: pad * 2 + qW + 20, y: pad, w: W - (pad * 3 + qW + 20), h: H - 2 * pad };
+  }
+  const sorted = [...nodes].sort((a, b) => b.tier - a.tier ||
+    a.name.localeCompare(b.name, undefined, { numeric: true }));
+  const rowH = Math.min(area.h / Math.max(sorted.length, 1), (tall ? 300 : 190) * Math.max(1, ui * 0.8));
+  const capW = 92 * Math.max(1, ui * 0.75);      // room for "96 CPUs" at the end of a bar
+  const rows = new Map();
+  sorted.forEach((n, i) => {
+    const y = area.y + i * rowH + (area.h - rowH * sorted.length) / 2;
+    const barH = rowH * 0.2, label = font * 1.5;
+    rows.set(n.name, { node: n, x: area.x, w: area.w - capW, label: y,
+      cpuY: y + label, gapY: y + label + barH, memY: y + label + barH + rowH * 0.24, barH });
+  });
+  L = { tall, queue, rows, font, capW };
+}
+
+// ------------------------------------------------------------------ jobs
+// Every job is drawn from a few animated numbers: its CPU segment (x, w), its
+// memory segment (x, w) and the bars' y. Queued jobs are chips; when a job
+// starts, its chip flies into its node and splits into the two segments.
+const views = new Map();
+function lerp(a, b, k) { return a + (b - a) * k; }
+
+function target(v, t) { v.t = t; if (!v.c) v.c = { ...t }; }
+
+let state = null;
+function apply(s) {
+  state = s;
+  if (!W) resize();
+  layout(s.nodes);
+  const seen = new Set();
+  const byNode = new Map();
+  for (const j of s.running) { if (!byNode.has(j.node)) byNode.set(j.node, []); byNode.get(j.node).push(j); }
+  for (const [name, r] of L.rows) {
+    const n = r.node;
+    const js = (byNode.get(name) || []).sort((a, b) => (+a.id || 0) - (+b.id || 0) || String(a.id).localeCompare(String(b.id)));
+    let cx = 0, cm = 0;
+    for (const j of js) {
+      const key = "r:" + j.id + "@" + name; seen.add(key);
+      let v = views.get(key);
+      const t = { cx: r.x + r.w * cx / n.cpus, cw: r.w * j.cpus / n.cpus,
+                  mx: r.x + r.w * cm / n.mem, mw: r.w * j.mem / n.mem,
+                  cy: r.cpuY, my: r.memY, h: r.barH, a: 1 };
+      if (!v) {
+        v = { key, job: j, a: 0 };
+        const q = views.get("q:" + j.id);
+        if (q && q.c) {                            // fly in from the queue
+          v.c = { cx: q.c.cx, cw: q.c.cw, mx: q.c.cx, mw: q.c.cw, cy: q.c.cy, my: q.c.cy, h: q.c.h, a: 1 };
+          q.dead = true; q.instant = true;
+        } else v.c = { ...t, cy: t.cy - 30, my: t.my - 30, a: 0 };
+        views.set(key, v);
+      }
+      v.job = j; v.dying = false; target(v, t);
+      cx += j.cpus; cm += j.mem;
+    }
+    r.used = [cx, cm];
+  }
+  // The queue: chips as wide as their CPUs (on the scale of the biggest node),
+  // highest priority first, flowing in rows.
+  const maxCpus = Math.max(...s.nodes.map(n => n.cpus), 1), Q = L.queue;
+  const unit = Math.min(Q.w / maxCpus * 1.6, 9 * Math.max(1, ui * 0.8));
+  const chipH = L.font * 2.3, gap = 6;
+  let qx = Q.x, qy = Q.y;
+  for (const j of s.pending) {
+    const w = Math.max(j.cpus * unit, L.font * 3.2);
+    if (qx + w > Q.x + Q.w && qx > Q.x) { qx = Q.x; qy += chipH + gap; }
+    if (qy + chipH > Q.y + Q.h) break;
+    const key = "q:" + j.id; seen.add(key);
+    let v = views.get(key);
+    const t = { cx: qx, cw: w, mx: qx, mw: w, cy: qy, my: qy, h: chipH, a: 1 };
+    if (!v) { v = { key, job: j, a: 0 }; v.c = { ...t, cy: t.cy - 20, my: t.my - 20, a: 0 }; views.set(key, v); }
+    v.job = j; target(v, t);
+    qx += w + gap;
+  }
+  for (const [k, v] of views) if (!seen.has(k)) v.dead = true;
+  updatePanel(s);
+}
+
+function updatePanel(s) {
+  const cap = s.nodes.reduce((a, n) => [a[0] + n.cpus, a[1] + n.mem], [0, 0]);
+  const use = s.running.reduce((a, j) => [a[0] + j.cpus, a[1] + j.mem], [0, 0]);
+  const pc = 100 * use[0] / Math.max(cap[0], 1), pm = 100 * use[1] / Math.max(cap[1], 1);
+  document.getElementById("cpubar").style.width = pc + "%";
+  document.getElementById("membar").style.width = pm + "%";
+  document.getElementById("cpu").textContent = `${Math.round(use[0])} / ${cap[0]} (${pc.toFixed(0)}%)`;
+  document.getElementById("mem").textContent = `${gb(use[1])} / ${gb(cap[1])} (${pm.toFixed(0)}%)`;
+  document.getElementById("jobs").textContent =
+    `${new Set(s.running.map(j => j.id)).size} running · ${s.pending_total} waiting`;
+  const d = new Date(s.now * 1000);
+  document.getElementById("clock").textContent = s.mode === "demo"
+    ? `demo, ${Math.round(s.speed)}× real time · ${d.toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" })}`
+    : d.toLocaleTimeString();
+  const err = document.getElementById("err");
+  err.style.display = s.error ? "block" : "none"; err.textContent = s.error ? "sjp-viz: " + s.error : "";
+}
+
+// ------------------------------------------------------------------ drawing
+function roundRect(x, y, w, h, r) {
+  r = Math.min(r, w / 2, h / 2); g.beginPath();
+  g.moveTo(x + r, y); g.arcTo(x + w, y, x + w, y + h, r); g.arcTo(x + w, y + h, x, y + h, r);
+  g.arcTo(x, y + h, x, y, r); g.arcTo(x, y, x + w, y, r); g.closePath();
+}
+function text(s, x, y, size, weight = 400, fill = "#e6edf3", align = "left") {
+  g.font = `${weight} ${size}px system-ui, -apple-system, sans-serif`;
+  g.fillStyle = fill; g.textAlign = align; g.textBaseline = "middle"; g.fillText(s, x, y);
+}
+
+function draw() {
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.fillStyle = "#0d1117"; g.fillRect(0, 0, W, H);
+  if (!L || !state) return;
+  const f = L.font;
+  // The queue's heading.
+  if (state.pending_total) text(`waiting (${state.pending_total})`, L.queue.x, L.queue.y - f * 0.9, f * 1.05, 650);
+  // Each node: name, two empty bars, then the free space at their ends.
+  for (const r of L.rows.values()) {
+    const n = r.node;
+    text(n.name, r.x, r.label + f * 0.55, f * 1.05, 650);
+    g.font = `650 ${f * 1.05}px system-ui`; const nw = g.measureText(n.name).width;
+    text(`${n.partitions.join(",")} · ${gb(n.mem / n.cpus)}/CPU`, r.x + nw + 10, r.label + f * 0.55, f * 0.9, 400, "#8b949e");
+    for (const [y, cap] of [[r.cpuY, `${n.cpus} CPUs`], [r.memY, gb(n.mem)]]) {
+      g.fillStyle = "#161b22"; roundRect(r.x, y, r.w, r.barH, 4); g.fill();
+      g.strokeStyle = "#30363d"; g.lineWidth = 1; g.stroke();
+      text(cap, r.x + r.w + 10, y + r.barH / 2, f * 0.95, 400, "#8b949e");
+    }
+    const used = r.used || [0, 0];
+    const fc = Math.max(0, n.cpus - used[0]), fm = Math.max(0, n.mem - used[1]);
+    const fx = r.x + r.w * used[0] / n.cpus, fmx = r.x + r.w * used[1] / n.mem;
+    g.fillStyle = "rgba(63,185,80,0.16)";
+    g.fillRect(fx, r.cpuY, r.x + r.w - fx, r.barH); g.fillRect(fmx, r.memY, r.x + r.w - fmx, r.barH);
+    // What is left, in words, between the bars. When one runs out first, the
+    // rest of the other is stranded: no job can use it until something ends.
+    const freeTxt = fc < 1 && fm < 1024 ? "full"
+      : fc < 1 ? `CPUs full · ${gb(fm)} memory left over`
+      : fm < 1024 ? `memory full · ${Math.round(fc)} CPUs left over`
+      : `free ${Math.round(fc)} CPUs · ${gb(fm)} (${gb(fm / fc)}/CPU)`;
+    text(freeTxt, r.x + r.w, r.gapY + (r.memY - r.gapY) / 2, f * 0.85, 500, "#3fb950", "right");
+  }
+  // Jobs: the band between the bars first, then the two segments, then labels.
+  const live = [...views.values()];
+  for (const v of live) {
+    const c = v.c, mpc = v.job.mem / Math.max(v.job.cpus, 1e-9);
+    if (!v.key.startsWith("r:") || c.a <= 0.01) continue;
+    g.fillStyle = color(mpc, 0.28 * c.a);
+    g.beginPath(); g.moveTo(c.cx, c.cy + c.h); g.lineTo(c.cx + c.cw, c.cy + c.h);
+    g.lineTo(c.mx + c.mw, c.my); g.lineTo(c.mx, c.my); g.closePath(); g.fill();
+  }
+  for (const v of live) {
+    const c = v.c, j = v.job, mpc = j.mem / Math.max(j.cpus, 1e-9);
+    if (c.a <= 0.01) continue;
+    g.globalAlpha = c.a;
+    const sel = selected === v;
+    for (const [x, w, y] of v.key.startsWith("r:") ? [[c.cx, c.cw, c.cy], [c.mx, c.mw, c.my]] : [[c.cx, c.cw, c.cy]]) {
+      g.fillStyle = color(mpc); roundRect(x + 0.5, y, Math.max(w - 1, 0.8), c.h, 3); g.fill();
+      g.strokeStyle = sel ? "#ffffff" : "rgba(13,17,23,0.7)"; g.lineWidth = sel ? 2 : 1; g.stroke();
+    }
+    // Job id and memory per CPU, on the CPU segment (or chip) if there is room.
+    if (showLabels) {
+      const both = `${j.id} · ${gb(mpc)}/c`;
+      g.font = `600 ${f * 0.9}px system-ui`;
+      if (g.measureText(both).width + 8 < c.cw) text(both, c.cx + c.cw / 2, c.cy + c.h / 2, f * 0.9, 600, "rgba(255,255,255,0.95)", "center");
+      else if (g.measureText(j.id).width + 6 < c.cw) {
+        text(j.id, c.cx + c.cw / 2, c.cy + c.h / 2 - (c.h > f * 2 ? f * 0.45 : 0), f * 0.85, 650, "rgba(255,255,255,0.95)", "center");
+        if (c.h > f * 2) text(`${gb(mpc)}/c`, c.cx + c.cw / 2, c.cy + c.h / 2 + f * 0.5, f * 0.75, 500, "rgba(255,255,255,0.8)", "center");
+      }
+    }
+    g.globalAlpha = 1;
+  }
+}
+
+// ------------------------------------------------------------------ animation
+let showLabels = params.get("labels") !== "0";
+function step(dt) {
+  const k = 1 - Math.exp(-dt * 6);
+  for (const [key, v] of views) {
+    if (v.dead) {
+      v.c.a -= v.instant ? 1 : dt * 2.5;
+      if (v.c.a <= 0) { if (selected === v) select(null); views.delete(key); continue; }
+    } else v.t.a = 1;
+    for (const p of ["cx", "cw", "mx", "mw", "cy", "my", "h"]) v.c[p] = lerp(v.c[p], v.t[p], k);
+    if (!v.dead) v.c.a = Math.min(1, v.c.a + dt * 3);
+  }
+}
+let last = performance.now();
+function frame(now) {
+  step(Math.min((now - last) / 1000, 0.1)); last = now; draw(); requestAnimationFrame(frame);
+}
+
+async function poll() {
+  try { apply(await (await fetch("state.json", { cache: "no-store" })).json()); }
+  catch (e) { const err = document.getElementById("err");
+    err.style.display = "block"; err.textContent = "No connection to sjp-viz: " + e.message; }
+  setTimeout(poll, (state && state.poll_ms) || 3000);
+}
+
+// ------------------------------------------------------------------ picking
+let selected = null;
+cv.addEventListener("click", e => {
+  const x = e.clientX, y = e.clientY;
+  let hit = null;
+  for (const v of views.values()) {
+    if (v.dead) continue;
+    const c = v.c, inBox = (bx, bw, by) => x >= bx && x <= bx + bw && y >= by && y <= by + c.h;
+    if (inBox(c.cx, c.cw, c.cy) || (v.key.startsWith("r:") && inBox(c.mx, c.mw, c.my))) hit = v;
+  }
+  select(hit);
+});
+document.getElementById("close").onclick = () => select(null);
+function select(v) {
+  selected = v;
+  const box = document.getElementById("info");
+  if (!v) { box.style.display = "none"; return; }
+  const j = v.job, mpc = j.mem / Math.max(j.cpus, 1e-9), running = v.key.startsWith("r:");
+  document.getElementById("info-title").textContent = `Job ${j.id}`;
+  const rows = [
+    ["User", j.user], ["Name", j.name],
+    ["State", running ? `running on ${j.node}` + (j.nodes > 1 ? ` (+${j.nodes - 1} nodes)` : "") : `waiting (${j.reason})`],
+    ["CPUs", (+j.cpus).toFixed(j.cpus % 1 ? 1 : 0)], ["Memory", gb(j.mem)], ["Memory / CPU", gb(mpc)],
+    ["Time limit", dur(j.minutes * 60)],
+    running ? ["Time left", dur(j.end - state.now)] : ["Priority", j.priority ?? "–"],
+    ["Partition", j.partition || "–"], ["QOS", j.qos],
+  ];
+  document.getElementById("info-body").innerHTML = rows.map(([k, val]) =>
+    `<tr><td>${k}</td><td>${String(val).replace(/</g, "&lt;")}</td></tr>`).join("");
+  box.style.display = "block";
+}
+addEventListener("keydown", e => {
+  if (e.key === "l" || e.key === "L") showLabels = !showLabels;
+  if (e.key === "h" || e.key === "H") document.body.classList.toggle("clean");
+});
+
+// ?manual=1: no polling and no clock; a recorder feeds states and steps frames.
+resize();
+const manual = params.get("manual") === "1";
+if (!manual) { poll(); requestAnimationFrame(frame); }
+window.sjpViz = { apply, frame(dt) { step(dt); draw(); }, get state() { return state; } };
+</script>
+</body>
+</html>

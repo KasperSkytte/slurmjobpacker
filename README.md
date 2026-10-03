@@ -126,6 +126,16 @@ is noted in the job's `AdminComment` and in the `slurmctld` log. See
 To switch it off, `sudo touch /etc/sjp/disable`: from the next submission
 `sjp.place()` returns `false`, so only your own rules apply.
 
+## Seeing it in 3D
+
+`python3 -m sjp.viz` serves a live 3D view of the cluster on `http://127.0.0.1:8650`:
+every node a box of CPUs × memory × time, every running job a box inside it, and the
+waiting jobs beside them. Click a job for its details. It only reads from Slurm, and
+answers only on the machine itself; use `ssh -L 8650:localhost:8650 <controller>` to see
+it from yours. A simpler 2D view, CPUs and memory as a pair of bars per node, is at
+`/2d`. `python3 -m sjp.viz --demo` shows a simulated cluster instead. See
+[Visualizer](https://github.com/KasperSkytte/slurmjobpacker/wiki/Visualizer).
+
 ## Limitations
 
 Currently, sjp places single-node batch jobs only; jobs asking for several nodes, GPUs, node

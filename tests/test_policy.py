@@ -532,6 +532,37 @@ lua_r = policy.render_lua(tbl, CFG, time.time(), 1, TOTAL,
 check("upcoming reservations are passed to the plugin",
       '["d"] = {{%d, 16, 64000}},' % (t0 + 7200) in lua_r)
 
+print("\n12c. the 3D view: what the page is given, and the demo")
+from sjp import viz
+vnodes = {"s1": dict(cpus=96, mem=393216, partitions=["slim"], gpu=False, up=True),
+          "g1": dict(cpus=64, mem=262144, partitions=["gpu"], gpu=True, up=True),
+          "i1": dict(cpus=64, mem=262144, partitions=["interactive"], gpu=False, up=True)}
+vparts = {"slim": dict(tier=10), "gpu": dict(tier=1), "interactive": dict(tier=1)}
+vjobs = [dict(jobid="7", user="u", name="a", qos="normal", partition="slim", timelimit=60,
+              state="R", nodelist="s1", cpus=4, mem=8192, req_mem=8192, end=1000.0),
+         dict(jobid="8", user="u", name="b", qos="normal", partition="gpu", timelimit=60,
+              state="R", nodelist="g1", cpus=4, mem=8192, req_mem=8192, end=1000.0),
+         dict(jobid="9", user="u", name="c", qos="normal", partition="slim", timelimit=60,
+              state="PD", nodelist="", cpus=2, mem=4096, req_mem=4096, reason="Priority",
+              priority=5.0)]
+vs = viz.build_state(config.defaults(), vnodes, vparts, vjobs, 500.0)
+check("the view shows the nodes sjp places on, not GPU or interactive ones",
+      [n["name"] for n in vs["nodes"]] == ["s1"])
+check("and their running and waiting jobs",
+      [j["id"] for j in vs["running"]] == ["7"] and [j["id"] for j in vs["pending"]] == ["9"])
+demo = viz.Demo(config.defaults(), speed=900, seed=2)
+for _ in range(300):
+    demo.step(0.1)
+ds = demo.get()
+over = [n["name"] for n in ds["nodes"]
+        if sum(j["cpus"] for j in ds["running"] if j["node"] == n["name"]) > n["cpus"]
+        or sum(j["mem"] for j in ds["running"] if j["node"] == n["name"]) > n["mem"]]
+check("the demo keeps its cluster busy without overfilling a node",
+      len(ds["running"]) > 20 and not over, f"{len(ds['running'])} running, overfull: {over}")
+
+check("the 2D page is shipped too, and can be driven frame by frame",
+      os.path.exists(viz.HTML_2D) and "window.sjpViz" in open(viz.HTML_2D).read())
+
 print("\n13. stale pins are released, and only sjp's own")
 real_ac, real_apply = slurm.admin_comment, slurm.apply
 comments = {"7": "sjp:pin=n16;from=slim1,slim2;job=4c,16G,4.0G/c;v=3", "8": ""}
