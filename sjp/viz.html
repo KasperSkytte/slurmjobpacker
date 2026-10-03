@@ -54,9 +54,9 @@
   <div class="sub switch" style="margin-top:8px"><a id="to2d" href="2d" style="color:var(--accent);text-decoration:none">2D view</a></div>
 </div>
 <div id="legend" class="panel">
-  Memory per CPU of each job
+  Memory per CPU of each job (GB/C)
   <div class="ramp" id="ramp"></div>
-  <div class="ticks"><span>1G</span><span>2G</span><span>4G</span><span>8G</span><span>16G</span><span>32G+</span></div>
+  <div class="ticks"><span>1</span><span>2</span><span>4</span><span>8</span><span>16</span><span>32+</span></div>
 </div>
 <div id="info" class="panel"><span class="close" id="close">✕</span><h2 id="info-title"></h2><table id="info-body"></table></div>
 <div id="help" class="panel">drag to turn · scroll to zoom · click a job · <b>R</b> rotate · <b>L</b> labels · <b>H</b> hide panels</div>
@@ -90,7 +90,11 @@ const sy = m => NODE_H * m / maxMem;
 // and two weeks both stay visible. The front face of a node is "now".
 const sz = t => NODE_D * Math.sqrt(Math.max(0, Math.min(t, horizon)) / horizon);
 
-const gb = mb => mb >= 10240 ? (mb / 1024).toFixed(0) + "G" : (mb / 1024).toFixed(1) + "G";
+// Memory in GB, and memory per CPU in GB/C; one decimal below 10.
+const num = mb => mb >= 10240 ? (mb / 1024).toFixed(0) : (mb / 1024).toFixed(1);
+const gb = mb => num(mb) + " GB";
+const gbc = mb => num(mb) + " GB/C";
+const cpus = n => Math.round(n) + (Math.round(n) === 1 ? " CPU" : " CPUs");
 const dur = s => s >= 86400 ? (s / 86400).toFixed(s >= 864000 ? 0 : 1) + " d"
               : s >= 3600 ? (s / 3600).toFixed(s >= 36000 ? 0 : 1) + " h"
               : Math.max(0, Math.round(s / 60)) + " min";
@@ -194,7 +198,7 @@ function layoutNodes(nodes) {
         const tl = textSprite([l], { size: 40, color: "#6e7681" });
         tl.scale.multiplyScalar(0.6); tl.position.set(w + 0.15, 0.02, -sz(t)); g.add(tl);
       }
-      const label = textSprite([n.name, `${n.partitions.join(",")} · ${n.cpus} CPUs · ${gb(n.mem)} · ${gb(n.mem / n.cpus)}/CPU`]);
+      const label = textSprite([n.name, `${n.partitions.join(",")} · ${n.cpus} CPUs · ${gb(n.mem)} · ${gbc(n.mem / n.cpus)}`]);
       label.center.set(0, 1); label.position.set(0, -0.35, 1.0); g.add(label);
       const tAxis = textSprite(["time →"], { size: 40, color: "#6e7681" });
       tAxis.scale.multiplyScalar(0.6); tAxis.position.set(w + 0.15, 0.02, -NODE_D * 0.5); g.add(tAxis);
@@ -227,9 +231,21 @@ function layoutNodes(nodes) {
                                new THREE.Vector3(widest / 2 + 2, queueBehind ? QUEUE_UP + 4 : NODE_H + 1, 2));
     const centre = box.getCenter(new THREE.Vector3());
     const dir = new THREE.Vector3(queueBehind ? 0.15 : 0.25, 0.55, 0.82).normalize();
+    // The corners that matter: every node's box (and its label below it), and the
+    // queue's area; not the empty corners of a box around all of them.
     const corners = [];
-    for (const x of [box.min.x, box.max.x]) for (const y of [box.min.y, box.max.y])
-      for (const z of [box.min.z, box.max.z]) corners.push(new THREE.Vector3(x, y, z));
+    const addBox = (x0, x1, y0, y1, z0, z1) => {
+      for (const x of [x0, x1]) for (const y of [y0, y1]) for (const z of [z0, z1])
+        corners.push(new THREE.Vector3(x, y, z));
+    };
+    for (const nv of nodeViews.values()) {
+      const o = nv.group.position, holder = nv.group.parent ? nv.group.parent.position : { x: 0, y: 0, z: 0 };
+      const x = o.x + holder.x, z = o.z + holder.z;
+      addBox(x, x + nv.w, -1.4, nv.h, z - NODE_D, z + 1.2);
+    }
+    if (queueBehind) addBox(queueLeft, queueLeft + queueWidth, QUEUE_UP, QUEUE_UP + 3,
+                            -depth - QUEUE_BACK - NODE_D * 0.6, -depth - QUEUE_BACK + 1);
+    else addBox(queueLeft, queueLeft + queueWidth, -1.4, 3, -NODE_D, 1.2);
     const fits = d => {
       camera.position.copy(centre).addScaledVector(dir, d); camera.lookAt(centre);
       camera.updateMatrixWorld(); camera.updateProjectionMatrix();
@@ -256,7 +272,7 @@ function jobView(key, job, from) {
   const edges = new THREE.LineSegments(new THREE.EdgesGeometry(unit),
     new THREE.LineBasicMaterial({ color: 0x0d1117, transparent: true, opacity: 0.55 }));
   mesh.add(edges);
-  const label = faceLabel(job.id, gb(mpc) + "/c");
+  const label = faceLabel(job.id, gbc(mpc));
   world.add(mesh); world.add(label);
   const v = { key, mesh, label, job, dying: false, opacity: 0,
     pos: from ? from.clone() : new THREE.Vector3(), scale: new THREE.Vector3(0.01, 0.01, 0.01),
@@ -314,7 +330,7 @@ function apply(s) {
     if (fkey !== nv.freeKey) {
       nv.freeKey = fkey;
       const old = nv.freeLabel; nv.group.remove(old); old.material.map.dispose(); old.material.dispose();
-      nv.freeLabel = faceLabel(`${Math.round(fc)} CPUs · ${gb(fm)}`, fc >= 1 ? `room: ${gb(fm / fc)}/CPU` : "full");
+      nv.freeLabel = faceLabel(`${cpus(fc)} · ${gb(fm)}`, fc >= 1 ? `room: ${gbc(fm / fc)}` : "full");
       nv.group.add(nv.freeLabel);
     }
     const ls = Math.min(fw * 0.85, fh * 1.7, 4.5);
@@ -395,7 +411,7 @@ function select(v) {
   const rows = [
     ["User", j.user], ["Name", j.name],
     ["State", running ? `running on ${j.node}` + (j.nodes > 1 ? ` (+${j.nodes - 1} nodes)` : "") : `waiting (${j.reason})`],
-    ["CPUs", (+j.cpus).toFixed(j.cpus % 1 ? 1 : 0)], ["Memory", gb(j.mem)], ["Memory / CPU", gb(mpc)],
+    ["CPUs", (+j.cpus).toFixed(j.cpus % 1 ? 1 : 0)], ["Memory", gb(j.mem)], ["Memory / CPU", gbc(mpc)],
     ["Time limit", dur(j.minutes * 60)],
     running ? ["Time left", dur(j.end - state.now)] : ["Priority", j.priority ?? "–"],
     ["Partition", j.partition || "–"], ["QOS", j.qos],

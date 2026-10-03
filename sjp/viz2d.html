@@ -50,9 +50,9 @@
   <div class="sub switch" style="margin-top:8px"><a id="to3d" href="./">3D view</a></div>
 </div>
 <div id="legend" class="panel">
-  Memory per CPU of each job
+  Memory per CPU of each job (GB/C)
   <div class="ramp" id="ramp"></div>
-  <div class="ticks"><span>1G</span><span>2G</span><span>4G</span><span>8G</span><span>16G</span><span>32G+</span></div>
+  <div class="ticks"><span>1</span><span>2</span><span>4</span><span>8</span><span>16</span><span>32+</span></div>
 </div>
 <div id="info" class="panel"><span class="close" id="close">✕</span><h2 id="info-title"></h2><table id="info-body"></table></div>
 <div id="err" class="panel"></div>
@@ -66,7 +66,11 @@ const ui = parseFloat(params.get("ui") || "1");
 if (ui !== 1) for (const p of document.querySelectorAll(".panel")) p.style.zoom = ui;
 document.getElementById("to3d").href = "./" + location.search;
 
-const gb = mb => mb >= 10240 ? (mb / 1024).toFixed(0) + "G" : (mb / 1024).toFixed(1) + "G";
+// Memory in GB, and memory per CPU in GB/C; one decimal below 10.
+const num = mb => mb >= 10240 ? (mb / 1024).toFixed(0) : (mb / 1024).toFixed(1);
+const gb = mb => num(mb) + " GB";
+const gbc = mb => num(mb) + " GB/C";
+const cpus = n => Math.round(n) + (Math.round(n) === 1 ? " CPU" : " CPUs");
 const dur = s => s >= 86400 ? (s / 86400).toFixed(s >= 864000 ? 0 : 1) + " d"
               : s >= 3600 ? (s / 3600).toFixed(s >= 36000 ? 0 : 1) + " h"
               : Math.max(0, Math.round(s / 60)) + " min";
@@ -231,7 +235,7 @@ function draw() {
     const n = r.node;
     text(n.name, r.x, r.label + f * 0.55, f * 1.05, 650);
     g.font = `650 ${f * 1.05}px system-ui`; const nw = g.measureText(n.name).width;
-    text(`${n.partitions.join(",")} · ${gb(n.mem / n.cpus)}/CPU`, r.x + nw + 10, r.label + f * 0.55, f * 0.9, 400, "#8b949e");
+    text(`${n.partitions.join(",")} · ${gbc(n.mem / n.cpus)}`, r.x + nw + 10, r.label + f * 0.55, f * 0.9, 400, "#8b949e");
     for (const [y, cap] of [[r.cpuY, `${n.cpus} CPUs`], [r.memY, gb(n.mem)]]) {
       g.fillStyle = "#161b22"; roundRect(r.x, y, r.w, r.barH, 4); g.fill();
       g.strokeStyle = "#30363d"; g.lineWidth = 1; g.stroke();
@@ -246,8 +250,8 @@ function draw() {
     // rest of the other is stranded: no job can use it until something ends.
     const freeTxt = fc < 1 && fm < 1024 ? "full"
       : fc < 1 ? `CPUs full · ${gb(fm)} memory left over`
-      : fm < 1024 ? `memory full · ${Math.round(fc)} CPUs left over`
-      : `free ${Math.round(fc)} CPUs · ${gb(fm)} (${gb(fm / fc)}/CPU)`;
+      : fm < 1024 ? `memory full · ${cpus(fc)} left over`
+      : `free ${cpus(fc)} · ${gb(fm)} (${gbc(fm / fc)})`;
     text(freeTxt, r.x + r.w, r.gapY + (r.memY - r.gapY) / 2, f * 0.85, 500, "#3fb950", "right");
   }
   // Jobs: the band between the bars first, then the two segments, then labels.
@@ -270,12 +274,12 @@ function draw() {
     }
     // Job id and memory per CPU, on the CPU segment (or chip) if there is room.
     if (showLabels) {
-      const both = `${j.id} · ${gb(mpc)}/c`;
+      const both = `${j.id} · ${gbc(mpc)}`;
       g.font = `600 ${f * 0.9}px system-ui`;
       if (g.measureText(both).width + 8 < c.cw) text(both, c.cx + c.cw / 2, c.cy + c.h / 2, f * 0.9, 600, "rgba(255,255,255,0.95)", "center");
       else if (g.measureText(j.id).width + 6 < c.cw) {
         text(j.id, c.cx + c.cw / 2, c.cy + c.h / 2 - (c.h > f * 2 ? f * 0.45 : 0), f * 0.85, 650, "rgba(255,255,255,0.95)", "center");
-        if (c.h > f * 2) text(`${gb(mpc)}/c`, c.cx + c.cw / 2, c.cy + c.h / 2 + f * 0.5, f * 0.75, 500, "rgba(255,255,255,0.8)", "center");
+        if (c.h > f * 2) text(`${gbc(mpc)}`, c.cx + c.cw / 2, c.cy + c.h / 2 + f * 0.5, f * 0.75, 500, "rgba(255,255,255,0.8)", "center");
       }
     }
     g.globalAlpha = 1;
@@ -329,7 +333,7 @@ function select(v) {
   const rows = [
     ["User", j.user], ["Name", j.name],
     ["State", running ? `running on ${j.node}` + (j.nodes > 1 ? ` (+${j.nodes - 1} nodes)` : "") : `waiting (${j.reason})`],
-    ["CPUs", (+j.cpus).toFixed(j.cpus % 1 ? 1 : 0)], ["Memory", gb(j.mem)], ["Memory / CPU", gb(mpc)],
+    ["CPUs", (+j.cpus).toFixed(j.cpus % 1 ? 1 : 0)], ["Memory", gb(j.mem)], ["Memory / CPU", gbc(mpc)],
     ["Time limit", dur(j.minutes * 60)],
     running ? ["Time left", dur(j.end - state.now)] : ["Priority", j.priority ?? "–"],
     ["Partition", j.partition || "–"], ["QOS", j.qos],
