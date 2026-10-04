@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.0](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.10.0...v1.11.0) (2026-10-04)
+
+
+### Features
+
+* switch the visualizer's colours between memory per CPU and fit to the node ([209ec92](https://github.com/KasperSkytte/slurmjobpacker/commit/209ec92b5054d60779377cd8555263f8c749fb8e))
+
 ## [1.10.0](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.9.0...v1.10.0) (2026-10-03)
 
 
