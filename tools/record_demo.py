@@ -29,8 +29,8 @@ async def record(a):
                     slim=a.slim, fat=a.fat)
     for _ in range(a.warmup):                                    # fill the cluster first
         demo.step(0.1)
-    query = urllib.parse.urlencode(dict(manual=1, clean=1, title=a.title, subtitle=a.subtitle,
-                                        ui=a.ui))
+    query = urllib.parse.urlencode({k: v for k, v in dict(
+        manual=1, clean=1, title=a.title, subtitle=a.subtitle, ui=a.ui).items() if v is not None})
     frames = tempfile.mkdtemp(prefix="sjp-frames-")
     async with async_playwright() as p:
         # 3D needs WebGL, which a headless browser renders in software; 2D does not.
@@ -75,8 +75,7 @@ def main():
     ap.add_argument("--seed", type=int, default=5)
     ap.add_argument("--warmup", type=int, default=400, help="simulator steps before recording")
     ap.add_argument("--title", default="slurmjobpacker")
-    ap.add_argument("--subtitle", default="Every node a box of CPUs × memory × time. "
-                                          "Jobs are placed where their shape fits best.")
+    ap.add_argument("--subtitle", help="default: the page's own")
     asyncio.run(record(ap.parse_args()))
 
 

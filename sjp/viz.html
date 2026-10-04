@@ -16,6 +16,8 @@
     border-radius: 10px; padding: 12px 14px; backdrop-filter: blur(4px); }
   #head { top: 16px; left: 16px; max-width: 420px; }
   #head h1 { margin: 0 0 2px; font-size: 18px; font-weight: 650; letter-spacing: .2px; }
+  #head h1 a { color: inherit; text-decoration: none; }
+  #head h1 a:hover { text-decoration: underline; }
   #head .sub { color: var(--muted); font-size: 13px; }
   .stats { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 10px;
     margin-top: 10px; align-items: center; font-size: 13px; }
@@ -24,6 +26,8 @@
   #legend { bottom: 16px; left: 16px; font-size: 12px; color: var(--muted); }
   #legend .ramp { width: 220px; height: 10px; border-radius: 5px; margin: 6px 0 2px; }
   #legend .ticks { display: flex; justify-content: space-between; width: 220px; }
+  #legend { cursor: pointer; user-select: none; }
+  #legend .hint { margin-top: 4px; font-size: 11px; color: var(--muted); opacity: .8; }
   #info { top: 16px; right: 16px; width: 260px; display: none; font-size: 13px; }
   #info h2 { margin: 0 0 8px; font-size: 16px; }
   #info table { border-collapse: collapse; width: 100%; }
@@ -44,8 +48,8 @@
 </head>
 <body>
 <div id="head" class="panel">
-  <h1 id="title">slurmjobpacker</h1>
-  <div class="sub" id="subtitle">Every node a box of CPUs × memory × time; every job a box inside it.</div>
+  <h1><a id="title" href="https://github.com/KasperSkytte/slurmjobpacker" target="_blank" rel="noopener">slurmjobpacker</a></h1>
+  <div class="sub" id="subtitle">Live view of the cluster in CPUs × memory × time space.</div>
   <div class="stats">
     <span>CPUs</span><div class="bar"><i id="cpubar"></i></div><span id="cpu">–</span>
     <span>Memory</span><div class="bar"><i id="membar"></i></div><span id="mem">–</span>
@@ -54,13 +58,14 @@
   </div>
   <div class="sub switch" style="margin-top:8px"><a id="to2d" href="2d" style="color:var(--accent);text-decoration:none">2D view</a></div>
 </div>
-<div id="legend" class="panel">
-  Memory per CPU of each job (GB/C)
+<div id="legend" class="panel" title="Click or press C to switch the colour scale">
+  <span id="legend-title">Memory per CPU of each job (GB/C)</span>
   <div class="ramp" id="ramp"></div>
-  <div class="ticks"><span>1</span><span>2</span><span>4</span><span>8</span><span>16</span><span>32+</span></div>
+  <div class="ticks" id="ticks"></div>
+  <div class="hint">click or <b>C</b>: switch scale</div>
 </div>
 <div id="info" class="panel"><span class="close" id="close">✕</span><h2 id="info-title"></h2><table id="info-body"></table></div>
-<div id="help" class="panel">drag to turn · right-drag or <b>Ctrl</b>+drag to move · scroll to zoom · click a job · <b>R</b> rotate · <b>L</b> labels · <b>H</b> hide panels</div>
+<div id="help" class="panel">drag to turn · right-drag or <b>Ctrl</b>+drag to move · scroll to zoom · click a job · <b>R</b> rotate · <b>L</b> labels · <b>C</b> colours · <b>H</b> hide panels</div>
 <div id="err" class="panel"></div>
 
 <script type="module">
@@ -100,13 +105,44 @@ const dur = s => s >= 86400 ? (s / 86400).toFixed(s >= 864000 ? 0 : 1) + " d"
               : s >= 3600 ? (s / 3600).toFixed(s >= 36000 ? 0 : 1) + " h"
               : Math.max(0, Math.round(s / 60)) + " min";
 
-// Colour by memory per CPU: 1 GB teal-blue through 32 GB orange-red, log scale.
-function ratioColor(mpcMb) {
-  const t = Math.max(0, Math.min(1, Math.log2(Math.max(mpcMb, 1024) / 1024) / 5));
-  const c = new THREE.Color(); c.setHSL((205 - 190 * t) / 360, 0.62, 0.52); return c;
+// Two colour scales, switched with C or a click on the legend (?color=fit to start so):
+//  memory per CPU: 1 GB blue to 32 GB orange, log scale;
+//  fit: memory per CPU against the node's, green when equal, blue below, red above
+//  (1/4x to 4x); waiting jobs, which have no node yet, are grey.
+let colorMode = params.get("color") === "fit" ? "fit" : "mpc";
+function hueOf(mpc, nodeMpc) {
+  if (colorMode === "mpc") {
+    const t = Math.max(0, Math.min(1, Math.log2(Math.max(mpc, 1024) / 1024) / 5));
+    return 205 - 190 * t;
+  }
+  if (!nodeMpc) return null;
+  const t = Math.max(-1, Math.min(1, Math.log2(mpc / nodeMpc) / 2));
+  return t >= 0 ? 130 - 125 * t : 130 - 80 * t;
 }
-document.getElementById("ramp").style.background = "linear-gradient(90deg," +
-  [0, .2, .4, .6, .8, 1].map(t => "#" + ratioColor(1024 * 2 ** (5 * t)).getHexString()).join(",") + ")";
+const SCALES = {
+  mpc: { title: "Memory per CPU of each job (GB/C)", stops: [0, .2, .4, .6, .8, 1].map(t => [1024 * 2 ** (5 * t), 1]),
+         ticks: ["1", "2", "4", "8", "16", "32+"] },
+  fit: { title: "Job's memory per CPU vs its node's", stops: [-1, -.5, 0, .5, 1].map(t => [2 ** (2 * t), 1]),
+         ticks: ["¼×", "½×", "1×", "2×", "4×"] },
+};
+function drawLegend() {
+  const sc = SCALES[colorMode];
+  document.getElementById("legend-title").textContent = sc.title;
+  document.getElementById("ramp").style.background = "linear-gradient(90deg," +
+    sc.stops.map(([m, n]) => `hsl(${hueOf(m, n)}, 62%, 52%)`).join(",") + ")";
+  document.getElementById("ticks").innerHTML = sc.ticks.map(t => `<span>${t}</span>`).join("");
+}
+function switchScale() { colorMode = colorMode === "mpc" ? "fit" : "mpc"; drawLegend(); recolor(); }
+document.getElementById("legend").addEventListener("click", switchScale);
+addEventListener("keydown", e => { if (e.key === "c" || e.key === "C") switchScale(); });
+drawLegend();
+const nodeMpc = {};                // node name -> its memory per CPU
+function jobColor(job) {
+  const h = hueOf(job.mem / Math.max(job.cpus, 1e-9), job.node && nodeMpc[job.node]);
+  const c = new THREE.Color();
+  return h === null ? c.setHSL(0, 0, 0.45) : c.setHSL(h / 360, 0.62, 0.52);
+}
+function recolor() { for (const v of views.values()) v.mesh.material.color.copy(jobColor(v.job)); }
 
 // ------------------------------------------------------------------ scene
 const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
@@ -303,7 +339,7 @@ let showLabels = params.get("labels") !== "0";
 
 function jobView(key, job, from) {
   const mpc = job.mem / Math.max(job.cpus, 1e-9);
-  const mat = new THREE.MeshStandardMaterial({ color: ratioColor(mpc), roughness: 0.55, metalness: 0.05,
+  const mat = new THREE.MeshStandardMaterial({ color: jobColor(job), roughness: 0.55, metalness: 0.05,
     transparent: true, opacity: 0.94 });
   const mesh = new THREE.Mesh(unit, mat);
   const edges = new THREE.LineSegments(new THREE.EdgesGeometry(unit),
@@ -328,6 +364,7 @@ let state = null;
 const queueLabel = textSprite(["waiting"], { size: 64 }); world.add(queueLabel);
 function apply(s) {
   state = s; horizon = s.horizon || horizon;
+  for (const n of s.nodes) nodeMpc[n.name] = n.mem / n.cpus;
   layoutNodes(s.nodes);
   const seen = new Set();
   // Running jobs: per node, stacked corner to corner in the order they

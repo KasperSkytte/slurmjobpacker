@@ -9,23 +9,27 @@
     --bg: #0d1117; --panel: rgba(22, 27, 34, 0.9); --text: #e6edf3; --muted: #8b949e;
     --line: #30363d; --accent: #58a6ff;
   }
-  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
-    font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; overflow: hidden; }
+  html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text);
+    font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; overflow-x: hidden; }
   canvas { display: block; }
   .panel { position: absolute; background: var(--panel); border: 1px solid var(--line);
     border-radius: 10px; padding: 12px 14px; }
   #head { top: 16px; left: 16px; max-width: 420px; }
   #head h1 { margin: 0 0 2px; font-size: 18px; font-weight: 650; letter-spacing: .2px; }
+  #head h1 a { color: inherit; text-decoration: none; }
+  #head h1 a:hover { text-decoration: underline; }
   #head .sub { color: var(--muted); font-size: 13px; }
   #head a { color: var(--accent); text-decoration: none; }
   .stats { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 10px;
     margin-top: 10px; align-items: center; font-size: 13px; }
   .bar { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; }
   .bar i { display: block; height: 100%; background: var(--accent); width: 0; transition: width .4s; }
-  #legend { bottom: 16px; left: 16px; font-size: 12px; color: var(--muted); }
+  #legend { position: fixed; bottom: 16px; left: 16px; font-size: 12px; color: var(--muted); }
   #legend .ramp { width: 220px; height: 10px; border-radius: 5px; margin: 6px 0 2px; }
   #legend .ticks { display: flex; justify-content: space-between; width: 220px; }
-  #info { top: 16px; right: 16px; width: 260px; display: none; font-size: 13px; }
+  #legend { cursor: pointer; user-select: none; }
+  #legend .hint { margin-top: 4px; font-size: 11px; color: var(--muted); opacity: .8; }
+  #info { position: fixed; top: 16px; right: 16px; width: 260px; display: none; font-size: 13px; }
   #info h2 { margin: 0 0 8px; font-size: 16px; }
   #info table { border-collapse: collapse; width: 100%; }
   #info td { padding: 2px 0; vertical-align: top; }
@@ -39,9 +43,8 @@
 <body>
 <canvas id="c"></canvas>
 <div id="head" class="panel">
-  <h1 id="title">slurmjobpacker</h1>
-  <div class="sub" id="subtitle">Every node a pair of bars: CPUs above, memory below. Each job
-    takes its share of both; a slanted band means its memory per CPU differs from the node's.</div>
+  <h1><a id="title" href="https://github.com/KasperSkytte/slurmjobpacker" target="_blank" rel="noopener">slurmjobpacker</a></h1>
+  <div class="sub" id="subtitle">Memory per CPU of every job, live. A slanted band: the job's memory per CPU differs significantly from its node's.</div>
   <div class="stats">
     <span>CPUs</span><div class="bar"><i id="cpubar"></i></div><span id="cpu">–</span>
     <span>Memory</span><div class="bar"><i id="membar"></i></div><span id="mem">–</span>
@@ -50,10 +53,11 @@
   </div>
   <div class="sub switch" style="margin-top:8px"><a id="to3d" href="./">3D view</a></div>
 </div>
-<div id="legend" class="panel">
-  Memory per CPU of each job (GB/C)
+<div id="legend" class="panel" title="Click or press C to switch the colour scale">
+  <span id="legend-title">Memory per CPU of each job (GB/C)</span>
   <div class="ramp" id="ramp"></div>
-  <div class="ticks"><span>1</span><span>2</span><span>4</span><span>8</span><span>16</span><span>32+</span></div>
+  <div class="ticks" id="ticks"></div>
+  <div class="hint">click or <b>C</b>: switch scale</div>
 </div>
 <div id="info" class="panel"><span class="close" id="close">✕</span><h2 id="info-title"></h2><table id="info-body"></table></div>
 <div id="err" class="panel"></div>
@@ -75,22 +79,51 @@ const cpus = n => Math.round(n) + (Math.round(n) === 1 ? " CPU" : " CPUs");
 const dur = s => s >= 86400 ? (s / 86400).toFixed(s >= 864000 ? 0 : 1) + " d"
               : s >= 3600 ? (s / 3600).toFixed(s >= 36000 ? 0 : 1) + " h"
               : Math.max(0, Math.round(s / 60)) + " min";
-// Colour by memory per CPU: 1 GB blue through 32 GB orange, log scale; as the 3D view.
-function hue(mpcMb) {
-  const t = Math.max(0, Math.min(1, Math.log2(Math.max(mpcMb, 1024) / 1024) / 5));
-  return 205 - 190 * t;
+// Two colour scales, switched with C or a click on the legend (?color=fit to start so):
+//  memory per CPU: 1 GB blue to 32 GB orange, log scale;
+//  fit: memory per CPU against the node's, green when equal, blue below, red above
+//  (1/4x to 4x); waiting jobs, which have no node yet, are grey.
+let colorMode = params.get("color") === "fit" ? "fit" : "mpc";
+function hueOf(mpc, nodeMpc) {
+  if (colorMode === "mpc") {
+    const t = Math.max(0, Math.min(1, Math.log2(Math.max(mpc, 1024) / 1024) / 5));
+    return 205 - 190 * t;
+  }
+  if (!nodeMpc) return null;
+  const t = Math.max(-1, Math.min(1, Math.log2(mpc / nodeMpc) / 2));
+  return t >= 0 ? 130 - 125 * t : 130 - 80 * t;
 }
-const color = (mpc, a = 1) => `hsla(${hue(mpc)}, 62%, 52%, ${a})`;
-document.getElementById("ramp").style.background = "linear-gradient(90deg," +
-  [0, .2, .4, .6, .8, 1].map(t => color(1024 * 2 ** (5 * t))).join(",") + ")";
+const SCALES = {
+  mpc: { title: "Memory per CPU of each job (GB/C)", stops: [0, .2, .4, .6, .8, 1].map(t => [1024 * 2 ** (5 * t), 1]),
+         ticks: ["1", "2", "4", "8", "16", "32+"] },
+  fit: { title: "Job's memory per CPU vs its node's", stops: [-1, -.5, 0, .5, 1].map(t => [2 ** (2 * t), 1]),
+         ticks: ["¼×", "½×", "1×", "2×", "4×"] },
+};
+function drawLegend() {
+  const sc = SCALES[colorMode];
+  document.getElementById("legend-title").textContent = sc.title;
+  document.getElementById("ramp").style.background = "linear-gradient(90deg," +
+    sc.stops.map(([m, n]) => `hsl(${hueOf(m, n)}, 62%, 52%)`).join(",") + ")";
+  document.getElementById("ticks").innerHTML = sc.ticks.map(t => `<span>${t}</span>`).join("");
+}
+function switchScale() { colorMode = colorMode === "mpc" ? "fit" : "mpc"; drawLegend(); recolor(); }
+document.getElementById("legend").addEventListener("click", switchScale);
+addEventListener("keydown", e => { if (e.key === "c" || e.key === "C") switchScale(); });
+drawLegend();
+const nodeMpc = {};                // node name -> its memory per CPU
+function color(job, a = 1) {
+  const h = hueOf(job.mem / Math.max(job.cpus, 1e-9), job.node && nodeMpc[job.node]);
+  return h === null ? `hsla(0, 0%, 45%, ${a})` : `hsla(${h}, 62%, 52%, ${a})`;
+}
+function recolor() {}                 // 2D colours are computed while drawing
 
 // ------------------------------------------------------------------ canvas
 const cv = document.getElementById("c"), g = cv.getContext("2d");
 let W = 0, H = 0, dpr = 1;
 function resize() {
   dpr = Math.min(devicePixelRatio || 1, 2); W = innerWidth; H = innerHeight;
-  cv.width = W * dpr; cv.height = H * dpr; cv.style.width = W + "px"; cv.style.height = H + "px";
   layoutKey = "";
+  if (state) apply(state);
 }
 addEventListener("resize", resize);
 
@@ -98,39 +131,47 @@ addEventListener("resize", resize);
 // Wide screens: the queue in a column on the left, under the title; the nodes
 // on the right, one row each. Tall screens: the queue on top, nodes below.
 let layoutKey = "", L = null;
-const panelBox = id => {
+const panelBox = id => {          // in page coordinates, whatever the scroll
   const r = document.getElementById(id).getBoundingClientRect();
-  return { top: r.top, bottom: r.bottom, right: r.right, height: r.height };
+  return { top: r.top + scrollY, bottom: r.bottom + scrollY, right: r.right, height: r.height };
 };
+let CH = 0;                       // the canvas height: the page scrolls when it is taller
 
 function layout(nodes) {
   const key = W + "x" + H + ":" + nodes.map(n => n.name).join();
   if (key === layoutKey) return;
   layoutKey = key;
-  const tall = W / H < 0.9, head = panelBox("head"), legend = panelBox("legend");
-  const pad = 20 * Math.max(1, ui * 0.8), font = 13 * Math.max(1, ui * 0.75);
-  let queue, area;
+  const tall = W / H < 0.9, head = panelBox("head");
+  const k = Math.max(1, ui * 0.8), pad = 20 * k, font = 13 * Math.max(1, ui * 0.75);
+  const rowH = (tall ? 140 : 104) * k, groupH = font * 2.6;
+  // Nodes grouped by partition, highest PriorityTier first; every row the same height.
+  const groups = new Map();
+  [...nodes].sort((a, b) => b.tier - a.tier || a.name.localeCompare(b.name, undefined, { numeric: true }))
+    .forEach(n => { const g = n.partitions.join(","); if (!groups.has(g)) groups.set(g, []); groups.get(g).push(n); });
+  let queue, x, y, w;
   if (tall) {
     const qTop = head.bottom + pad, qH = Math.min(H * 0.17, 260 * ui);
     queue = { x: pad, y: qTop + font * 1.8, w: W - 2 * pad, h: qH };
-    area = { x: pad, y: qTop + qH + font * 3, w: W - 2 * pad, h: legend.top - (qTop + qH + font * 3) - pad };
+    x = pad; y = qTop + qH + font * 2; w = W - 2 * pad;
   } else {
     const qW = Math.max(head.right - pad, 300);
-    queue = { x: pad, y: head.bottom + pad + font * 1.8, w: qW, h: legend.top - head.bottom - 3 * pad - font * 1.8 };
-    area = { x: pad * 2 + qW + 20, y: pad, w: W - (pad * 3 + qW + 20), h: H - 2 * pad };
+    queue = { x: pad, y: head.bottom + pad + font * 1.8, w: qW, h: H - head.bottom - 3 * pad - font * 1.8 - 90 };
+    x = pad * 2 + qW + 20; y = pad; w = W - (pad * 3 + qW + 20);
   }
-  const sorted = [...nodes].sort((a, b) => b.tier - a.tier ||
-    a.name.localeCompare(b.name, undefined, { numeric: true }));
-  const rowH = Math.min(area.h / Math.max(sorted.length, 1), (tall ? 300 : 190) * Math.max(1, ui * 0.8));
   const capW = 92 * Math.max(1, ui * 0.75);      // room for "96 CPUs" at the end of a bar
-  const rows = new Map();
-  sorted.forEach((n, i) => {
-    const y = area.y + i * rowH + (area.h - rowH * sorted.length) / 2;
-    const barH = rowH * 0.2, label = font * 1.5;
-    rows.set(n.name, { node: n, x: area.x, w: area.w - capW, label: y,
-      cpuY: y + label, gapY: y + label + barH, memY: y + label + barH + rowH * 0.24, barH });
-  });
-  L = { tall, queue, rows, font, capW };
+  const rows = new Map(), heads = [];
+  for (const [part, ns] of groups) {
+    heads.push({ text: part, x, y: y + groupH * 0.55 }); y += groupH;
+    for (const n of ns) {
+      const barH = rowH * 0.24, label = font * 1.5;
+      rows.set(n.name, { node: n, x, w: w - capW, label: y,
+        cpuY: y + label, gapY: y + label + barH, memY: y + label + barH + rowH * 0.24, barH });
+      y += rowH;
+    }
+  }
+  CH = Math.max(H, y + pad + (tall ? 110 * ui : 0));
+  cv.width = W * dpr; cv.height = CH * dpr; cv.style.width = W + "px"; cv.style.height = CH + "px";
+  L = { tall, queue, rows, heads, font, capW };
 }
 
 // ------------------------------------------------------------------ jobs
@@ -145,6 +186,7 @@ function target(v, t) { v.t = t; if (!v.c) v.c = { ...t }; }
 let state = null;
 function apply(s) {
   state = s;
+  for (const n of s.nodes) nodeMpc[n.name] = n.mem / n.cpus;
   if (!W) resize();
   layout(s.nodes);
   const seen = new Set();
@@ -226,17 +268,18 @@ function text(s, x, y, size, weight = 400, fill = "#e6edf3", align = "left") {
 
 function draw() {
   g.setTransform(dpr, 0, 0, dpr, 0, 0);
-  g.fillStyle = "#0d1117"; g.fillRect(0, 0, W, H);
+  g.fillStyle = "#0d1117"; g.fillRect(0, 0, W, CH);
   if (!L || !state) return;
   const f = L.font;
   // The queue's heading.
   if (state.pending_total) text(`waiting (${state.pending_total})`, L.queue.x, L.queue.y - f * 0.9, f * 1.05, 650);
+  for (const h of L.heads) text(h.text, h.x, h.y, f * 1.25, 650, "#8b949e");
   // Each node: name, two empty bars, then the free space at their ends.
   for (const r of L.rows.values()) {
     const n = r.node;
     text(n.name, r.x, r.label + f * 0.55, f * 1.05, 650);
     g.font = `650 ${f * 1.05}px system-ui`; const nw = g.measureText(n.name).width;
-    text(`${n.partitions.join(",")} · ${gbc(n.mem / n.cpus)}`, r.x + nw + 10, r.label + f * 0.55, f * 0.9, 400, "#8b949e");
+    text(`${n.cpus} CPUs · ${gb(n.mem)} · ${gbc(n.mem / n.cpus)}`, r.x + nw + 10, r.label + f * 0.55, f * 0.9, 400, "#8b949e");
     for (const [y, cap] of [[r.cpuY, `${n.cpus} CPUs`], [r.memY, gb(n.mem)]]) {
       g.fillStyle = "#161b22"; roundRect(r.x, y, r.w, r.barH, 4); g.fill();
       g.strokeStyle = "#30363d"; g.lineWidth = 1; g.stroke();
@@ -252,7 +295,7 @@ function draw() {
     const freeTxt = fc < 1 && fm < 1024 ? "full"
       : fc < 1 ? `CPUs full · ${gb(fm)} memory left over`
       : fm < 1024 ? `memory full · ${cpus(fc)} left over`
-      : `free ${cpus(fc)} · ${gb(fm)} (${gbc(fm / fc)})`;
+      : `${cpus(fc)} + ${gb(fm)} (${gbc(fm / fc)}) free`;
     text(freeTxt, r.x + r.w, r.gapY + (r.memY - r.gapY) / 2, f * 0.85, 500, "#3fb950", "right");
   }
   // Jobs: the band between the bars first, then the two segments, then labels.
@@ -260,7 +303,7 @@ function draw() {
   for (const v of live) {
     const c = v.c, mpc = v.job.mem / Math.max(v.job.cpus, 1e-9);
     if (!v.key.startsWith("r:") || c.a <= 0.01) continue;
-    g.fillStyle = color(mpc, 0.28 * c.a);
+    g.fillStyle = color(v.job, 0.28 * c.a);
     g.beginPath(); g.moveTo(c.cx, c.cy + c.h); g.lineTo(c.cx + c.cw, c.cy + c.h);
     g.lineTo(c.mx + c.mw, c.my); g.lineTo(c.mx, c.my); g.closePath(); g.fill();
   }
@@ -270,7 +313,7 @@ function draw() {
     g.globalAlpha = c.a;
     const sel = selected === v;
     for (const [x, w, y] of v.key.startsWith("r:") ? [[c.cx, c.cw, c.cy], [c.mx, c.mw, c.my]] : [[c.cx, c.cw, c.cy]]) {
-      g.fillStyle = color(mpc); roundRect(x + 0.5, y, Math.max(w - 1, 0.8), c.h, 3); g.fill();
+      g.fillStyle = color(j); roundRect(x + 0.5, y, Math.max(w - 1, 0.8), c.h, 3); g.fill();
       g.strokeStyle = sel ? "#ffffff" : "rgba(13,17,23,0.7)"; g.lineWidth = sel ? 2 : 1; g.stroke();
     }
     // Job id and memory per CPU, on the CPU segment (or chip) if there is room.
@@ -315,7 +358,7 @@ async function poll() {
 // ------------------------------------------------------------------ picking
 let selected = null;
 cv.addEventListener("click", e => {
-  const x = e.clientX, y = e.clientY;
+  const x = e.offsetX, y = e.offsetY;          // canvas coordinates, scroll included
   let hit = null;
   for (const v of views.values()) {
     if (v.dead) continue;
