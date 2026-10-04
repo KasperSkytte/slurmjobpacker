@@ -128,7 +128,7 @@ is noted in the job's `AdminComment` and in the `slurmctld` log. See
 To switch it off, `sudo touch /etc/sjp/disable`: from the next submission
 `sjp.place()` returns `false`, so only your own rules apply.
 
-## Seeing it live
+## See it live
 
 `sjp-viz` shows the cluster live in a web browser: every node a box of CPUs × memory ×
 time, every running job a box inside it, and the waiting jobs beside them. Click a job
