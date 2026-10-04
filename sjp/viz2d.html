@@ -79,11 +79,11 @@ const cpus = n => Math.round(n) + (Math.round(n) === 1 ? " CPU" : " CPUs");
 const dur = s => s >= 86400 ? (s / 86400).toFixed(s >= 864000 ? 0 : 1) + " d"
               : s >= 3600 ? (s / 3600).toFixed(s >= 36000 ? 0 : 1) + " h"
               : Math.max(0, Math.round(s / 60)) + " min";
-// Two colour scales, switched with C or a click on the legend (?color=fit to start so):
-//  memory per CPU: 1 GB blue to 32 GB orange, log scale;
-//  fit: memory per CPU against the node's, green when equal, blue below, red above
-//  (1/4x to 4x); waiting jobs, which have no node yet, are grey.
-let colorMode = params.get("color") === "fit" ? "fit" : "mpc";
+// Two colour scales, switched with C or a click on the legend:
+//  fit (default): memory per CPU against the node's, green when equal, blue below,
+//  red above (1/4x to 4x); waiting jobs, which have no node yet, are grey;
+//  memory per CPU (?color=mpc to start so): 1 GB blue to 32 GB orange, log scale.
+let colorMode = params.get("color") === "mpc" ? "mpc" : "fit";
 function hueOf(mpc, nodeMpc) {
   if (colorMode === "mpc") {
     const t = Math.max(0, Math.min(1, Math.log2(Math.max(mpc, 1024) / 1024) / 5));
