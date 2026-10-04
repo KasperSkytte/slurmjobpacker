@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.11.1](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.11.0...v1.11.1) (2026-10-04)
+
+
+### Bug Fixes
+
+* colour jobs by how their memory per CPU fits their node by default ([1e03d28](https://github.com/KasperSkytte/slurmjobpacker/commit/1e03d282447f96d79a3ff05ea2f456fae46eab12))
+* node names and resources above their cards in the 2D view ([9024324](https://github.com/KasperSkytte/slurmjobpacker/commit/90243246bd2fe143c1ea56ab3594ac209e2f40b3))
+
 ## [1.11.0](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.10.0...v1.11.0) (2026-10-04)
 
 
