@@ -143,7 +143,10 @@ function layout(nodes) {
   layoutKey = key;
   const tall = W / H < 0.9, head = panelBox("head");
   const k = Math.max(1, ui * 0.8), pad = 20 * k, font = 13 * Math.max(1, ui * 0.75);
-  const rowH = (tall ? 140 : 104) * k, groupH = font * 2.6;
+  const groupH = font * 2.6;
+  // Each node is a card: name on top, then its CPU bar, the bands, its memory bar.
+  const cardPad = 10 * k, cardGap = 14 * k, barH = (tall ? 30 : 22) * k, bandH = (tall ? 30 : 22) * k;
+  const label = font * 1.6, cardH = cardPad + label + barH + bandH + barH + cardPad;
   // Nodes grouped by partition, highest PriorityTier first; every row the same height.
   const groups = new Map();
   [...nodes].sort((a, b) => b.tier - a.tier || a.name.localeCompare(b.name, undefined, { numeric: true }))
@@ -163,10 +166,11 @@ function layout(nodes) {
   for (const [part, ns] of groups) {
     heads.push({ text: part, x, y: y + groupH * 0.55 }); y += groupH;
     for (const n of ns) {
-      const barH = rowH * 0.24, label = font * 1.5;
-      rows.set(n.name, { node: n, x, w: w - capW, label: y,
-        cpuY: y + label, gapY: y + label + barH, memY: y + label + barH + rowH * 0.24, barH });
-      y += rowH;
+      const top = y + cardPad, bx = x + cardPad;
+      rows.set(n.name, { node: n, x: bx, w: w - capW - 2 * cardPad, label: top,
+        cpuY: top + label, gapY: top + label + barH, memY: top + label + barH + bandH, barH,
+        card: { x, y, w, h: cardH } });
+      y += cardH + cardGap;
     }
   }
   CH = Math.max(H, y + pad + (tall ? 110 * ui : 0));
@@ -276,7 +280,9 @@ function draw() {
   for (const h of L.heads) text(h.text, h.x, h.y, f * 1.25, 650, "#8b949e");
   // Each node: name, two empty bars, then the free space at their ends.
   for (const r of L.rows.values()) {
-    const n = r.node;
+    const n = r.node, c = r.card;
+    g.fillStyle = "#11161d"; roundRect(c.x, c.y, c.w, c.h, 8); g.fill();
+    g.strokeStyle = "#30363d"; g.lineWidth = 1; g.stroke();
     text(n.name, r.x, r.label + f * 0.55, f * 1.05, 650);
     g.font = `650 ${f * 1.05}px system-ui`; const nw = g.measureText(n.name).width;
     text(`${n.cpus} CPUs · ${gb(n.mem)} · ${gbc(n.mem / n.cpus)}`, r.x + nw + 10, r.label + f * 0.55, f * 0.9, 400, "#8b949e");
