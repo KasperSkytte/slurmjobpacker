@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.12.0](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.11.1...v1.12.0) (2026-10-05)
+
+
+### Features
+
+* recheck pending jobs' partitions every minute ([5bb0c91](https://github.com/KasperSkytte/slurmjobpacker/commit/5bb0c91fe96063a859e427c2aaefd83cf2c77533))
+* show job run time in the 3D view, and free and used space per node in the 2D view ([36a6d2e](https://github.com/KasperSkytte/slurmjobpacker/commit/36a6d2eb7c57e9324a6f20885055e49be19e5763))
+
+
+### Bug Fixes
+
+* count pending jobs pinned to a node as taken, so bursts of similar jobs do not overbook it ([0f26149](https://github.com/KasperSkytte/slurmjobpacker/commit/0f26149441768b5ecb94bb1d105f0fd30067b4ff))
+
 ## [1.11.1](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.11.0...v1.11.1) (2026-10-04)
 
 
