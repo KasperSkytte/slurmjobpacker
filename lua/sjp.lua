@@ -174,9 +174,34 @@ end
 -- reservations that start before a job of this time limit would end (all of
 -- them when minutes is nil, a job without a limit). sjpd has already taken out
 -- the reservations that are active now.
+-- The pins this plugin made that sjpd's free space does not include yet:
+-- {node, cpus, mem, pinned at}. sjpd counts a pending pinned job against its
+-- node from its next read of the queue (pin.queue_at) on; until then, only
+-- this list does. Without it, a burst of submissions within a few seconds
+-- would all be pinned to the same free space.
+local claims = {}
+
+local function claimed(pin, name)
+    local c, m, seen = 0, 0, (pin.queue_at or 0)
+    for _, k in ipairs(claims) do
+        if k[1] == name and k[4] >= seen then c, m = c + k[2], m + k[3] end
+    end
+    return c, m
+end
+
+local function claim(pin, name, cpus, mem)
+    local keep, seen = {}, (pin.queue_at or 0)
+    for _, k in ipairs(claims) do          -- drop the ones sjpd has seen since
+        if k[4] >= seen and os.time() - k[4] < 300 then keep[#keep + 1] = k end
+    end
+    keep[#keep + 1] = { name, cpus, mem, os.time() }
+    claims = keep
+end
+
 local function free_of(pin, name, minutes)
     local n = pin.nodes[name]
-    local fc, fm = n[1], n[2]
+    local cc, cm = claimed(pin, name)
+    local fc, fm = n[1] - cc, n[2] - cm
     local later = type(pin.later) == "table" and pin.later[name]
     if later then
         local ends = minutes and (os.time() + minutes * 60) or math.huge
@@ -402,9 +427,6 @@ local function place(job_desc, submit_uid)
     if pok and node and pparts then
         job_desc.req_nodes = node
         job_desc.partition = pparts
-        -- Count it against the node until the next table arrives, so a burst
-        -- of submissions is not all pinned to the same free space.
-        local n = tbl.pin.nodes[node]
         local fc, fm = free_of(tbl.pin, node, has_limit and minutes or nil)
         mark = string.format("sjp:pin=%s;from=%s;%s;free=%dc,%s,%s/c;%s", node, parts,
                              shape, fc, gb(fm), gb(fm / math.max(fc, 1)), version)
@@ -420,7 +442,7 @@ local function place(job_desc, submit_uid)
         detail = detail .. string.format(
             "; node %s free %d CPUs x %d MB (%s MB/CPU), after %d x %d (%s MB/CPU)",
             node, fc, fm, mpc(fc, fm), fc - cpus, fm - mem, mpc(fc - cpus, fm - mem))
-        n[1], n[2] = n[1] - cpus, n[2] - mem
+        claim(tbl.pin, node, cpus, mem)         -- counted until sjpd has seen it
         why = why .. " pin=" .. node
     else
         detail = detail .. "; no pin: " .. tostring(pok and pparts or node or "")

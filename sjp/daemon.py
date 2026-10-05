@@ -24,6 +24,7 @@ class Shared:
         self.parts: dict = {}
         self.pending: list = []
         self.pending_at: float = 0.0
+        self.claims_at: float = 0.0       # the queue read the node figures include
         self.jobs: list = []          # pending and running, from the last queue poll
         self.stop = threading.Event()
         self.errors: dict = {}
@@ -180,6 +181,25 @@ class Daemon:
                 by_part_free[p] = free
         return by_part_total, by_part_free
 
+    # Pending reasons under which a job tied to one node is about to start there.
+    CLAIM_REASONS = ("None", "Resources", "Priority", "")
+
+    @staticmethod
+    def claim(nodes, jobs):
+        """Count pending jobs tied to one node (pinned, or the user's own
+        --nodelist) as taken on that node: Slurm will start them there, and
+        until it does, the node's own figures don't show them. Without this, a
+        burst of submissions is pinned to the same free space again and again."""
+        for j in jobs:
+            if (j["state"] != "PD" or not j.get("req_nodes") or j.get("nnodes", 1) > 1
+                    or j.get("reason") not in Daemon.CLAIM_REASONS):
+                continue
+            ns = slurm.expand_hostlist(j["req_nodes"])
+            if len(ns) == 1 and ns[0] in nodes:
+                d = nodes[ns[0]]
+                d["alloc_cpus"] += j["cpus"]
+                d["alloc_mem"] += j.get("req_mem") or j["mem"]
+
     @staticmethod
     def reserve(nodes, resvs, jobs, now):
         """Count reservations like jobs planned on their nodes. Memory cannot be
@@ -295,10 +315,12 @@ class Daemon:
                 p = slurm.partitions()
                 r = slurm.reservations()
                 with self.sh.lock:
-                    jobs = list(self.sh.jobs)
+                    jobs, queue_at = list(self.sh.jobs), self.sh.pending_at
                 self.reserve(n, r, jobs, time.time())
+                self.claim(n, jobs)
                 with self.sh.lock:
                     self.sh.nodes, self.sh.parts, self.sh.nodes_at = n, p, time.time()
+                    self.sh.claims_at = queue_at
             except Exception as e:                      # never let a poll kill the loop
                 if self.sh.note_error("nodes", e):   # log each distinct failure once
                     self.log("error", where="nodes", detail=repr(e))
@@ -314,7 +336,7 @@ class Daemon:
                 with self.sh.lock:
                     self.sh.jobs = q
                     self.sh.pending = [j for j in q if j["state"] == "PD"]
-                    self.sh.pending_at = time.time()
+                    self.sh.pending_at = t0      # what squeue showed was as of then
                 self.shadow(q)
                 if self.cfg["pin"]["enabled"]:
                     self.release_pins(q, time.time())
@@ -362,6 +384,7 @@ class Daemon:
         nf = self.node_free(nodes, parts)
         state = dict(nodes=nf,
                      later={n: nodes[n]["later"] for n in nf if nodes[n].get("later")},
+                     queue_at=self.sh.claims_at,
                      tiers={p: parts[p]["tier"] for p in total},
                      room=self.user_room(jobs), enabled=self.pin_active(),
                      busy=self.busy_until(jobs, now) if self.cfg["pin"]["time_aware"] else None)
@@ -581,12 +604,21 @@ class Daemon:
             node, parts = marks["pin"], marks.get("from", "")
             argvs = slurm.cmd_release_pin(jid, parts,
                                           note.replace("sjp:pin=", "sjp:released=", 1))
+            def release(jid=jid, argvs=argvs):
+                # A release that fails is tried again at the next check.
+                try:
+                    done = all([self.apply_retrying(a) for a in argvs])
+                except slurm.SlurmError:
+                    self.released.discard(jid)
+                    raise
+                if not done:
+                    self.released.discard(jid)
+                return done
             self.intend("release_pin", " && ".join(slurm.cmdline(a) for a in argvs),
                         f"pinned at submission but still pending after "
                         f"{now - j['submit']:.0f} s ({j['reason']})",
                         None if self.mode == "enforce" else f"mode={self.mode}",
-                        lambda: all([self.apply_retrying(a) for a in argvs]),
-                        jobid=jid, node=node, parts=parts)
+                        release, jobid=jid, node=node, parts=parts)
         self.released &= {j["jobid"] for j in jobs}
 
     # Pending reasons a wider partition list can help with.

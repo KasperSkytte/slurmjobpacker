@@ -563,6 +563,19 @@ check("the demo keeps its cluster busy without overfilling a node",
 check("the 2D page is shipped too, and can be driven frame by frame",
       os.path.exists(viz.HTML_2D) and "window.sjpViz" in open(viz.HTML_2D).read())
 
+print("\n12d. a burst of pins: pending jobs tied to a node count as taken there")
+cn = {"a": rnode(96, 384000), "b": rnode(96, 384000)}
+daemon.Daemon.claim(cn, [
+    dict(state="PD", req_nodes="a", nnodes=1, reason="Resources", cpus=8, mem=32000, req_mem=32000),
+    dict(state="PD", req_nodes="a", nnodes=1, reason="Dependency", cpus=8, mem=32000, req_mem=32000),
+    dict(state="PD", req_nodes="a,b", nnodes=1, reason="None", cpus=8, mem=32000, req_mem=32000),
+    dict(state="R", req_nodes="b", nnodes=1, reason="None", cpus=8, mem=32000, req_mem=32000)])
+check("a pending job pinned to one node is counted there; held, waiting or spread ones are not",
+      cn["a"]["alloc_cpus"] == 8 and cn["a"]["alloc_mem"] == 32000 and cn["b"]["alloc_cpus"] == 0)
+check("the table tells the plugin which queue read the free space includes",
+      "queue_at = 1234," in policy.render_lua(tbl, CFG, time.time(), 1, TOTAL,
+                                              dict(nodes=nf, tiers=TIERS, room=None, queue_at=1234.5)))
+
 print("\n13. stale pins are released, and only sjp's own")
 real_ac, real_apply = slurm.admin_comment, slurm.apply
 comments = {"7": "sjp:pin=n16;from=slim1,slim2;job=4c,16G,4.0G/c;v=3", "8": ""}

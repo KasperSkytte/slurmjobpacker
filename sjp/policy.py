@@ -338,6 +338,9 @@ def render_pin(cfg, pin) -> list[str]:
     each user's room under the CPU caps. enabled says whether to pin at all."""
     c = cfg["pin"]
     out = ["  pin = {", "    enabled = %s," % str(pin.get("enabled", True)).lower(),
+           # when sjpd last read the queue: pins made since then are not in the
+           # free space below, so the plugin still counts them itself
+           "    queue_at = %d," % pin.get("queue_at", 0),
            f"    max_age = {c['max_age']:.0f},",
            f"    min_gain = {c['min_gain']},",
            f"    min_ratio_gain = {c['min_ratio_gain']},",
