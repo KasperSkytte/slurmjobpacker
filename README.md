@@ -71,7 +71,7 @@ Needs Python 3.11+ (standard library only). Tested on Slurm 24.11 and 26.05.
 
 <!-- x-release-please-start-version -->
 ```sh
-sudo git clone --branch v1.11.1 https://github.com/kasperskytte/slurmjobpacker /opt/slurmjobpacker
+sudo git clone --branch v1.12.0 https://github.com/kasperskytte/slurmjobpacker /opt/slurmjobpacker
 cd /opt/slurmjobpacker && python3 tests/test_policy.py        # ends in ALL PASS
 ```
 <!-- x-release-please-end -->
