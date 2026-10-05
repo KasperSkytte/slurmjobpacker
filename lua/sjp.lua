@@ -170,10 +170,6 @@ local function time_cost(pin, name, minutes)
     return math.max(0, math.log(minutes * 60 / math.max(busy, 60)))
 end
 
--- Mirrors sjp.policy.free_for: a node's free CPUs and memory, less the
--- reservations that start before a job of this time limit would end (all of
--- them when minutes is nil, a job without a limit). sjpd has already taken out
--- the reservations that are active now.
 -- The pins this plugin made that sjpd's free space does not include yet:
 -- {node, cpus, mem, pinned at}. sjpd counts a pending pinned job against its
 -- node from its next read of the queue (pin.queue_at) on; until then, only
@@ -198,6 +194,10 @@ local function claim(pin, name, cpus, mem)
     claims = keep
 end
 
+-- Mirrors sjp.policy.free_for: a node's free CPUs and memory, less the pins
+-- sjpd has not seen yet and the reservations that start before a job of this
+-- time limit would end (all of them when minutes is nil, a job without a
+-- limit). sjpd has already taken out the reservations that are active now.
 local function free_of(pin, name, minutes)
     local n = pin.nodes[name]
     local cc, cm = claimed(pin, name)
