@@ -388,7 +388,7 @@ function select(v) {
     ["State", running ? `running on ${j.node}` + (j.nodes > 1 ? ` (+${j.nodes - 1} nodes)` : "") : `waiting (${j.reason})`],
     ["CPUs", (+j.cpus).toFixed(j.cpus % 1 ? 1 : 0)], ["Memory", gb(j.mem)], ["Memory / CPU", gbc(mpc)],
     ["Time limit", dur(j.minutes * 60)],
-    running ? ["Time left", dur(j.end - state.now)] : ["Priority", j.priority ?? "–"],
+    running ? ["Time left", dur(j.end - state.now)] : ["Priority", j.priority == null ? "–" : Math.round(j.priority)],
     ["Partition", j.partition || "–"], ["QOS", j.qos],
   ];
   document.getElementById("info-body").innerHTML = rows.map(([k, val]) =>

@@ -278,8 +278,13 @@ function layoutNodes(nodes) {
         new THREE.LineBasicMaterial({ color: 0x3fb950, transparent: true, opacity: 0.6 }));
       g.add(freeEdge);
       const freeLabel = faceLabel("room", ""); g.add(freeLabel);
+      // Taken: from no CPUs and no memory to what the jobs use of each, red at
+      // the front as the free box is green.
+      const taken = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1),
+        new THREE.MeshBasicMaterial({ color: 0xf85149, transparent: true, opacity: 0.16, depthWrite: false }));
+      taken.visible = false; g.add(taken);
       holder.add(g);
-      nodeViews.set(n.name, { group: g, w, h, node: n, free, freeEdge, freeLabel, freeKey: "",
+      nodeViews.set(n.name, { group: g, w, h, node: n, free, freeEdge, freeLabel, freeKey: "", taken,
                               used: [0, 0], idle, floor });
       x += w + GAP_X;
     }
@@ -403,6 +408,10 @@ function apply(s) {
       cx += j.cpus; cy += j.mem;
     }
     nv.used = [cx, cy];
+    const tw = sx(cx), th = sy(cy);
+    nv.taken.visible = tw > 0.05 && th > 0.05;
+    nv.taken.scale.set(Math.max(tw, 1e-3), Math.max(th, 1e-3), 0.12);
+    nv.taken.position.set(tw / 2, th / 2, -0.06);
     const isIdle = js.length === 0 && nv.node.up;
     nv.idle.visible = isIdle;
     nv.floor.material.color.set(isIdle ? 0x14301c : 0x161b22);
@@ -502,7 +511,7 @@ function select(v) {
     ["CPUs", (+j.cpus).toFixed(j.cpus % 1 ? 1 : 0)], ["Memory", gb(j.mem)], ["Memory / CPU", gbc(mpc)],
     ["Time limit", dur(j.minutes * 60)],
     ...(running ? [["Run time", dur(state.now - j.end + j.minutes * 60)], ["Time left", dur(j.end - state.now)]]
-                : [["Priority", j.priority ?? "–"]]),
+                : [["Priority", j.priority == null ? "–" : Math.round(j.priority)]]),
     ["Partition", j.partition || "–"], ["QOS", j.qos],
   ];
   document.getElementById("info-body").innerHTML = rows.map(([k, val]) =>

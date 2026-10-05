@@ -104,7 +104,7 @@ def partitions() -> dict:
 
 
 PENDING_FMT = ("JobID:|,UserName:|,Account:|,NumCPUs:|,MinMemory:|,"
-               "TimeLimit:|,Priority:|,Reason:|,QOS:|,Partition:|,Name:|")
+               "TimeLimit:|,PriorityLong:|,Reason:|,QOS:|,Partition:|,Name:|")
 # The rest is appended so the indices above stay put. tres-alloc is the
 # *requested* TRES for a job that has not started; its mem is the job's total,
 # which MinMemory is not when the job used --mem-per-cpu.
@@ -126,7 +126,7 @@ def queue(states: str = "PD,R,CF") -> list[dict]:
             out.append(dict(jobid=f[0], user=f[1], account=f[2],
                             cpus=int(f[3] or 1), mem=_mem_mb(f[4]),
                             req_mem=_mem_mb(tres.get("mem", "")) // nnodes,
-                            timelimit=_mins(f[5]), priority=float(f[6] or 0),
+                            timelimit=_mins(f[5]), priority=int(float(f[6] or 0)),
                             reason=f[7], qos=f[8], partition=f[9], name=f[10],
                             state=f[11], nnodes=nnodes,
                             gpu=any(k.startswith("gres/gpu") for k in tres),
