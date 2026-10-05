@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.12.1](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.12.0...v1.12.1) (2026-10-05)
+
+
+### Bug Fixes
+
+* mark the space jobs use on each node red in the 3D view, and show job priority as an integer ([8bb987a](https://github.com/KasperSkytte/slurmjobpacker/commit/8bb987a9b430655297cb674ae3f438fb44378572))
+
 ## [1.12.0](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.11.1...v1.12.0) (2026-10-05)
 
 
