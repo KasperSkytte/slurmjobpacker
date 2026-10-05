@@ -4,7 +4,11 @@ SLURM plugin for automatic partition and compute node selection that also packs 
 
 `slurmjobpacker` is a single sourced Lua function to use among your existing job submission logics defined in the [job submit Lua script](https://slurm.schedmd.com/job_submit_plugins.html), if any, so it easily integrates in any slurm configuration. It does not interfere with the normal scheduling by the slurm controller, priorities, fair-share, etc, it simply sets the partition and nodelist automatically at job submission, SLURM takes care of the rest.
 
-An optional web-based visualizer shows the cluster live, every node and job in CPU, memory and time space, in 3D or 2D. See the [Visualizer](https://github.com/KasperSkytte/slurmjobpacker/wiki/Visualizer) wiki page for screenshots.
+An optional web-based visualizer shows the cluster live, every node and job in CPU, memory and time space, in 3D or 2D (see [Live cluster view in 2D and 3D](#live-cluster-view-in-2d-and-3d)):
+
+![3D view of a simulated cluster: three slim and three fat nodes, each a box of CPUs × memory × time, with running jobs inside and waiting jobs beside them](docs/img/sjp-demo-3d.webp)
+
+![2D view of the same: a CPU bar and a memory bar per node, with free and used space](docs/img/sjp-demo-2d.webp)
 
 ## The problem with sharing nodes
 
@@ -18,51 +22,8 @@ To pack a shared node cluster efficiently, the combined CPU and memory shape of 
 
 ## How it works
 
-A daemon, `sjpd`, reads the cluster every second. A small Lua module, `sjp.lua`, is
-called from your `job_submit.lua` and places each batch job when it is submitted:
-
-- it chooses the partitions where the job fits the free space best;
-- if the job can start now, it also chooses the node (in the highest `PriorityTier`
-  partition with room, the node whose free memory per CPU best matches the job's);
-- it returns `true` when it placed the job, or `false` and a reason (e.g. `"no room"`)
-  when it could not, leaving the job untouched. Your script decides what to do then,
-  e.g. apply its own fallback rule (see [Using sjp from job_submit.lua](#using-sjp-from-job_submitlua));
-- it counts the nodes it just pinned as taken, so a burst of similar jobs (e.g. from a
-  workflow manager) is spread over nodes instead of piling onto one.
-
-```mermaid
-flowchart TD
-    sjpd["sjpd<br/>reads each node's free CPUs and memory,<br/>i.e. its free memory per CPU"] -. "every second" .-> table[("placement table")]
-    submit(["sbatch"]) --> own
-    subgraph lua ["job_submit.lua (on slurmctld)"]
-        own["your own rules"] --> place{"sjp.place()<br/>does a node have room<br/>for the job now?"}
-        place -- "no: returns false, reason" --> fallback["your fallback rule"]
-    end
-    table -.-> place
-    place -- "yes: returns true" --> parts["sets partition and node<br/>matching the job's memory per CPU"]
-    parts --> queue(["Slurm queue"])
-    fallback --> queue
-    queue -- "Slurm starts it" --> running(["running"])
-    subgraph pending ["sjpd, while sjp's jobs wait (enforce)"]
-        release["pin not started in 60 s:<br/>drop the node"]
-        recheck["every minute: choose again,<br/>move the job if there is room"]
-        widen["waited too long:<br/>widen to every partition"]
-        flex["held by a QOS CPU cap:<br/>flex QOS or raised caps"]
-    end
-    pending -. "updates" .-> queue
-```
-
-Slurm still schedules, orders the queue and applies fair-share. While sjp's jobs wait,
-`sjpd` keeps its choices current; each step can be switched off:
-
-| while a job waits | setting |
-|---|---|
-| a pinned job that did not start loses its pin and gets its partitions back | `[pin] release_after` (60 s) |
-| sjp chooses again, against the cluster and queue as they are now, and moves the job if the choice changed and a node there has room | `[recheck] interval` (60 s) |
-| a job pending longer than its budget is widened to every partition that can hold it | `[starvation] enabled` |
-| a job held only by a QOS CPU cap that fits on idle nodes moves to a flex QOS, or the caps are raised briefly | `[limits] mode` (off) |
-
-The [wiki](https://github.com/KasperSkytte/slurmjobpacker/wiki) explains all of this in detail.
+See [How it works](https://github.com/KasperSkytte/slurmjobpacker/wiki/How-it-works) in the
+wiki.
 
 ## Installation
 Follow the below steps manually, or use the provided ansible role under [ansible-role-slurmjobpacker](./ansible-role-slurmjobpacker/).
@@ -148,7 +109,7 @@ To switch it off, `sudo touch /etc/sjp/disable`: from the next submission
 
 ## Live cluster view in 2D and 3D
 
-`sjp-viz` shows the cluster live in a web browser too easily see how jobs are packed together.
+`sjp-viz` shows the cluster live in a web browser to easily see how jobs are packed together.
 
 To try it, run `python3 -m sjp.viz` (or `python3 -m sjp.viz --demo` for a simulated
 cluster), and open `http://127.0.0.1:8650`. To keep it running, install it as a service
