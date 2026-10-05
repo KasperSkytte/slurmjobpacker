@@ -142,7 +142,9 @@ function jobColor(job) {
   const c = new THREE.Color();
   return h === null ? c.setHSL(0, 0, 0.45) : c.setHSL(h / 360, 0.62, 0.52);
 }
-function recolor() { for (const v of views.values()) v.mesh.material.color.copy(jobColor(v.job)); }
+function recolor() {
+  for (const v of views.values()) for (const m of [v.mesh, v.fill]) m.material.color.copy(jobColor(v.job));
+}
 
 // ------------------------------------------------------------------ scene
 const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
@@ -337,17 +339,24 @@ const views = new Map();       // key -> {mesh, label, target{pos,scale}, job, d
 const unit = new THREE.BoxGeometry(1, 1, 1);
 let showLabels = params.get("labels") !== "0";
 
+// A job is a box as deep as its time limit, filled up to how long it has run;
+// a line marks where it is now.
+const nowRing = new THREE.BufferGeometry().setFromPoints(
+  [[-.5, -.5], [.5, -.5], [.5, .5], [-.5, .5]].map(([x, y]) => new THREE.Vector3(x, y, 0)));
 function jobView(key, job, from) {
   const mpc = job.mem / Math.max(job.cpus, 1e-9);
-  const mat = new THREE.MeshStandardMaterial({ color: jobColor(job), roughness: 0.55, metalness: 0.05,
-    transparent: true, opacity: 0.94 });
-  const mesh = new THREE.Mesh(unit, mat);
+  const material = o => new THREE.MeshStandardMaterial({ color: jobColor(job), roughness: 0.55,
+    metalness: 0.05, transparent: true, opacity: o, depthWrite: o > 0.5,
+    polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 });   // lines on faces win
+  const mesh = new THREE.Mesh(unit, material(0.35));
   const edges = new THREE.LineSegments(new THREE.EdgesGeometry(unit),
     new THREE.LineBasicMaterial({ color: 0x0d1117, transparent: true, opacity: 0.55 }));
-  mesh.add(edges);
+  const fill = new THREE.Mesh(unit, material(0.94));
+  const line = new THREE.LineLoop(nowRing, new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true }));
+  mesh.add(edges, fill, line);
   const label = faceLabel(job.id, gbc(mpc));
   world.add(mesh); world.add(label);
-  const v = { key, mesh, label, job, dying: false, opacity: 0,
+  const v = { key, mesh, fill, line, label, job, dying: false, opacity: 0, ran: 1, tran: 1,
     pos: from ? from.clone() : new THREE.Vector3(), scale: new THREE.Vector3(0.01, 0.01, 0.01),
     tpos: new THREE.Vector3(), tscale: new THREE.Vector3(1, 1, 1) };
   mesh.userData.view = v;
@@ -386,7 +395,9 @@ function apply(s) {
         if (q) { q.dying = true; q.instant = true; }
       }
       v.job = j;
-      const w = sx(j.cpus), h = sy(j.mem), d = sz(j.end - s.now);
+      const w = sx(j.cpus), h = sy(j.mem), d = sz(j.minutes * 60);
+      v.tran = Math.min(1, sz(s.now - (j.end - j.minutes * 60)) / Math.max(d, 1e-9));
+      if (v.opacity === 0) v.ran = v.tran;           // new: no fill animation
       const o = nv.group.getWorldPosition(new THREE.Vector3());
       place(v, o.x + sx(cx), o.y + sy(cy), o.z - d, w, h, d);
       cx += j.cpus; cy += j.mem;
@@ -490,7 +501,8 @@ function select(v) {
     ["State", running ? `running on ${j.node}` + (j.nodes > 1 ? ` (+${j.nodes - 1} nodes)` : "") : `waiting (${j.reason})`],
     ["CPUs", (+j.cpus).toFixed(j.cpus % 1 ? 1 : 0)], ["Memory", gb(j.mem)], ["Memory / CPU", gbc(mpc)],
     ["Time limit", dur(j.minutes * 60)],
-    running ? ["Time left", dur(j.end - state.now)] : ["Priority", j.priority ?? "–"],
+    ...(running ? [["Run time", dur(state.now - j.end + j.minutes * 60)], ["Time left", dur(j.end - state.now)]]
+                : [["Priority", j.priority ?? "–"]]),
     ["Partition", j.partition || "–"], ["QOS", j.qos],
   ];
   document.getElementById("info-body").innerHTML = rows.map(([k, val]) =>
@@ -517,14 +529,20 @@ function step(dt) {
       v.opacity -= v.instant ? 1 : dt * 2.5;
       if (v.opacity <= 0) {
         world.remove(v.mesh); world.remove(v.label);
-        v.mesh.material.dispose(); v.label.material.map.dispose(); v.label.material.dispose();
+        v.mesh.material.dispose(); v.fill.material.dispose(); v.line.material.dispose(); v.label.material.map.dispose(); v.label.material.dispose();
         if (selected === v) select(null);
         views.delete(key); continue;
       }
     } else v.opacity = Math.min(1, v.opacity + dt * 3);
     v.pos.lerp(v.tpos, k); v.scale.lerp(v.tscale, k);
     v.mesh.position.copy(v.pos); v.mesh.scale.copy(v.scale);
-    v.mesh.material.opacity = 0.94 * v.opacity;
+    v.ran += (v.tran - v.ran) * k;
+    v.fill.scale.z = Math.max(v.ran, 1e-3); v.fill.position.z = 0.5 - v.ran / 2;
+    v.line.position.z = 0.5 - v.ran;
+    v.line.visible = v.ran < 0.995;
+    v.mesh.material.opacity = 0.35 * v.opacity;
+    v.fill.material.opacity = 0.94 * v.opacity;
+    v.line.material.opacity = 0.9 * v.opacity;
     // The label sits on the front face, sized to fit it; on the top face when
     // the front is too low to read (jobs with little memory); hidden if neither fits.
     const fw = v.scale.x, front = Math.min(fw * 0.9, v.scale.y * 1.8),

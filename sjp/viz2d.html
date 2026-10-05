@@ -75,7 +75,6 @@ document.getElementById("to3d").href = "./" + location.search;
 const num = mb => mb >= 10240 ? (mb / 1024).toFixed(0) : (mb / 1024).toFixed(1);
 const gb = mb => num(mb) + " GB";
 const gbc = mb => num(mb) + " GB/C";
-const cpus = n => Math.round(n) + (Math.round(n) === 1 ? " CPU" : " CPUs");
 const dur = s => s >= 86400 ? (s / 86400).toFixed(s >= 864000 ? 0 : 1) + " d"
               : s >= 3600 ? (s / 3600).toFixed(s >= 36000 ? 0 : 1) + " h"
               : Math.max(0, Math.round(s / 60)) + " min";
@@ -161,13 +160,16 @@ function layout(nodes) {
     queue = { x: pad, y: head.bottom + pad + font * 1.8, w: qW, h: H - head.bottom - 3 * pad - font * 1.8 - 90 };
     x = pad * 2 + qW + 20; y = pad; w = W - (pad * 3 + qW + 20);
   }
-  const capW = 92 * Math.max(1, ui * 0.75);      // room for "96 CPUs" at the end of a bar
+  // Room for what is free left of the bars, and used / total right of them.
+  g.font = `400 ${font * 0.95}px system-ui`;
+  const widest = f => Math.max(...nodes.map(n => g.measureText(f(n)).width), 0) + 10;
+  const freeW = widest(n => `${gb(n.mem)} free`), usedW = widest(n => `${gb(n.mem)} / ${gb(n.mem)}`);
   const rows = new Map(), heads = [];
   for (const [part, ns] of groups) {
     heads.push({ text: part, x, y: y + groupH * 0.55 }); y += groupH;
     for (const n of ns) {
-      const cy = y + label, top = cy + cardPad, bx = x + cardPad;
-      rows.set(n.name, { node: n, x: bx, w: w - capW - 2 * cardPad, label: y,
+      const cy = y + label, top = cy + cardPad, bx = x + cardPad + freeW;
+      rows.set(n.name, { node: n, x: bx, w: w - freeW - usedW - 2 * cardPad, label: y,
         cpuY: top, gapY: top + barH, memY: top + barH + bandH, barH,
         card: { x, y: cy, w, h: cardH } });
       y += label + cardH + cardGap;
@@ -175,7 +177,7 @@ function layout(nodes) {
   }
   CH = Math.max(H, y + pad + (tall ? 110 * ui : 0));
   cv.width = W * dpr; cv.height = CH * dpr; cv.style.width = W + "px"; cv.style.height = CH + "px";
-  L = { tall, queue, rows, heads, font, capW };
+  L = { tall, queue, rows, heads, font };
 }
 
 // ------------------------------------------------------------------ jobs
@@ -278,7 +280,8 @@ function draw() {
   // The queue's heading.
   if (state.pending_total) text(`waiting (${state.pending_total})`, L.queue.x, L.queue.y - f * 0.9, f * 1.05, 650);
   for (const h of L.heads) text(h.text, h.x, h.y, f * 1.25, 650, "#8b949e");
-  // Each node: name, two empty bars, then the free space at their ends.
+  // Each node: name, two empty bars, the free space at their ends; free
+  // amounts on the left, used / total on the right.
   for (const r of L.rows.values()) {
     const n = r.node, c = r.card;
     g.fillStyle = "#11161d"; roundRect(c.x, c.y, c.w, c.h, 8); g.fill();
@@ -286,22 +289,22 @@ function draw() {
     text(n.name, c.x + 2, r.label + f * 0.7, f * 1.05, 650);
     g.font = `650 ${f * 1.05}px system-ui`; const nw = g.measureText(n.name).width;
     text(`${n.cpus} CPUs · ${gb(n.mem)} · ${gbc(n.mem / n.cpus)}`, c.x + 2 + nw + 10, r.label + f * 0.7, f * 0.9, 400, "#8b949e");
-    for (const [y, cap] of [[r.cpuY, `${n.cpus} CPUs`], [r.memY, gb(n.mem)]]) {
-      g.fillStyle = "#161b22"; roundRect(r.x, y, r.w, r.barH, 4); g.fill();
-      g.strokeStyle = "#30363d"; g.lineWidth = 1; g.stroke();
-      text(cap, r.x + r.w + 10, y + r.barH / 2, f * 0.95, 400, "#8b949e");
-    }
     const used = r.used || [0, 0];
     const fc = Math.max(0, n.cpus - used[0]), fm = Math.max(0, n.mem - used[1]);
+    for (const [y, free, use] of [[r.cpuY, `${Math.round(fc)} free`, `${Math.round(used[0])} / ${n.cpus}`],
+                                  [r.memY, `${gb(fm)} free`, `${gb(used[1])} / ${gb(n.mem)}`]]) {
+      g.fillStyle = "#161b22"; roundRect(r.x, y, r.w, r.barH, 4); g.fill();
+      g.strokeStyle = "#30363d"; g.lineWidth = 1; g.stroke();
+      text(free, r.x - 10, y + r.barH / 2, f * 0.95, 500, "#3fb950", "right");
+      text(use, r.x + r.w + 10, y + r.barH / 2, f * 0.95, 400, "#8b949e");
+    }
     const fx = r.x + r.w * used[0] / n.cpus, fmx = r.x + r.w * used[1] / n.mem;
     g.fillStyle = "rgba(63,185,80,0.16)";
     g.fillRect(fx, r.cpuY, r.x + r.w - fx, r.barH); g.fillRect(fmx, r.memY, r.x + r.w - fmx, r.barH);
-    // What is left, in words, between the bars. When one runs out first, the
-    // rest of the other is stranded: no job can use it until something ends.
-    const freeTxt = fc < 1 && fm < 1024 ? "full"
-      : fc < 1 ? `CPUs full · ${gb(fm)} memory left over`
-      : fm < 1024 ? `memory full · ${cpus(fc)} left over`
-      : `${cpus(fc)} + ${gb(fm)} (${gbc(fm / fc)}) free`;
+    // Between the bars: the free space's memory per CPU. When one runs out
+    // first, the rest of the other is stranded until something ends.
+    const freeTxt = fc < 1 && fm < 1024 ? "full" : fc < 1 ? "CPUs full"
+      : fm < 1024 ? "memory full" : `${gbc(fm / fc)} free`;
     text(freeTxt, r.x + r.w, r.gapY + (r.memY - r.gapY) / 2, f * 0.85, 500, "#3fb950", "right");
   }
   // Jobs: the band between the bars first, then the two segments, then labels.
