@@ -28,6 +28,10 @@ sjp_config:
     min_idle_share: 0.25           # act only while at least this share of the cluster is idle
   pin:
     time_aware: false              # true: weigh time limits when choosing a node
+  recheck:
+    interval: 60                   # seconds between re-placing pending jobs; 0 = off
+  starvation:
+    enabled: true                  # widen jobs that wait past their budget to every partition that fits
 
 sjp_service_enabled: true
 sjp_service_state: started

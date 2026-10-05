@@ -52,6 +52,7 @@ class Daemon:
         self.qos_caps: dict = {}     # QOS -> (per_user, per_account, read at), a cache
         self.pulse_record: dict = {} # QOS -> base caps while a pulse is on (state_file)
         self.widened: set = set()    # jobs the starvation guard already widened
+        self.recheck_at = 0.0        # when pending jobs' partitions were last rechecked
         self.flexed: dict = {}       # jobid -> (when, node, cpus, mem): moved to the flex
                                      # QOS this run, not seen running yet
         self.flex_seen: dict = {}    # jobid -> when flex mode last moved it either way
@@ -342,6 +343,10 @@ class Daemon:
                     self.release_pins(q, time.time())
                 if self.cfg["starvation"]["enabled"]:
                     self.widen_starving(q, time.time())
+                iv_re = self.cfg["recheck"]["interval"]
+                if iv_re and time.time() - self.recheck_at >= iv_re:
+                    self.recheck_at = time.time()
+                    self.recheck(q, time.time())
             except Exception as e:
                 if self.sh.note_error("queue", e):   # log each distinct failure once
                     self.log("error", where="queue", detail=repr(e))
@@ -672,6 +677,64 @@ class Daemon:
                         self.blocked(("enforce",)), lambda: self.apply_retrying(argv),
                         jobid=jid, before=",".join(current), after=",".join(wide))
         self.widened &= {j["jobid"] for j in jobs}
+
+    # Pending reasons a recheck can help with: the job could start somewhere.
+    RECHECK_REASONS = ("None", "Resources", "Priority")
+
+    def recheck(self, jobs, now):
+        """Make sjp's choice again for every pending job it placed: jobs that
+        started, ended or were cancelled since have changed what fits where. A
+        job whose choice changed is moved if a node there has room for it, as
+        the plugin would place it now. Highest priority first; each move is
+        counted against a node's free space, so the moves never add up to more
+        than the cluster can start. Jobs past their starvation budget are left
+        to the starvation guard."""
+        s = self.snap
+        if s is None:
+            return
+        c = self.cfg["starvation"]
+        nf = {n: list(v) for n, v in s["node_free"].items()}
+        for j in sorted(jobs, key=lambda j: -j.get("priority", 0)):
+            jid = j["jobid"]
+            if (j["state"] != "PD" or j["reason"] not in self.RECHECK_REASONS
+                    or "_" in jid or j.get("gpu") or j.get("features")
+                    or j.get("nnodes", 1) > 1 or j.get("req_nodes") or jid in self.widened):
+                continue
+            cpus = max(1, j["cpus"])
+            mem = max(j.get("req_mem") or j["mem"], 512)
+            kind = "fat" if mem / cpus >= c["fat_ratio_threshold"] else "slim"
+            waited = now - (j.get("eligible") or now)
+            if c["enabled"] and waited >= c["budget_hours"][kind] * 3600:
+                continue
+            current = [p for p in j["partition"].split(",") if p]
+            if not current or not set(current) <= set(s["total"]):
+                continue
+            would = policy.plugin_lookup(s["table"], s["cap"], self.cfg, cpus, mem,
+                                         j["timelimit"])[0]
+            if not would or set(would) == set(current):
+                continue
+            free = policy.free_for({n: tuple(v) for n, v in nf.items()}, s.get("later"),
+                                   now, j["timelimit"])
+            fits = [n for n, (fc, fm, ps) in free.items()
+                    if fc >= cpus and fm >= mem and set(ps) & set(would)]
+            if not fits:
+                continue
+            try:
+                note = slurm.admin_comment(jid)
+            except slurm.SlurmError:
+                continue
+            if not slurm.sjp_marks(note).keys() & {"placed", "released"}:
+                continue                 # placed by the site's own rule
+            node = min(fits, key=lambda n: free[n][0])      # the tightest fit
+            nf[node][0] -= cpus
+            nf[node][1] -= mem
+            argv = slurm.cmd_set_job_partitions(jid, would) + [
+                f"admincomment={slurm.set_mark(note, 'moved', ','.join(current) + '>' + ','.join(would))}"]
+            self.intend("move_partitions", slurm.cmdline(argv),
+                        f"pending {waited / 60:.0f} min ({j['reason']}); sjp now chooses "
+                        f"{','.join(would)}, and {cpus} CPUs x {mem} MB fit on {node} now",
+                        self.blocked(("enforce",)), lambda argv=argv: self.apply_retrying(argv),
+                        jobid=jid, before=",".join(current), after=",".join(would), node=node)
 
     @staticmethod
     def apply_retrying(argv, tries=3, wait=1.0) -> bool:

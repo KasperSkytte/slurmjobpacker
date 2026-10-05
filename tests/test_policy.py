@@ -282,6 +282,37 @@ check("a dry run only says what it would do", not w["1"]["executed"]
 d.widen_starving(jobs, now)
 check("each job is considered once", d.log_fh.getvalue().count("widen_partitions") == 2)
 
+print("\n10g. the recheck moves pending jobs whose choice changed, as many as fit")
+cfg = config.defaults()
+d = daemon.Daemon(cfg); d.log_fh = io.StringIO()
+d.snap = dict(total=TOTAL, table={}, cap={}, later=None, node_free={
+    "s1": (0, 0, ("slim1",)), "s2": (32, 100000, ("slim2",)), "f1": (24, 200000, ("fat1",))})
+real_ac, real_lookup = slurm.admin_comment, policy.plugin_lookup
+slurm.admin_comment = lambda jid: "" if jid == "3" else "sjp:placed=slim1"
+policy.plugin_lookup = lambda *a: (["fat1"], (0, 0, 0), False)
+def rjob(jid, part="slim1", waited_min=10, prio=10, **kw):
+    return dict(dict(jobid=jid, state="PD", reason="Resources", partition=part, cpus=8,
+                     mem=32768, req_mem=32768, eligible=now - waited_min * 60, gpu=False,
+                     req_nodes="", priority=prio, timelimit=60), **kw)
+jobs = [rjob("6", prio=10),                    # no room left once 1, 2 and 4 have moved
+        rjob("1", prio=30), rjob("4", prio=20),
+        rjob("2", waited_min=0, reason="None", prio=25),  # just submitted: rechecked too
+        rjob("3"),                             # placed by the site's own rule
+        rjob("5", part="fat1"),                # already where sjp would put it
+        rjob("7", reason="Dependency"),        # cannot start yet anyway
+        rjob("8", waited_min=300)]             # past its budget: the starvation guard's
+try:
+    d.recheck(jobs, now)
+finally:
+    slurm.admin_comment, policy.plugin_lookup = real_ac, real_lookup
+recs = [json.loads(l) for l in d.log_fh.getvalue().splitlines()]
+mv = {r["jobid"]: r for r in recs if r.get("action") == "move_partitions"}
+check("pending jobs move, highest priority first, only as many as fit",
+      sorted(mv) == ["1", "2", "4"], str(sorted(mv)))
+check("the move is marked in AdminComment",
+      "admincomment=sjp:placed=slim1;moved=slim1>fat1" in mv["1"]["cmd"] and mv["1"]["node"] == "f1",
+      mv["1"]["cmd"])
+
 print("\n10f. a setting's old name keeps working")
 import tomllib as _t
 old = config._merge(config.DEFAULTS, config.upgrade(_t.loads("[limits]\nraise_above = 0.1\n")))
