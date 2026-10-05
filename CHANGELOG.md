@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.12.2](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.12.1...v1.12.2) (2026-10-05)
+
+
+### Bug Fixes
+
+* show the top 50 waiting jobs in squeue's order in both views ([4f8d019](https://github.com/KasperSkytte/slurmjobpacker/commit/4f8d01991b0e2260a79bd1096e509b38c91a7d1c))
+
 ## [1.12.1](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.12.0...v1.12.1) (2026-10-05)
 
 
