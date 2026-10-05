@@ -25,6 +25,13 @@ from . import config, policy, slurm
 HTML = os.path.join(os.path.dirname(os.path.abspath(__file__)), "viz.html")
 HTML_2D = os.path.join(os.path.dirname(os.path.abspath(__file__)), "viz2d.html")
 HORIZON = 14 * 86400          # the depth of a node: two weeks, Slurm's usual MaxTime
+TOP = 50                      # waiting jobs shown
+
+
+def queue_order(j):
+    """squeue's order: highest priority first, then lowest job ID."""
+    head = str(j["id"]).partition("_")[0]
+    return -(j.get("priority") or 0), int(head) if head.isdigit() else 0, str(j["id"])
 
 
 def shown_partitions(cfg, parts: dict, nodes: dict) -> list[str]:
@@ -70,9 +77,9 @@ def build_state(cfg, nodes: dict, parts: dict, jobs: list, now: float, mode="liv
         elif j["state"] == "PD":
             pending.append(dict(info, cpus=j["cpus"], mem=j.get("req_mem") or j["mem"],
                                 reason=j["reason"], priority=j["priority"]))
-    pending.sort(key=lambda j: -j["priority"])
+    pending.sort(key=queue_order)
     return dict(mode=mode, now=now, horizon=HORIZON, nodes=list(shown.values()),
-                running=running, pending=pending[:120], pending_total=len(pending))
+                running=running, pending=pending[:TOP], pending_total=len(pending), top=TOP)
 
 
 class Live:
@@ -242,8 +249,8 @@ class Demo:
                         running=[{k: v for k, v in j.items() if k not in hide}
                                  for j in self.running],
                         pending=[{k: v for k, v in j.items() if k not in hide}
-                                 for j in self.pending[:120]],
-                        pending_total=len(self.pending))
+                                 for j in sorted(self.pending, key=queue_order)[:TOP]],
+                        pending_total=len(self.pending), top=TOP)
 
 
 def serve(source, bind: str, port: int):

@@ -375,7 +375,11 @@ function place(v, x, y, z, w, h, d) {
 }
 
 let state = null;
-const queueLabel = textSprite(["waiting"], { size: 64 }); world.add(queueLabel);
+let queueLabel = textSprite(["Waiting"], { size: 64 }), queueText = "Waiting"; world.add(queueLabel);
+queueLabel.material.depthTest = false; queueLabel.renderOrder = 1;
+// "Waiting", or which part of a longer queue is shown.
+const waitingTitle = s => s.pending_total > s.pending.length
+  ? `Waiting (top ${s.pending.length} by priority)` : "Waiting";
 function apply(s) {
   state = s; horizon = s.horizon || horizon;
   for (const n of s.nodes) nodeMpc[n.name] = n.mem / n.cpus;
@@ -437,7 +441,7 @@ function apply(s) {
   }
   // The queue, in front of the nodes, highest priority first.
   let qx = queueLeft, qz = queueBehind ? -sceneDepth - QUEUE_BACK : 0, rowDepth = 0;
-  for (const j of s.pending.slice(0, 30)) {
+  for (const j of s.pending) {
     const key = "q:" + j.id; seen.add(key);
     let v = views.get(key);
     if (!v) v = jobView(key, j, new THREE.Vector3(qx, NODE_H + 4, qz));
@@ -446,6 +450,12 @@ function apply(s) {
     if (qx + w > queueLeft + queueWidth && qx > queueLeft) { qx = queueLeft; qz -= rowDepth + 0.8; rowDepth = 0; }
     place(v, qx, queueBehind ? QUEUE_UP : 0, qz - d, w, h, d);
     rowDepth = Math.max(rowDepth, d); qx += w + 0.6;
+  }
+  if (waitingTitle(s) !== queueText) {
+    queueText = waitingTitle(s);
+    world.remove(queueLabel); queueLabel.material.map.dispose(); queueLabel.material.dispose();
+    queueLabel = textSprite([queueText], { size: 64 }); world.add(queueLabel);
+    queueLabel.material.depthTest = false; queueLabel.renderOrder = 1;   // never hidden by a box
   }
   queueLabel.center.set(0, 1);
   queueLabel.position.set(queueLeft, queueBehind ? QUEUE_UP - 0.35 : -0.35,

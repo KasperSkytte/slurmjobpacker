@@ -591,6 +591,11 @@ over = [n["name"] for n in ds["nodes"]
 check("the demo keeps its cluster busy without overfilling a node",
       len(ds["running"]) > 20 and not over, f"{len(ds['running'])} running, overfull: {over}")
 
+q = [dict(id="12", priority=900), dict(id="9_[1-4]", priority=1500),
+     dict(id="10", priority=900), dict(id="9_7", priority=1500), dict(id="100", priority=900)]
+check("waiting jobs are listed as squeue lists them: priority, then job ID",
+      [j["id"] for j in sorted(q, key=viz.queue_order)] == ["9_7", "9_[1-4]", "10", "12", "100"],
+      str([j["id"] for j in sorted(q, key=viz.queue_order)]))
 check("the 2D page is shipped too, and can be driven frame by frame",
       os.path.exists(viz.HTML_2D) and "window.sjpViz" in open(viz.HTML_2D).read())
 

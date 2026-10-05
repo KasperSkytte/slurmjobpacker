@@ -278,7 +278,9 @@ function draw() {
   if (!L || !state) return;
   const f = L.font;
   // The queue's heading.
-  if (state.pending_total) text(`waiting (${state.pending_total})`, L.queue.x, L.queue.y - f * 0.9, f * 1.05, 650);
+  if (state.pending_total) text(state.pending_total > state.pending.length
+    ? `Waiting (top ${state.pending.length} by priority)` : "Waiting",
+    L.queue.x, L.queue.y - f * 0.9, f * 1.05, 650);
   for (const h of L.heads) text(h.text, h.x, h.y, f * 1.25, 650, "#8b949e");
   // Each node: name, two empty bars, the free space at their ends; free
   // amounts on the left, used / total on the right.
