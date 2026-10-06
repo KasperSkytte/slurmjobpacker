@@ -217,10 +217,42 @@ def set_mark(comment: str, key: str, value: str, drop=()) -> str:
     return comment[:i + 4] + ";".join(parts + [f"{key}={value}"])
 
 
+def rename_mark(comment: str, old: str, new: str, value: str | None = None,
+                drop=()) -> str:
+    """comment with its sjp mark old renamed to new, in the same place (and
+    given a new value, if one is given), and without the keys in drop:
+    "sjp:pin=n1;from=a" -> "sjp:released=n1;from=a"."""
+    i = comment.find("sjp:")
+    if i < 0:
+        return comment
+    out = []
+    for p in comment[i + 4:].split(";"):
+        k, _, v = p.partition("=")
+        if k in drop or not p:
+            continue
+        out.append(f"{new}={v if value is None else value}" if k == old else p)
+    return comment[:i + 4] + ";".join(out)
+
+
 def admin_comment(jobid: str) -> str:
     """A job's AdminComment, which squeue cannot print."""
     txt = _run(["scontrol", "show", "job", jobid, "--oneliner"])
     return _kv(txt).get("AdminComment", "") if txt.strip() else ""
+
+
+def admin_comments() -> dict:
+    """Every job's AdminComment, by job ID as squeue prints it ("12", "12_3",
+    "12_[4-9]"): one call for the whole queue rather than one per job."""
+    out = {}
+    for line in _run(["scontrol", "show", "jobs", "--oneliner"], timeout=20.0).splitlines():
+        kv = _kv(line)
+        if "JobId" not in kv:
+            continue
+        task = kv.get("ArrayTaskId", "")
+        jid = kv["JobId"] if not task else \
+            f"{kv['ArrayJobId']}_{task if task.isdigit() else '[' + task + ']'}"
+        out[jid] = kv.get("AdminComment", "")
+    return out
 
 
 # Pending reasons, exactly as squeue prints them (checked against the 24.11 and
@@ -331,6 +363,16 @@ def cmd_set_job_partitions(jobid: str, parts: list[str]) -> list[str]:
 def cmd_set_job_qos(jobid: str, qos: str, note: str | None = None) -> list[str]:
     argv = ["scontrol", "update", f"jobid={jobid}", f"qos={qos}"]
     return argv + [f"admincomment={note}"] if note is not None else argv
+
+
+def cmd_pin(jobid: str, node: str, parts: str, note: str) -> list[list[str]]:
+    """Pin a pending job to another node: drop any node requirement, set the
+    partitions the node is in, then require the node. In that order, because
+    Slurm checks each change against the job's other settings."""
+    return [["scontrol", "update", f"jobid={jobid}", "reqnodelist="],
+            ["scontrol", "update", f"jobid={jobid}", f"partition={parts}"],
+            ["scontrol", "update", f"jobid={jobid}", f"reqnodelist={node}",
+             f"admincomment={note}"]]
 
 
 def cmd_release_pin(jobid: str, parts: str, note: str) -> list[list[str]]:

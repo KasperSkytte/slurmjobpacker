@@ -26,8 +26,11 @@ sjp_config:
     flex_qos_name: flex            # for flex: create this QOS and allow it for all users,
                                    # e.g. sacctmgr -i modify account root set qos+=flex
     min_idle_share: 0.25           # act only while at least this share of the cluster is idle
+  policy:
+    always_place: false            # true: place jobs even when no node has room now
   pin:
     time_aware: false              # true: weigh time limits when choosing a node
+    wait_for_room: false           # true (with always_place): pin those to the node with room first
   recheck:
     interval: 60                   # seconds between re-placing pending jobs; 0 = off
   starvation:

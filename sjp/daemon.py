@@ -15,6 +15,12 @@ import argparse, collections, json, os, pwd, signal, sys, threading, time
 from . import config, limits, narrate, policy, slurm
 
 
+def hours(sec: float) -> str:
+    """Seconds as hours, the way the plugin writes them in AdminComment."""
+    h = sec / 3600
+    return f"{h:.1f}h" if h < 10 else f"{h:.0f}h"
+
+
 class Shared:
     """Latest snapshots, guarded by one lock. Readers never block on Slurm."""
     def __init__(self):
@@ -70,6 +76,7 @@ class Daemon:
         self.last_pin_sig = None
         self.snap = None          # latest decision surface, for shadowing (a dict)
         self.released: set = set()   # pinned jobs already released or not ours
+        self.waiting: set = set()    # jobs pinned to wait for room (wait_for_room)
         self.uids: dict = {}
         self.seen = None          # job ids already shadowed; None until the first poll
         # Belt and braces: the mode checks below decide what is *attempted*, and
@@ -183,7 +190,10 @@ class Daemon:
         return by_part_total, by_part_free
 
     # Pending reasons under which a job tied to one node is about to start there.
-    CLAIM_REASONS = ("None", "Resources", "Priority", "")
+    # A job pinned to a busy node waits with "ReqNodeNotAvail, May be reserved
+    # for other job"; with UnavailableNodes the node itself is down.
+    BUSY_NODE = "ReqNodeNotAvail, May be reserved for other job"
+    CLAIM_REASONS = ("None", "Resources", "Priority", "", BUSY_NODE)
 
     @staticmethod
     def claim(nodes, jobs):
@@ -238,16 +248,38 @@ class Daemon:
         enforce-mode action. observe shows what enforce would do; advise never pins."""
         return self.cfg["pin"]["enabled"] and self.mode != "advise"
 
+    def wait_active(self) -> bool:
+        """[pin] wait_for_room is in effect: it needs always_place, pins, and the
+        recheck that moves those pins."""
+        return (self.cfg["pin"]["wait_for_room"] and self.cfg["policy"]["always_place"]
+                and self.pin_active() and bool(self.cfg["recheck"]["interval"]))
+
     def node_free(self, nodes, parts) -> dict:
-        """name -> (free cpus, free mem, [batch partitions]) for nodes a job could use."""
+        """name -> (free cpus, free mem, [batch partitions]) for nodes a job could
+        use. Below zero where jobs wait pinned to a node that has no room yet."""
         batch = set(self.batch_partitions(parts, nodes))
         out = {}
         for n, d in nodes.items():
             ps = sorted(p for p in d["partitions"] if p in batch)
             if ps and d["up"] and self.usable_node(d):
-                out[n] = (max(0, d["cpus"] - d["alloc_cpus"]),
-                          max(0, d["mem"] - d["alloc_mem"]), ps)
+                out[n] = (d["cpus"] - d["alloc_cpus"], d["mem"] - d["alloc_mem"], ps)
         return out
+
+    @staticmethod
+    def ends(jobs, now) -> dict:
+        """node -> [(end, cpus, mem)]: what its running jobs release, and when,
+        from their time limits, in order. A job without a limit ends in a year."""
+        out = collections.defaultdict(collections.Counter)
+        for j in jobs:
+            if j["state"] not in ("R", "CF"):
+                continue
+            ns = slurm.expand_hostlist(j.get("nodelist") or "")
+            end = int(j.get("end") or now + 365 * 86400) // 60 * 60
+            for n in ns:
+                out[n][(end, "c")] += j["cpus"] / max(len(ns), 1)
+                out[n][(end, "m")] += j.get("req_mem") or j["mem"]
+        return {n: [(e, round(c[(e, "c")]), c[(e, "m")])
+                    for e in sorted({e for e, _ in c})] for n, c in out.items()}
 
     @staticmethod
     def busy_until(jobs, now) -> dict:
@@ -378,12 +410,16 @@ class Daemon:
                 self.log("error", where="score", detail=e)
             return
         table = policy.build_table(self.cfg, total, free)
+        # [policy] always_place: where jobs go when no node has room, by shape alone
+        full = policy.build_table(self.cfg, total, total) \
+            if self.cfg["policy"]["always_place"] else None
         # Compare the DECISIONS, not the rendered text: the text embeds a
         # timestamp, so comparing it would rewrite the file every tick and force
         # the plugin to reparse on every submission -- the exact churn the
         # write-on-change rule exists to prevent.
         sig = hash(tuple(sorted((k, v_) for k, vs in table.items()
-                                for v_ in (",".join(vs),))))
+                                for v_ in (",".join(vs),)))
+                   + tuple(sorted((k, ",".join(v)) for k, v in (full or {}).items())))
         with self.sh.lock:
             jobs = list(self.sh.jobs)
         nf = self.node_free(nodes, parts)
@@ -392,15 +428,16 @@ class Daemon:
                      queue_at=self.sh.claims_at,
                      tiers={p: parts[p]["tier"] for p in total},
                      room=self.user_room(jobs), enabled=self.pin_active(),
-                     busy=self.busy_until(jobs, now) if self.cfg["pin"]["time_aware"] else None)
+                     busy=self.busy_until(jobs, now) if self.cfg["pin"]["time_aware"] else None,
+                     ends=self.ends(jobs, now) if self.wait_active() else None)
         # Free space goes out always: the plugin places a job only where some
         # node has room for it now, and pins from it when pinning is on.
         pin = state
         pin_sig = hash(repr(pin))
-        self.snap = dict(table=table, cap=policy.caps(total), total=total, free=free,
-                         version=self.version, node_free=state["nodes"],
+        self.snap = dict(table=table, full=full, cap=policy.caps(total), total=total,
+                         free=free, version=self.version, node_free=state["nodes"],
                          tiers=state["tiers"], room=state["room"], busy=state["busy"],
-                         later=state["later"])
+                         later=state["later"], ends=state["ends"])
         # Rewrite when the partition decisions or the free space change, and
         # often enough that the plugin never sees the table or its free space
         # as stale: policy max_age/3, or pin max_age/2.
@@ -413,7 +450,7 @@ class Daemon:
         self.last_sig, self.last_pin_sig = sig, pin_sig
         self.last_write = now
         self.version += 1
-        rendered = policy.render_lua(table, self.cfg, now, self.version, total, pin)
+        rendered = policy.render_lua(table, self.cfg, now, self.version, total, pin, full)
         self.last_rendered = rendered
         if not changed:                      # free space or refresh only: say nothing
             self.intend("write_policy_table", f"write {self.table_path}", "",
@@ -471,6 +508,7 @@ class Daemon:
         if self.snap is None:            # no table yet; try these again next poll
             return
         s = self.snap
+        new = []
         for j in jobs:
             if j["jobid"] in self.seen:
                 continue
@@ -480,41 +518,29 @@ class Daemon:
             if (j.get("gpu") or j.get("features") or j.get("nnodes", 1) > 1
                     or not set(actual) & set(s["cap"])):
                 continue
-            self.log("placement", **self.evaluate(j, actual, s))
+            new.append((j, actual))
+        # Once the plugin acts, its marks say which jobs it placed: read them all at once.
+        notes = None
+        if new and self.mode != "observe":
+            try:
+                notes = slurm.admin_comments()
+            except slurm.SlurmError as e:
+                self.log("error", where="shadow", detail=repr(e))
+                notes = {}
+        for j, actual in new:
+            self.log("placement", **self.evaluate(j, actual, s, notes))
         self.seen = ids
 
-    def evaluate(self, j, actual, s) -> dict:
-        """What sjp would do with one job, as a placement record."""
+    def evaluate(self, j, actual, s, notes=None) -> dict:
+        """What sjp would do with one job, as a placement record. notes: job ID ->
+        AdminComment, to tell the jobs the plugin placed from the others."""
         cpus = max(1, j["cpus"])
         mem = max(j.get("req_mem") or j["mem"], 512)
+        running = j["state"] in ("R", "CF")
+        acted = self.mode != "observe"
         would, key, refit = policy.plugin_lookup(s["table"], s["cap"], self.cfg, cpus, mem,
                                                  j["timelimit"])
-        running = j["state"] in ("R", "CF")
-        if running:
-            verdict = "allowed" if actual[0] in would else "excluded"
-        else:
-            verdict = "same" if set(actual) == set(would) else "different"
-        cost = policy.score_partitions(cpus, mem, s["total"], s["free"], self.demand)
-        why = (f"{cpus}c x {mem // cpus} MB/CPU, {j['timelimit']} min -> bucket "
-               f"{key[0]},{key[1]},{key[2]} of table v{s['version']}: "
-               f"{','.join(s['table'].get(key, []))}")
-        if refit:
-            why += f"; refit to the job's real size -> {','.join(would)}"
-
-        # In advise/enforce the plugin has already acted. A node requirement is
-        # sjp's own pin if the plugin marked it so; read the mark back.
-        sjp_pin = sjp_from = ""
-        if j.get("req_nodes") and self.mode != "observe":
-            try:
-                note = slurm.admin_comment(j["jobid"])
-            except slurm.SlurmError:
-                note = ""
-            marks = slurm.sjp_marks(note)
-            sjp_pin, sjp_from = marks.get("pin", ""), marks.get("from", "")
-        # Recompute against what the job was given: sjp's partitions before the
-        # pin, or, once the plugin acts, the partitions it set.
-        allowed = sjp_from.split(",") if sjp_from else \
-            (actual if self.mode != "observe" else would)
+        table_parts = ",".join(s["table"].get(key, []))
 
         # The node. A running job's own allocation is added back to its node, so
         # the choice is made against the cluster as it was just before it started.
@@ -526,14 +552,52 @@ class Daemon:
         if node in nf:
             fc, fm, ps = nf[node]
             nf[node] = (fc + cpus, fm + mem, ps)
-        pin, pin_parts = None, []
-        room = ((s["room"] or {}).get("by_qos", {}).get(j["qos"]) or {}).get(self.uid(j["user"]))
         # The plugin places a job only if some node in those partitions has room
-        # for it now; otherwise it leaves the job to the site's own rule.
-        placed = sjp_pin != "" or policy.has_room(cpus, mem, allowed, nf)
+        # for it now; with [policy] always_place, otherwise by its shape alone.
+        room = policy.has_room(cpus, mem, would, nf)
+        by_shape = not room and s.get("full") is not None
+        if by_shape:
+            would, key, refit = policy.plugin_lookup(s["full"], s["cap"], self.cfg, cpus, mem,
+                                                     j["timelimit"])
+        if running:
+            verdict = "allowed" if actual[0] in would else "excluded"
+        else:
+            verdict = "same" if set(actual) == set(would) else "different"
+        cost = policy.score_partitions(cpus, mem, s["total"], s["free"], self.demand)
+        why = (f"{cpus}c x {mem // cpus} MB/CPU, {j['timelimit']} min -> bucket "
+               f"{key[0]},{key[1]},{key[2]} of table v{s['version']}: {table_parts}")
+        if by_shape:
+            why += f"; no node there has room now, so by shape (always_place): {','.join(would)}"
+        if refit:
+            why += f"; refit to the job's real size -> {','.join(would)}"
+
+        # In advise/enforce the plugin has already acted; its marks say what it did.
+        marks = {}
+        if acted:
+            if notes is not None:
+                note = notes.get(j["jobid"], "")
+            elif j.get("req_nodes"):
+                try:
+                    note = slurm.admin_comment(j["jobid"])
+                except slurm.SlurmError:
+                    note = ""
+            else:
+                note = ""
+            marks = slurm.sjp_marks(note)
+        sjp_pin, sjp_from = marks.get("pin", ""), marks.get("from", "")
+        sjp_placed = bool(marks.keys() & {"placed", "pin", "released"})
+        # Recompute against what the job was given: sjp's partitions before the
+        # pin, or, once the plugin acts, the partitions it set.
+        allowed = sjp_from.split(",") if sjp_from else (actual if acted else would)
+
+        pin, pin_parts = None, []
+        uroom = ((s["room"] or {}).get("by_qos", {}).get(j["qos"]) or {}).get(self.uid(j["user"]))
+        placed = sjp_placed if acted and notes is not None else \
+            (sjp_pin != "" or room or by_shape)
         if not placed:
             would, verdict = [], "not placed"
-            why += "; no node there has room now, so sjp leaves it to the site's rule"
+            why += "; no node there has room now, so sjp leaves it to the site's rule" \
+                if not room else "; see the sjp line in the slurmctld log for why"
             pin_why = "not placed"
         elif not self.cfg["pin"]["enabled"]:
             pin_why = "pinning is off"
@@ -542,8 +606,16 @@ class Daemon:
         elif (reason := policy.pin_eligible(dict(j, req_nodes="", ntasks=1)
                                             if sjp_pin else j)):
             pin_why = reason
-        elif room is not None and room < cpus:
-            pin_why = f"the user is at the per-user CPU cap ({room} CPUs left)"
+        elif uroom is not None and uroom < cpus:
+            pin_why = f"the user is at the per-user CPU cap ({uroom} CPUs left)"
+        elif not policy.has_room(cpus, mem, allowed, nf):
+            pin_why = "no node has room for it now"
+            if s.get("ends") is not None:
+                pin, pin_parts, eta = policy.soonest_node(cpus, mem, allowed, nf, s["ends"],
+                                                          time.time(), s["tiers"])
+                pin_why = (f"no node has room now; {pin} is expected to have room first, "
+                           f"in {eta / 3600:.1f} h (wait_for_room)" if pin else
+                           "no node there can ever hold it")
         else:
             busy = None
             if s.get("busy") is not None:
@@ -554,16 +626,18 @@ class Daemon:
                                                    self.cfg["pin"]["min_ratio_gain"],
                                                    busy, j["timelimit"])
             pin_why = info["why"]
-            if pin and node:
-                pin_why += ("; Slurm chose the same node" if pin == node
-                            else f"; Slurm chose {node}")
+        if pin and node:
+            pin_why += ("; Slurm chose the same node" if pin == node
+                        else f"; Slurm chose {node}")
         return dict(jobid=j["jobid"], user=j["user"], name=j["name"], state=j["state"],
                     reason=j["reason"] if not running else "", submit=j.get("submit"),
                     node=node, cpus=cpus, mem_mb=mem, minutes=j["timelimit"],
                     actual=",".join(actual), would=",".join(would), verdict=verdict,
                     differences=self.differences(actual, would, cpus, mem, cost, s, running),
-                    placed=placed, pin=pin, pin_parts=",".join(pin_parts), pin_why=pin_why,
-                    acted=self.mode != "observe", sjp_pin=sjp_pin, sjp_from=sjp_from,
+                    placed=placed, room=room, by_shape=by_shape,
+                    pin=pin, pin_parts=",".join(pin_parts), pin_why=pin_why,
+                    acted=acted, sjp_placed=sjp_placed, sjp_pin=sjp_pin, sjp_from=sjp_from,
+                    sjp_eta=marks.get("eta", ""), sjp_by_shape=marks.get("room") == "no",
                     why=why, cost={p: round(c, 1) for c, p in cost})
 
     @staticmethod
@@ -595,7 +669,8 @@ class Daemon:
         for j in jobs:
             jid = j["jobid"]
             if (j["state"] != "PD" or not j.get("req_nodes") or jid in self.released
-                    or not j.get("submit") or now - j["submit"] < after):
+                    or not j.get("submit") or now - j["submit"] < after
+                    or (jid in self.waiting and not self.past_budget(j, now))):
                 continue
             self.released.add(jid)
             try:
@@ -606,9 +681,15 @@ class Daemon:
             marks = slurm.sjp_marks(note)
             if "pin" not in marks:
                 continue                 # the user's own --nodelist: never touch it
+            if "eta" in marks and not self.past_budget(j, now):
+                # waiting for room (wait_for_room): the recheck moves it; it is
+                # released only once the job is past its starvation budget
+                self.released.discard(jid)
+                self.waiting.add(jid)
+                continue
             node, parts = marks["pin"], marks.get("from", "")
-            argvs = slurm.cmd_release_pin(jid, parts,
-                                          note.replace("sjp:pin=", "sjp:released=", 1))
+            argvs = slurm.cmd_release_pin(jid, parts, slurm.rename_mark(
+                note, "pin", "released", drop=("eta",)))
             def release(jid=jid, argvs=argvs):
                 # A release that fails is tried again at the next check.
                 try:
@@ -620,11 +701,26 @@ class Daemon:
                     self.released.discard(jid)
                 return done
             self.intend("release_pin", " && ".join(slurm.cmdline(a) for a in argvs),
-                        f"pinned at submission but still pending after "
-                        f"{now - j['submit']:.0f} s ({j['reason']})",
+                        (f"waiting for room on {node} past its starvation budget "
+                         f"({j['reason']})") if "eta" in marks else
+                        (f"pinned at submission but still pending after "
+                         f"{now - j['submit']:.0f} s ({j['reason']})"),
                         None if self.mode == "enforce" else f"mode={self.mode}",
                         release, jobid=jid, node=node, parts=parts)
-        self.released &= {j["jobid"] for j in jobs}
+        live = {j["jobid"] for j in jobs}
+        self.released &= live
+        self.waiting &= live
+
+    def past_budget(self, j, now) -> bool:
+        """Whether a pending job has waited longer than its [starvation] budget
+        (never, with the starvation guard off)."""
+        c = self.cfg["starvation"]
+        if not c["enabled"] or not j.get("eligible"):
+            return False
+        cpus = max(1, j["cpus"])
+        kind = "fat" if (j.get("req_mem") or j["mem"]) / cpus >= c["fat_ratio_threshold"] \
+            else "slim"
+        return now - j["eligible"] >= c["budget_hours"][kind] * 3600
 
     # Pending reasons a wider partition list can help with.
     WIDEN_REASONS = ("Resources", "Priority")
@@ -679,65 +775,118 @@ class Daemon:
         self.widened &= {j["jobid"] for j in jobs}
 
     # Pending reasons a recheck can help with: the job could start somewhere.
-    RECHECK_REASONS = ("None", "Resources", "Priority")
+    RECHECK_REASONS = ("None", "Resources", "Priority", BUSY_NODE)
 
     def recheck(self, jobs, now):
         """Make sjp's choice again for every pending job it placed: jobs that
         started, ended or were cancelled since have changed what fits where. A
-        job whose choice changed is moved if a node there has room for it, as
-        the plugin would place it now. Highest priority first; each move is
-        counted against a node's free space, so the moves never add up to more
-        than the cluster can start. Jobs past their starvation budget are left
-        to the starvation guard."""
+        job whose choice changed moves there if a node there has room for it
+        now, dropping any pin it waited on. With [pin] wait_for_room, a job
+        that still cannot start is pinned to the node now expected to have room
+        for it first. Highest priority first; each move is counted against a
+        node's free space, so the moves never add up to more than the cluster
+        can start. Jobs past their starvation budget are left to the
+        starvation guard."""
         s = self.snap
         if s is None:
             return
-        c = self.cfg["starvation"]
+        wait = s.get("ends") is not None
         nf = {n: list(v) for n, v in s["node_free"].items()}
+        notes = None
         for j in sorted(jobs, key=lambda j: -j.get("priority", 0)):
             jid = j["jobid"]
             if (j["state"] != "PD" or j["reason"] not in self.RECHECK_REASONS
                     or "_" in jid or j.get("gpu") or j.get("features")
-                    or j.get("nnodes", 1) > 1 or j.get("req_nodes") or jid in self.widened):
-                continue
-            cpus = max(1, j["cpus"])
-            mem = max(j.get("req_mem") or j["mem"], 512)
-            kind = "fat" if mem / cpus >= c["fat_ratio_threshold"] else "slim"
-            waited = now - (j.get("eligible") or now)
-            if c["enabled"] and waited >= c["budget_hours"][kind] * 3600:
+                    or j.get("nnodes", 1) > 1 or jid in self.widened
+                    or self.past_budget(j, now)):
                 continue
             current = [p for p in j["partition"].split(",") if p]
             if not current or not set(current) <= set(s["total"]):
                 continue
+            if notes is None:            # every job's marks, read once
+                try:
+                    notes = slurm.admin_comments()
+                except slurm.SlurmError as e:
+                    self.log("error", where="recheck", detail=repr(e))
+                    return
+            note = notes.get(jid, "")
+            marks = slurm.sjp_marks(note)
+            if not marks.keys() & {"placed", "released", "pin"}:
+                continue                 # placed by the site's own rule
+            pinned = j.get("req_nodes") or ""
+            if pinned and "eta" not in marks:
+                continue                 # the user's own --nodelist, or a pin release_pins handles
+            # sjp's own choice, before any pin narrowed it to one node's partitions
+            base = [p for p in marks.get("from", "").split(",") if p] \
+                if pinned or "pin" in marks else current
+            base = base or current
+            if not pinned and "pin" in marks:
+                # the pin went, but an earlier move did not finish: tidy the mark
+                note = slurm.rename_mark(note, "pin", "released", drop=("eta",))
+                marks = slurm.sjp_marks(note)
+            cpus = max(1, j["cpus"])
+            mem = max(j.get("req_mem") or j["mem"], 512)
+            if pinned in nf:             # its own claim on the node it waits for
+                nf[pinned][0] += cpus
+                nf[pinned][1] += mem
             would = policy.plugin_lookup(s["table"], s["cap"], self.cfg, cpus, mem,
                                          j["timelimit"])[0]
-            if not would or set(would) == set(current):
-                continue
             free = policy.free_for({n: tuple(v) for n, v in nf.items()}, s.get("later"),
                                    now, j["timelimit"])
             fits = [n for n, (fc, fm, ps) in free.items()
                     if fc >= cpus and fm >= mem and set(ps) & set(would)]
-            if not fits:
+            waited = now - (j.get("eligible") or now)
+            if fits and (pinned or set(would) != set(current)):
+                node = min(fits, key=lambda n: free[n][0])      # the tightest fit
+                nf[node][0] -= cpus
+                nf[node][1] -= mem
+                moved = ",".join(base) + ">" + ",".join(would)
+                if pinned:
+                    note2 = slurm.set_mark(slurm.rename_mark(note, "pin", "released",
+                                                             drop=("eta",)), "moved", moved)
+                    argvs = slurm.cmd_release_pin(jid, ",".join(would), note2)
+                else:
+                    argvs = [slurm.cmd_set_job_partitions(jid, would) + [
+                        f"admincomment={slurm.set_mark(note, 'moved', moved)}"]]
+                self.intend("move_partitions", " && ".join(slurm.cmdline(a) for a in argvs),
+                            f"pending {waited / 60:.0f} min ({j['reason']}); sjp now chooses "
+                            f"{','.join(would)}, and {cpus} CPUs x {mem} MB fit on {node} now"
+                            + (f"; no longer waiting for {pinned}" if pinned else ""),
+                            self.blocked(("enforce",)),
+                            lambda argvs=argvs: all([self.apply_retrying(a) for a in argvs]),
+                            jobid=jid, before=",".join(base), after=",".join(would), node=node)
                 continue
-            try:
-                note = slurm.admin_comment(jid)
-            except slurm.SlurmError:
+            target = None
+            if wait and not fits and not policy.pin_eligible(dict(j, req_nodes="")):
+                target, parts, eta = policy.soonest_node(cpus, mem, base, free, s["ends"], now,
+                                                         s["tiers"])
+            if not target or target == pinned:
+                if pinned in nf:         # stays where it waits
+                    nf[pinned][0] -= cpus
+                    nf[pinned][1] -= mem
                 continue
-            if not slurm.sjp_marks(note).keys() & {"placed", "released"}:
-                continue                 # placed by the site's own rule
-            node = min(fits, key=lambda n: free[n][0])      # the tightest fit
-            nf[node][0] -= cpus
-            nf[node][1] -= mem
-            argv = slurm.cmd_set_job_partitions(jid, would) + [
-                f"admincomment={slurm.set_mark(note, 'moved', ','.join(current) + '>' + ','.join(would))}"]
-            self.intend("move_partitions", slurm.cmdline(argv),
-                        f"pending {waited / 60:.0f} min ({j['reason']}); sjp now chooses "
-                        f"{','.join(would)}, and {cpus} CPUs x {mem} MB fit on {node} now",
-                        self.blocked(("enforce",)), lambda argv=argv: self.apply_retrying(argv),
-                        jobid=jid, before=",".join(current), after=",".join(would), node=node)
+            nf[target][0] -= cpus
+            nf[target][1] -= mem
+            # placed=a,b -> pin=node;from=a,b, where the mark was
+            if "pin" in marks:
+                note2 = slurm.rename_mark(note, "pin", "pin", target)
+            else:
+                note2 = slurm.rename_mark(note, "released" if "released" in marks else "placed",
+                                          "pin", target)
+            note2 = slurm.set_mark(slurm.set_mark(note2, "from", ",".join(base)),
+                                   "eta", hours(eta))
+            argvs = slurm.cmd_pin(jid, target, ",".join(parts), note2)
+            self.intend("pin_waiting", " && ".join(slurm.cmdline(a) for a in argvs),
+                        f"pending {waited / 60:.0f} min ({j['reason']}); no node in "
+                        f"{','.join(base)} has room for {cpus} CPUs x {mem} MB now; {target} "
+                        f"is expected to have room first, in {eta / 3600:.1f} h"
+                        + (f" (was {pinned})" if pinned else ""),
+                        self.blocked(("enforce",)),
+                        lambda argvs=argvs: all([self.apply_retrying(a) for a in argvs]),
+                        jobid=jid, before=pinned, node=target, parts=",".join(parts))
 
     @staticmethod
-    def apply_retrying(argv, tries=3, wait=1.0) -> bool:
+    def apply_retrying(argv, tries=4, wait=2.0) -> bool:
         """slurm.apply, for job updates. Slurm answers some updates with EAGAIN
         ("Resource temporarily unavailable") while it is busy with the job, and
         the same update succeeds a moment later. A job that has started in the

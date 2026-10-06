@@ -100,7 +100,8 @@ def reserved_before(later, now, minutes) -> dict:
 
 def free_for(node_free, later, now, minutes):
     """node_free less reserved_before(): the free space a job of this time
-    limit can count on."""
+    limit can count on. Not floored at zero: soonest_node needs to know how
+    far below it a node is."""
     taken = reserved_before(later, now, minutes)
     if not taken:
         return node_free
@@ -108,7 +109,7 @@ def free_for(node_free, later, now, minutes):
     for n, (c, m) in taken.items():
         if n in out:
             fc, fm, ps = out[n]
-            out[n] = (max(0, fc - c), max(0, fm - m), ps)
+            out[n] = (fc - c, fm - m, ps)
     return out
 
 
@@ -194,6 +195,40 @@ def pick_node(cpus, mem_mb, allowed, node_free, tiers, demand, min_gain=1.0,
         return None, [], info
     parts = sorted(p for p in node_free[best][2] if p in allowed)
     return best, parts, info
+
+
+def soonest_node(cpus, mem_mb, allowed, node_free, ends, now, tiers):
+    """The node a job that cannot start now is expected to have room on first:
+    its free space (which counts the jobs already waiting there, so it can be
+    below zero) plus what its running jobs release as they reach their time
+    limits. Ties go to the higher PriorityTier, then the name. lua/sjp.lua's
+    soonest_node mirrors it.
+
+    node_free: name -> (free_cpus, free_mem_mb, [partitions]).
+    ends: name -> [(end, cpus, mem_mb)], sorted by end.
+    Returns (node or None, partitions for the pinned job, seconds until room).
+    """
+    allowed = set(allowed)
+    best = None
+    for n, (fc, fm, ps) in node_free.items():
+        mine = sorted(p for p in ps if p in allowed)
+        if not mine:
+            continue
+        at = now if fc >= cpus and fm >= mem_mb else None
+        for end, c, m in ends.get(n, ()):
+            if at is not None:
+                break
+            fc, fm = fc + c, fm + m
+            if fc >= cpus and fm >= mem_mb:
+                at = max(end, now)
+        if at is None:
+            continue                     # never enough there, even when it empties
+        key = (at, -max(tiers.get(p, 1) for p in mine), n)
+        if best is None or key < best[0]:
+            best = (key, n, mine)
+    if best is None:
+        return None, [], 0.0
+    return best[1], best[2], best[0][0] - now
 
 
 # Pending reasons under which a job cannot start at once whatever the node.
@@ -302,7 +337,8 @@ def _reps(edges):
     return out
 
 
-def render_lua(table, cfg, generated_at, version, nodes_by_part=None, pin=None) -> str:
+def render_lua(table, cfg, generated_at, version, nodes_by_part=None, pin=None,
+               full=None) -> str:
     """Emit the table as Lua source, so the plugin parses it with the interpreter
     it already has: no JSON library, no dependency, no parser to get wrong.
 
@@ -326,6 +362,13 @@ def render_lua(table, cfg, generated_at, version, nodes_by_part=None, pin=None) 
     for (i, j, k), parts in sorted(table.items()):
         lines.append('    ["%d,%d,%d"] = "%s",' % (i, j, k, ",".join(parts)))
     lines.append("  },")
+    if full is not None:
+        # [policy] always_place: where each shape goes when no node has room,
+        # chosen as if the cluster were empty
+        lines += ["  always = true,", "  tf = {"]
+        for (i, j, k), parts in sorted(full.items()):
+            lines.append('    ["%d,%d,%d"] = "%s",' % (i, j, k, ",".join(parts)))
+        lines.append("  },")
     if pin:
         lines += render_pin(cfg, pin)
     lines += ["}", ""]
@@ -359,6 +402,13 @@ def render_pin(cfg, pin) -> list[str]:
         for n, rs in sorted(pin["later"].items()):
             out.append('      ["%s"] = {%s},' % (n, ", ".join(
                 "{%d, %d, %d}" % r for r in sorted(rs))))
+        out.append("    },")
+    if pin.get("ends") is not None:
+        # [pin] wait_for_room: what each node's running jobs release, and when:
+        # node -> {end, cpus, mem}, ... in order
+        out += ["    wait = true,", "    ends = {"]
+        for n, es in sorted(pin["ends"].items()):
+            out.append('      ["%s"] = {%s},' % (n, ", ".join("{%d, %d, %d}" % e for e in es)))
         out.append("    },")
     if pin.get("busy") is not None:
         # [pin] time_aware: when each node's running jobs end, as epoch seconds

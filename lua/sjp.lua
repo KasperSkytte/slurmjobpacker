@@ -130,13 +130,14 @@ local function packed_choice(mem_mb, cpus, minutes)
     local i = bucket(mem_mb / cpus, tbl.mpc_edges)
     local j = bucket(cpus, tbl.cpu_edges)
     local k = bucket(minutes / 60, tbl.wt_edges)
-    local parts = tbl.t[string.format("%d,%d,%d", i, j, k)]
+    local key = string.format("%d,%d,%d", i, j, k)
+    local parts = tbl.t[key]
     if type(parts) ~= "string" or parts == "" then return nil, "no entry" end
     local kept = keep_feasible(parts, tbl, mem_mb, cpus)
     if type(kept) ~= "string" or kept == "" then return nil, "infeasible" end
     local note = ""
     if kept ~= parts then note = " refit" end
-    return kept, string.format("v%d b%d,%d,%d%s", tbl.version or 0, i, j, k, note), tbl, parts
+    return kept, string.format("v%d b%s%s", tbl.version or 0, key, note), tbl, parts, key
 end
 
 -- ---------------------------------------------------------------- node pins
@@ -198,7 +199,8 @@ end
 -- sjpd has not seen yet and the reservations that start before a job of this
 -- time limit would end (all of them when minutes is nil, a job without a
 -- limit). sjpd has already taken out the reservations that are active now.
-local function free_of(pin, name, minutes)
+-- Below zero where jobs wait pinned to a node with no room yet.
+local function free_raw(pin, name, minutes)
     local n = pin.nodes[name]
     local cc, cm = claimed(pin, name)
     local fc, fm = n[1] - cc, n[2] - cm
@@ -209,7 +211,50 @@ local function free_of(pin, name, minutes)
             if r[1] < ends then fc, fm = fc - r[2], fm - r[3] end
         end
     end
+    return fc, fm
+end
+
+local function free_of(pin, name, minutes)
+    local fc, fm = free_raw(pin, name, minutes)
     return math.max(fc, 0), math.max(fm, 0)
+end
+
+-- Mirrors sjp.policy.soonest_node: for a job no node has room for now, the
+-- node expected to have room for it first -- its free space (the jobs waiting
+-- there count against it) plus what its running jobs release by their time
+-- limits. Ties go to the higher PriorityTier, then the name.
+local function soonest_node(pin, parts, cpus, mem, minutes)
+    if type(pin.ends) ~= "table" then return nil, "no end times" end
+    local allowed = {}
+    for p in string.gmatch(parts, "[^,]+") do allowed[p] = true end
+    local now, best = os.time(), nil
+    for name, n in pairs(pin.nodes) do
+        local tier, ps = nil, {}
+        for p in string.gmatch(n[3], "[^,]+") do
+            if allowed[p] then
+                ps[#ps + 1] = p
+                local t = pin.tier[p] or 1
+                if tier == nil or t > tier then tier = t end
+            end
+        end
+        if tier then
+            local fc, fm = free_raw(pin, name, minutes)
+            local at = nil
+            if fc >= cpus and fm >= mem then at = now end
+            for _, e in ipairs(pin.ends[name] or {}) do
+                if at then break end
+                fc, fm = fc + e[2], fm + e[3]
+                if fc >= cpus and fm >= mem then at = math.max(e[1], now) end
+            end
+            if at and (best == nil or at < best[1] or (at == best[1] and (tier > best[2]
+               or (tier == best[2] and name < best[3])))) then
+                table.sort(ps)
+                best = { at, tier, name, table.concat(ps, ",") }
+            end
+        end
+    end
+    if not best then return nil, "no node there can ever hold it" end
+    return best[3], best[4], best[1] - now
 end
 
 local function pick_node(pin, parts, cpus, mem, minutes)
@@ -401,14 +446,22 @@ local function place(job_desc, submit_uid)
                                  cpus, mem, mpc(cpus, mem),
                                  mem_given and "" or ", no memory request", minutes)
 
-    local parts, why, tbl, looked_up = packed_choice(mem, cpus, minutes)
+    local parts, why, tbl, looked_up, key = packed_choice(mem, cpus, minutes)
     if not parts then return false, why, detail end
     detail = detail .. "; table " .. looked_up
     if parts ~= looked_up then detail = detail .. ", refit to " .. parts end
     local room = has_room(tbl, parts, cpus, mem, has_limit and minutes or nil)
     if room == nil then return false, "stale", detail end
+    local by_shape = false
     if not room then
-        return false, "no room", detail .. "; no node there has the CPUs and memory free"
+        if not tbl.always or type(tbl.tf) ~= "table" or type(tbl.tf[key]) ~= "string" then
+            return false, "no room", detail .. "; no node there has the CPUs and memory free"
+        end
+        -- [policy] always_place: where the job's shape fits best on an empty cluster
+        parts = keep_feasible(tbl.tf[key], tbl, mem, cpus)
+        by_shape = true
+        why = why .. " no room, by shape"
+        detail = detail .. "; no node there has room now, so by shape: " .. parts
     end
 
     job_desc.partition = parts
@@ -417,12 +470,21 @@ local function place(job_desc, submit_uid)
     local shape = string.format("job=%dc,%s,%s/c", cpus, gb(mem), gb(mem / cpus))
     local version = string.format("v=%d", tbl.version or 0)
     local mark = "sjp:placed=" .. parts .. ";" .. shape .. ";" .. version
-    -- Pin the node only when the job can start now. Any failure here leaves
-    -- the partition choice above as it is.
+    if by_shape then mark = mark .. ";room=no" end
+    -- Pin the node when the job can start now; with [pin] wait_for_room, also
+    -- when it cannot, to the node expected to have room first. Any failure
+    -- here leaves the partition choice above as it is.
+    local eta = nil
     local pok, node, pparts = pcall(function()
         local ok_pin, no = pin_eligible(job_desc, submit_uid, cpus, tbl, mem_given)
         if not ok_pin then return nil, no end
-        return pick_node(tbl.pin, parts, cpus, mem, has_limit and minutes or nil)
+        if not by_shape then
+            return pick_node(tbl.pin, parts, cpus, mem, has_limit and minutes or nil)
+        end
+        if not tbl.pin.wait then return nil, "no room, and wait_for_room is off" end
+        local n, ps, e = soonest_node(tbl.pin, parts, cpus, mem, has_limit and minutes or nil)
+        eta = e
+        return n, ps
     end)
     if pok and node and pparts then
         job_desc.req_nodes = node
@@ -430,6 +492,7 @@ local function place(job_desc, submit_uid)
         local fc, fm = free_of(tbl.pin, node, has_limit and minutes or nil)
         mark = string.format("sjp:pin=%s;from=%s;%s;free=%dc,%s,%s/c;%s", node, parts,
                              shape, fc, gb(fm), gb(fm / math.max(fc, 1)), version)
+        if eta then mark = mark .. ";room=no;eta=" .. hours(eta) end
         if tbl.pin.time_aware and type(tbl.pin.busy_until) == "table" then
             -- the job's time limit, and how long the node's jobs still ran
             local until_ = busy_until(tbl.pin, node)
@@ -439,11 +502,16 @@ local function place(job_desc, submit_uid)
                 recent[node] = { math.max(until_, os.time() + minutes * 60), os.time() }
             end
         end
-        detail = detail .. string.format(
-            "; node %s free %d CPUs x %d MB (%s MB/CPU), after %d x %d (%s MB/CPU)",
-            node, fc, fm, mpc(fc, fm), fc - cpus, fm - mem, mpc(fc - cpus, fm - mem))
+        if eta then
+            detail = detail .. string.format("; waits for node %s, room expected in %s",
+                                             node, hours(eta))
+        else
+            detail = detail .. string.format(
+                "; node %s free %d CPUs x %d MB (%s MB/CPU), after %d x %d (%s MB/CPU)",
+                node, fc, fm, mpc(fc, fm), fc - cpus, fm - mem, mpc(fc - cpus, fm - mem))
+        end
         claim(tbl.pin, node, cpus, mem)         -- counted until sjpd has seen it
-        why = why .. " pin=" .. node
+        why = why .. " pin=" .. node .. (eta and (" eta " .. hours(eta)) or "")
     else
         detail = detail .. "; no pin: " .. tostring(pok and pparts or node or "")
     end

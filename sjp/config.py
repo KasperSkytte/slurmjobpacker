@@ -42,6 +42,11 @@ DEFAULTS: dict = {
                    [7680, 0.25], [14178, 0.15], [30720, 0.10]],
         "demand_median": 4267,        # for the stranding metric only
         "tolerance": 0.25,            # extra partitions admitted, CPUs of phi per job CPU
+        # Place a job even when no node has room for it now: in the partitions
+        # its shape fits best on an empty cluster. Otherwise sjp.place() returns
+        # false ("no room") and the site's own rule places it. The recheck
+        # moves such jobs once room opens elsewhere.
+        "always_place": False,
         "buckets": {
             "mem_per_cpu": [1024, 2048, 4096, 6144, 8192, 12288, 24576],
             "cpus": [1, 4, 8, 16, 32, 64, 128],
@@ -69,6 +74,12 @@ DEFAULTS: dict = {
         # and nodes running short jobs empty out together, leaving room for big
         # jobs. Uses the jobs' time limits.
         "time_aware": False,
+        # With [policy] always_place: also pin a job that cannot start now, to
+        # the node expected to have room for it first, from the time limits of
+        # the jobs running and waiting there. The recheck moves the pin as the
+        # cluster changes; it is not released after release_after, only past
+        # the job's [starvation] budget. Needs [recheck] interval.
+        "wait_for_room": False,
     },
     "starvation": {
         # A job placed in few partitions can wait while another partition would

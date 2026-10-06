@@ -50,24 +50,37 @@ def job(r) -> str:
     lines = [f"{head} -- {sub}{state}"]
 
     if r.get("acted"):
-        # advise/enforce: the plugin has already placed it; say what sjp did
+        # advise/enforce: the plugin has already acted; say what it did, and why
+        shape = "; no node had room, so by its shape" if r.get("sjp_by_shape") else ""
         if r.get("sjp_pin"):
-            lines.append(f"    partitions   {r['sjp_from']} (sjp's choice at submission)")
+            lines.append(f"    partitions   {r['sjp_from']} (sjp's choice at submission{shape})")
+            if r.get("sjp_eta"):
+                lines.append(f"    node         sjp pinned it to {r['sjp_pin']} in {r['actual']}, "
+                             f"expected to have room first (in {r['sjp_eta']})")
+                return "\n".join(lines)
             check = "" if r.get("pin") == r["sjp_pin"] else \
                 f" [recomputed now: {r.get('pin') or 'no pin'}, {r['pin_why']}]"
             lines.append(f"    node         sjp pinned it to {r['sjp_pin']} in {r['actual']}"
                          + (f": {r['pin_why']}" if not check else check))
-        else:
-            lines.append(f"    partitions   {r['actual']} (set at submission)")
+        elif r.get("sjp_placed", r.get("placed")):
+            lines.append(f"    partitions   {r['actual']} (sjp's choice at submission{shape})")
             lines.append("    node         left to Slurm" + (
                 f": {r['pin_why']}" if not r.get("pin") else
                 f" [recomputed now: would pin {r['pin']}, {r['pin_why']}]"))
+        else:
+            why = "no node that could take it had room" if not r.get("room", True) else \
+                "see the sjp line in the slurmctld log"
+            lines.append(f"    partitions   {r['actual']} (your job_submit.lua; sjp did not "
+                         f"place it: {why})")
+            lines.append("    node         left to Slurm")
         return "\n".join(lines)
 
     if r.get("placed") is False:
         lines.append(f"    partitions   Slurm: {r['actual']:<22} sjp: not placed (no node "
                      "that could take it has room now; left to the site's rule)")
         return "\n".join(lines)
+    if r.get("by_shape"):
+        lines.append("    note         no node has room now; sjp places it by shape (always_place)")
     if r["state"] == "PD":
         same = set(r["actual"].split(",")) == set(r["would"].split(","))
         diff = "same" if same else "; ".join(r.get("differences") or ["different"])
@@ -100,6 +113,14 @@ def action(r) -> str | None:
     if a in ("flex_job", "unflex_job"):
         verb = _did(r, "moved", "would move", "tried to move")
         return (f"{t}  job {r['jobid']}: {verb} it from QOS {r['before']} to {r['after']}: "
+                f"{r['why']}\n    command: {r['cmd']}" + _blocked(r))
+    if a == "move_partitions":
+        verb = _did(r, "moved", "would move", "tried to move")
+        return (f"{t}  job {r['jobid']}: {verb} it from partitions {r['before']} to "
+                f"{r['after']}: {r['why']}\n    command: {r['cmd']}" + _blocked(r))
+    if a == "pin_waiting":
+        verb = _did(r, "pinned", "would pin", "tried to pin")
+        return (f"{t}  job {r['jobid']}: {verb} it to {r['node']} to wait for room: "
                 f"{r['why']}\n    command: {r['cmd']}" + _blocked(r))
     if a == "widen_partitions":
         verb = _did(r, "widened", "would widen", "tried to widen")

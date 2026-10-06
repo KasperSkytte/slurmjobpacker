@@ -287,8 +287,8 @@ cfg = config.defaults()
 d = daemon.Daemon(cfg); d.log_fh = io.StringIO()
 d.snap = dict(total=TOTAL, table={}, cap={}, later=None, node_free={
     "s1": (0, 0, ("slim1",)), "s2": (32, 100000, ("slim2",)), "f1": (24, 200000, ("fat1",))})
-real_ac, real_lookup = slurm.admin_comment, policy.plugin_lookup
-slurm.admin_comment = lambda jid: "" if jid == "3" else "sjp:placed=slim1"
+real_acs, real_lookup = slurm.admin_comments, policy.plugin_lookup
+slurm.admin_comments = lambda: {str(k): "" if k == 3 else "sjp:placed=slim1" for k in range(1, 9)}
 policy.plugin_lookup = lambda *a: (["fat1"], (0, 0, 0), False)
 def rjob(jid, part="slim1", waited_min=10, prio=10, **kw):
     return dict(dict(jobid=jid, state="PD", reason="Resources", partition=part, cpus=8,
@@ -304,7 +304,7 @@ jobs = [rjob("6", prio=10),                    # no room left once 1, 2 and 4 ha
 try:
     d.recheck(jobs, now)
 finally:
-    slurm.admin_comment, policy.plugin_lookup = real_ac, real_lookup
+    slurm.admin_comments, policy.plugin_lookup = real_acs, real_lookup
 recs = [json.loads(l) for l in d.log_fh.getvalue().splitlines()]
 mv = {r["jobid"]: r for r in recs if r.get("action") == "move_partitions"}
 check("pending jobs move, highest priority first, only as many as fit",
@@ -611,6 +611,110 @@ check("a pending job pinned to one node is counted there; held, waiting or sprea
 check("the table tells the plugin which queue read the free space includes",
       "queue_at = 1234," in policy.render_lua(tbl, CFG, time.time(), 1, TOTAL,
                                               dict(nodes=nf, tiers=TIERS, room=None, queue_at=1234.5)))
+
+print("\n12e. always_place: jobs no node has room for are placed by shape and wait for a node")
+from sjp import narrate
+now = 1_000_000.0
+nf = {"a": (4, 16000, ["slim1"]), "b": (-8, -32000, ["slim1"]), "c": (0, 0, ["fat1"])}
+ends = {"a": [(now + 3600, 8, 32000)], "b": [(now + 600, 12, 48000)],
+        "c": [(now + 60, 32, 900000)]}
+node, parts, eta = policy.soonest_node(8, 32000, ["slim1"], nf, ends, now, {"slim1": 10})
+check("the node expected to have room first, counting the jobs already waiting there",
+      (node, parts, eta) == ("a", ["slim1"], 3600), str((node, parts, eta)))
+node, parts, eta = policy.soonest_node(8, 32000, ["slim1", "fat1"], nf, ends, now,
+                                       {"slim1": 10, "fat1": 5})
+check("whichever partition it is in", (node, eta) == ("c", 60), str((node, eta)))
+check("no node at all when none can ever hold it",
+      policy.soonest_node(64, 32000, ["slim1"], nf, ends, now, {})[0] is None)
+ej = [dict(state="R", nodelist="a,b", cpus=16, mem=8000, req_mem=8000, end=now + 125),
+      dict(state="R", nodelist="a", cpus=4, mem=1000, req_mem=1000, end=now + 130),
+      dict(state="PD", nodelist="", cpus=4, mem=1000, end=None)]
+check("running jobs' end times per node, split over their nodes, by the minute",
+      daemon.Daemon.ends(ej, now) == {"a": [(1000080, 12, 9000)], "b": [(1000080, 8, 8000)]},
+      str(daemon.Daemon.ends(ej, now)))
+full = policy.build_table(CFG, TOTAL, TOTAL)
+lua = policy.render_lua(tbl, CFG, now, 1, TOTAL, dict(nodes=nf, tiers=TIERS, room=None,
+                                                    ends=ends), full)
+check("the table carries the by-shape choices and the end times when asked",
+      "always = true," in lua and "tf = {" in lua and "wait = true," in lua
+      and '["b"] = {{1000600, 12, 48000}},' in lua)
+check("and not otherwise", "always" not in policy.render_lua(tbl, CFG, now, 1, TOTAL))
+
+cfg = config.defaults()
+cfg["general"]["mode"] = "enforce"
+cfg["policy"]["always_place"] = cfg["pin"]["wait_for_room"] = True
+d = daemon.Daemon(cfg); d.log_fh = io.StringIO()
+check("wait_for_room is in effect only with always_place, pins and rechecks", d.wait_active())
+d.snap = dict(total=TOTAL, table={}, full={}, cap={}, later=None, tiers={"slim1": 10, "fat1": 5},
+              # a: job 2 waits there already, and counts against it
+              node_free={"a": (-8, -32768, ("slim1",)), "b": (0, 0, ("slim1",)),
+                         "f": (16, 200000, ("fat1",))},
+              ends={"a": [(now + 7200, 8, 64000)], "b": [(now + 1800, 8, 64000)]})
+lookups = {"1": ["slim1"], "2": ["slim1"], "3": ["fat1"]}
+real_acs, real_lookup, real_apply = slurm.admin_comments, policy.plugin_lookup, slurm.apply
+notes = {"1": "sjp:placed=slim1;job=8c,32G,4.0G/c;v=3;room=no",
+         "2": "sjp:pin=a;from=slim1;job=8c,32G,4.0G/c;v=3;room=no;eta=2.0h",
+         "3": "sjp:pin=b;from=slim1;job=8c,32G,4.0G/c;v=3;room=no;eta=0.5h"}
+slurm.admin_comments = lambda: notes
+cur = {}
+policy.plugin_lookup = lambda table, cap, cfg_, cpus, mem, minutes: (cur["would"], (0, 0, 0), False)
+applied = []
+slurm.apply = lambda argv, timeout=10.0: applied.append(argv) or True
+def wjob(jid, req, prio):
+    return dict(jobid=jid, state="PD", reason="Resources", partition="slim1", cpus=8,
+                mem=32768, req_mem=32768, eligible=now - 600, gpu=False, req_nodes=req,
+                priority=prio, timelimit=60)
+try:
+    cur["would"] = ["slim1"]
+    d.recheck([wjob("1", "", 30), wjob("2", "a", 20)], now)
+    recs = [json.loads(l) for l in d.log_fh.getvalue().splitlines()]
+    pins = {r["jobid"]: r for r in recs if r.get("action") == "pin_waiting"}
+    check("a job with no room waits on the node expected to have room first; one already "
+          "waiting where it should stays",
+          {k: v["node"] for k, v in pins.items()} == {"1": "b"},
+          str({k: v["node"] for k, v in pins.items()}))
+    check("the pin is marked where the placement was, with the wait",
+          applied[-1][-1] == "admincomment=sjp:pin=b;job=8c,32G,4.0G/c;v=3;room=no;from=slim1;eta=0.5h",
+          applied[-1][-1])
+    d.log_fh = io.StringIO(); applied.clear()
+    cur["would"] = ["fat1"]
+    d.recheck([wjob("3", "b", 10)], now)
+    recs = [json.loads(l) for l in d.log_fh.getvalue().splitlines()]
+    mv = [r for r in recs if r.get("action") == "move_partitions"]
+    check("once room opens where sjp now chooses, the job moves there and stops waiting",
+          len(mv) == 1 and mv[0]["after"] == "fat1" and applied[0][-1] == "reqnodelist="
+          and applied[1][-1] == "admincomment=sjp:released=b;from=slim1;job=8c,32G,4.0G/c;v=3;room=no;moved=slim1>fat1",
+          str(applied))
+finally:
+    slurm.admin_comments, policy.plugin_lookup, slurm.apply = real_acs, real_lookup, real_apply
+
+ac = {"9": "sjp:pin=a;from=slim1;job=8c,32G,4.0G/c;v=3;room=no;eta=2.0h"}
+real_ac, real_apply = slurm.admin_comment, slurm.apply
+slurm.admin_comment = lambda jid: ac[jid]
+slurm.apply = lambda argv, timeout=10.0: True
+try:
+    d = daemon.Daemon(cfg); d.log_fh = io.StringIO()
+    j9 = dict(wjob("9", "a", 1), submit=now - 600)
+    d.release_pins([j9], now)
+    check("a job waiting for room keeps its pin", "release_pin" not in d.log_fh.getvalue()
+          and "9" in d.waiting)
+    d.release_pins([dict(j9, eligible=now - 5 * 3600)], now)
+    check("until it is past its starvation budget",
+          "release_pin" in d.log_fh.getvalue())
+finally:
+    slurm.admin_comment, slurm.apply = real_ac, real_apply
+
+r = dict(ts=now, jobid="5", user="u", name="n", cpus=65, mem_mb=300 * 1024, minutes=2880,
+         state="PD", reason="Priority", submit=now, actual="zen5,zen3", acted=True,
+         placed=False, room=False, sjp_placed=False, pin=None, pin_why="not placed")
+check("the log says who chose the partitions, and why sjp did not",
+      "(your job_submit.lua; sjp did not place it: no node that could take it had room)"
+      in narrate.job(r), narrate.job(r))
+r.update(sjp_placed=True, sjp_by_shape=True, sjp_pin="n1", sjp_from="zen5", sjp_eta="3.2h",
+         actual="zen5")
+check("and for a job sjp placed by shape and pinned to wait",
+      "(sjp's choice at submission; no node had room, so by its shape)" in narrate.job(r)
+      and "expected to have room first (in 3.2h)" in narrate.job(r), narrate.job(r))
 
 print("\n13. stale pins are released, and only sjp's own")
 real_ac, real_apply = slurm.admin_comment, slurm.apply
