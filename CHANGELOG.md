@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.13.0](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.12.2...v1.13.0) (2026-10-06)
+
+
+### Features
+
+* optionally place every job, even when no node has room ([13fa79d](https://github.com/KasperSkytte/slurmjobpacker/commit/13fa79ddf39cde45428a5e9c8cddcdfcbb555437))
+
 ## [1.12.2](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.12.1...v1.12.2) (2026-10-05)
 
 
