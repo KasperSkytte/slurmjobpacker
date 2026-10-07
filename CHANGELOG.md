@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.13.3](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.13.2...v1.13.3) (2026-10-07)
+
+
+### Bug Fixes
+
+* a job's details in the visualizer show its reservation and sjp's AdminComment marks ([c08239b](https://github.com/KasperSkytte/slurmjobpacker/commit/c08239bb8cbf2bef7b8409f27b3fd3dc6da4d9b7))
+
 ## [1.13.2](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.13.1...v1.13.2) (2026-10-07)
 
 
