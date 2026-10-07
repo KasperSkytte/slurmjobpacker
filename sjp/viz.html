@@ -203,8 +203,9 @@ const nodeViews = new Map();   // name -> {group, origin, w, h, free, freeLabel}
 let queueLeft = -20, queueWidth = 40, queueBehind = false, sceneDepth = 0, rowEnds = [];
 let layoutKey = "";
 
-// Whole-node reservations only: memory cannot be reserved, so part of a node
-// has no shape in CPUs x memory. The one in effect first, else the next.
+// Reservations. Only a whole-node one colours the node: memory cannot be
+// reserved, so part of a node has no shape in CPUs x memory. All are listed
+// under the node's name, those in effect first, then by start.
 const RESV = 0xa371f7;
 // A date and a 24-hour time, with the year only when it is not this year: "Oct 19, 08:00".
 const when = t => {
@@ -223,15 +224,16 @@ function wholeResv(n) {
   const rs = (n.resv || []).filter(r => r.whole).sort((a, b) => b.active - a.active || a.start - b.start);
   return rs[0] || null;
 }
-const resvLine = r => r ? `reserved: ${r.name}, ${span(r)}` : "";
+const resvLine = r => `reserved: ${r.name}${r.whole ? "" : ` (${r.cpus} CPUs)`}, ${span(r)}`;
+const resvLines = n => [...(n.resv || [])].sort((a, b) => b.active - a.active || a.start - b.start)
+  .map(resvLine);
 
 // A node's name and size; when it takes no jobs, its state (DOWN, DRAIN, ...);
 // and a whole-node reservation.
 function nodeLabel(n) {
   const lines = [n.name, `${n.cpus} CPUs · ${gb(n.mem)} · ${gbc(n.mem / n.cpus)}`], colors = [];
   if (!n.up) { colors[lines.length] = "#f85149"; lines.push(n.state || "down"); }
-  const r = resvLine(wholeResv(n));
-  if (r) { colors[lines.length] = "#a371f7"; lines.push(r); }
+  for (const r of resvLines(n)) { colors[lines.length] = "#a371f7"; lines.push(r); }
   const label = textSprite(lines, { colors });
   label.center.set(0, 1); label.position.set(0, -0.75, 1.0);
   return label;
@@ -244,7 +246,7 @@ function nodeState(nv, n) {
   const held = wholeResv(n);
   nv.held = held && held.active ? held : null;
   nv.frame.material.color.set(!n.up ? 0xf85149 : nv.held ? RESV : 0x6e7681);
-  const state = (n.up ? "" : n.state) + "|" + resvLine(held);
+  const state = (n.up ? "" : n.state) + "|" + resvLines(n).join("|");
   if (state === nv.state) return;
   nv.state = state;
   nv.group.remove(nv.label); nv.label.material.map.dispose(); nv.label.material.dispose();

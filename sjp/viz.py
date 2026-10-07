@@ -111,7 +111,9 @@ def reservations(shown, nodes, resvs, jobs, now):
             shown[n].setdefault("resv", []).append(dict(
                 name=r["name"], start=r["start"], end=r["end"], cpus=cpus,
                 whole=cores is None, active=active,
-                left=max(0, round(cpus - used.get((r["name"], n), 0))) if active else cpus))
+                left=max(0, round(cpus - used.get((r["name"], n), 0))) if active else cpus,
+                nodes=len(r["nodes"]),
+                **{k: r.get(k, "") for k in ("users", "accounts", "flags", "partition")}))
 
 
 class Live:

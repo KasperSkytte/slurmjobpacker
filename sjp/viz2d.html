@@ -34,6 +34,7 @@
   #info table { border-collapse: collapse; width: 100%; }
   #info td { padding: 2px 0; vertical-align: top; overflow-wrap: anywhere; }
   #info td:first-child { color: var(--muted); padding-right: 10px; white-space: nowrap; }
+  #info a { color: #a371f7; }
   #info .close { position: absolute; top: 8px; right: 10px; cursor: pointer; color: var(--muted); }
   #err { top: 50%; left: 50%; transform: translate(-50%, -50%); display: none; }
   body.clean #info, body.clean .switch { display: none !important; }
@@ -377,7 +378,7 @@ function draw() {
       const hc = Math.max(0, Math.min(v.left, n.cpus - sx));
       if (hc > 0) stripe(r.x + r.w * sx / n.cpus, r.cpuY, r.w * hc / n.cpus, r.barH);
       // one outline when its jobs end where its unused cores begin, else two
-      r.spans.push(...(x0 + inUse === sx ? [[x0, inUse + hc]] : [[x0, inUse], [sx, hc]]));
+      r.spans.push(...(x0 + inUse === sx ? [[x0, inUse + hc, v]] : [[x0, inUse, v], [sx, hc, v]]));
       sx += hc;
       if (v.whole && fm > 0) stripe(fmx, r.memY, r.x + r.w - fmx, r.barH);
     }
@@ -417,11 +418,13 @@ function draw() {
     }
     g.globalAlpha = 1;
   }
-  // Each reservation in effect: one outline around its jobs and its unused cores.
-  g.strokeStyle = RESV; g.lineWidth = 2;
+  // Each reservation in effect: one outline around its jobs and its unused cores
+  // (white when selected).
   for (const r of L.rows.values()) {
-    for (const [x0, w] of r.spans || []) {
+    for (const [x0, w, v] of r.spans || []) {
       if (w <= 0) continue;
+      const sel = selected && selected.resv && selected.resv.name === v.name && selected.node === r.node.name;
+      g.strokeStyle = sel ? "#ffffff" : RESV; g.lineWidth = 2;
       g.strokeRect(r.x + r.w * x0 / r.node.cpus + 1, r.cpuY + 1, r.w * w / r.node.cpus - 2, r.barH - 2);
     }
   }
@@ -462,15 +465,52 @@ cv.addEventListener("click", e => {
     const c = v.c, inBox = (bx, bw, by) => x >= bx && x <= bx + bw && y >= by && y <= by + c.h;
     if (inBox(c.cx, c.cw, c.cy) || (v.key.startsWith("r:") && inBox(c.mx, c.mw, c.my))) hit = v;
   }
+  // Not a job: a reservation's unused cores?
+  if (!hit) for (const r of L.rows.values()) {
+    if (y < r.cpuY || y > r.cpuY + r.barH) continue;
+    for (const [x0, w, v] of r.spans || []) {
+      const bx = r.x + r.w * x0 / r.node.cpus;
+      if (w > 0 && x >= bx && x <= bx + r.w * w / r.node.cpus) hit = { resv: v, node: r.node.name };
+    }
+  }
   select(hit);
 });
+// The details of a job's reservation, from the link in the job's details.
+document.getElementById("info-body").addEventListener("click", e => {
+  const a = e.target.closest("a[data-resv]");
+  if (!a) return;
+  e.preventDefault();
+  const n = state.nodes.find(n => n.name === a.dataset.node);
+  const v = n && (n.resv || []).find(v => v.name === a.dataset.resv);
+  if (v) select({ resv: v, node: n.name });
+});
 document.getElementById("close").onclick = () => select(null);
+const esc = s => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
+function show(title, rows) {
+  document.getElementById("info-title").textContent = title;
+  document.getElementById("info-body").innerHTML = rows.map(([k, val, html]) =>
+    `<tr><td>${k}</td><td>${html || esc(val).replace(/\n/g, "<br>")}</td></tr>`).join("");
+  document.getElementById("info").style.display = "block";
+}
+// A reservation on one node: what it holds there, its own jobs' use, when, and for whom.
+function showResv(v, node) {
+  show(`Reservation ${v.name}`, [
+    ["Node", node + (v.nodes > 1 ? ` (and ${v.nodes - 1} more)` : "")],
+    ["CPUs", v.whole ? `${v.cpus} (the whole node)` : v.cpus],
+    ...(v.active ? [["In use", `${v.cpus - v.left} by its jobs, ${v.left} unused`]] : []),
+    ["When", span(v)],
+    ["State", v.active ? `in effect, ${dur(v.end - state.now)} left` : `starts in ${dur(v.start - state.now)}`],
+    ...[["Users", v.users], ["Accounts", v.accounts], ["Partition", v.partition], ["Flags", v.flags]]
+      .filter(([, x]) => x).map(([k, x]) => [k, x.split(",").join("\n")]),
+  ]);
+}
+
 function select(v) {
   selected = v;
   const box = document.getElementById("info");
   if (!v) { box.style.display = "none"; return; }
+  if (v.resv) { showResv(v.resv, v.node); return; }
   const j = v.job, mpc = j.mem / Math.max(j.cpus, 1e-9), running = v.key.startsWith("r:");
-  document.getElementById("info-title").textContent = `Job ${j.id}`;
   const rows = [
     ["User", j.user], ["Name", j.name],
     ["State", running ? `running on ${j.node}` + (j.nodes > 1 ? ` (+${j.nodes - 1} nodes)` : "") : `waiting (${j.reason})`],
@@ -479,13 +519,13 @@ function select(v) {
             : ["Time limit", dur(j.minutes * 60)],
     ...(running ? [] : [["Priority", j.priority == null ? "–" : Math.round(j.priority)]]),
     ["Partition", j.partition || "–"], ["QOS", j.qos],
-    ...(j.reservation ? [["Reservation", j.reservation]] : []),
+    ...(j.reservation ? [["Reservation", j.reservation, running
+      ? `<a href="#" data-resv="${esc(j.reservation)}" data-node="${esc(j.node)}">${esc(j.reservation)}</a>`
+      : ""]] : []),
     // what sjp did with it, from its AdminComment: one mark per line
     ...(j.sjp ? [["sjp", j.sjp.replace(/^sjp:/, "").split(";").join("\n")]] : []),
   ];
-  document.getElementById("info-body").innerHTML = rows.map(([k, val]) =>
-    `<tr><td>${k}</td><td>${String(val).replace(/</g, "&lt;").replace(/\n/g, "<br>")}</td></tr>`).join("");
-  box.style.display = "block";
+  show(`Job ${j.id}`, rows);
 }
 addEventListener("keydown", e => {
   if (e.key === "l" || e.key === "L") showLabels = !showLabels;

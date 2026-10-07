@@ -167,7 +167,10 @@ def reservations() -> list[dict]:
         cores = {n: _count_ids(ids) for n, ids in
                  re.findall(r"NodeName=(\S+) CoreIDs=(\S+)", line)}
         out.append(dict(name=d.get("ReservationName", ""), start=start, end=end,
-                        nodes={n: cores.get(n) for n in names}))
+                        nodes={n: cores.get(n) for n in names},
+                        **{k: "" if d.get(f, "(null)") == "(null)" else d[f] for k, f in
+                           (("users", "Users"), ("accounts", "Accounts"), ("flags", "Flags"),
+                            ("partition", "PartitionName"))}))
     return out
 
 
