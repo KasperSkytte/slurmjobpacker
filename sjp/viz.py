@@ -25,7 +25,8 @@ from . import config, policy, slurm
 HTML = os.path.join(os.path.dirname(os.path.abspath(__file__)), "viz.html")
 HTML_2D = os.path.join(os.path.dirname(os.path.abspath(__file__)), "viz2d.html")
 HORIZON = 14 * 86400          # the depth of a node: two weeks, Slurm's usual MaxTime
-TOP = 50                      # waiting jobs shown
+TOP = 50                      # waiting jobs shown in the queue
+PINNED = 300                  # and at most this many waiting pinned to a node
 
 
 def queue_order(j):
@@ -80,12 +81,19 @@ def build_state(cfg, nodes: dict, parts: dict, jobs: list, now: float, mode="liv
                 running.append(dict(info, node=n, cpus=j["cpus"] / nn, mem=mem,
                                     end=end, nodes=nn))
         elif j["state"] == "PD":
+            # pinned: waiting for one node (sjp's pin, or the user's --nodelist)
+            req = slurm.expand_hostlist(j.get("req_nodes") or "")
             pending.append(dict(info, cpus=j["cpus"], mem=j.get("req_mem") or j["mem"],
-                                reason=j["reason"], priority=j["priority"]))
+                                reason=j["reason"], priority=j["priority"],
+                                pinned=req[0] if len(req) == 1 and req[0] in shown else ""))
     pending.sort(key=queue_order)
     reservations(shown, nodes, resvs, jobs, now)
+    # The queue's top, and the jobs waiting for a node, which are drawn at that node.
+    queued = [p for p in pending if not p["pinned"]]
+    pinned = [p for p in pending if p["pinned"]]
     return dict(mode=mode, now=now, horizon=HORIZON, nodes=list(shown.values()),
-                running=running, pending=pending[:TOP], pending_total=len(pending), top=TOP)
+                running=running, pending=queued[:TOP] + pinned[:PINNED],
+                pending_total=len(pending), queued_total=len(queued), top=TOP)
 
 
 def reservations(shown, nodes, resvs, jobs, now):

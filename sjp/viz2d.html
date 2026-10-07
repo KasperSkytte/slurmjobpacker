@@ -58,7 +58,7 @@
   <span id="legend-title">Memory per CPU of each job (GB/C)</span>
   <div class="ramp" id="ramp"></div>
   <div class="ticks" id="ticks"></div>
-  <div class="hint">click or <b>C</b>: switch scale</div>
+  <div class="hint">click or <b>C</b>: switch scale · <b>P</b>: pinned jobs at their node</div>
 </div>
 <div id="info" class="panel"><span class="close" id="close">✕</span><h2 id="info-title"></h2><table id="info-body"></table></div>
 <div id="err" class="panel"></div>
@@ -109,6 +109,23 @@ function drawLegend() {
 function switchScale() { colorMode = colorMode === "mpc" ? "fit" : "mpc"; drawLegend(); recolor(); }
 document.getElementById("legend").addEventListener("click", switchScale);
 addEventListener("keydown", e => { if (e.key === "c" || e.key === "C") switchScale(); });
+// Jobs waiting for one node: drawn at that node, or in the queue like any other
+// (P, or ?pinned=queue to start so). The choice is remembered in this browser.
+let pinAtNode = params.get("pinned") !== "queue";
+try {
+  const v = localStorage.getItem("sjp-pinned");
+  if (v !== null && !params.has("pinned")) pinAtNode = v === "node";
+} catch (e) { /* no storage: the default */ }
+function togglePinned() {
+  pinAtNode = !pinAtNode;
+  try { localStorage.setItem("sjp-pinned", pinAtNode ? "node" : "queue"); } catch (e) { /* fine */ }
+  if (state) apply(state);
+}
+addEventListener("keydown", e => { if (e.key === "p" || e.key === "P") togglePinned(); });
+// squeue's order, for the queue when it holds pinned jobs too: priority, then job ID.
+const byQueue = (a, b) => (b.priority || 0) - (a.priority || 0)
+  || (parseInt(a.id) || 0) - (parseInt(b.id) || 0) || String(a.id).localeCompare(String(b.id));
+
 drawLegend();
 const nodeMpc = {};                // node name -> its memory per CPU
 function color(job, a = 1) {
@@ -138,7 +155,7 @@ const panelBox = id => {          // in page coordinates, whatever the scroll
 let CH = 0;                       // the canvas height: the page scrolls when it is taller
 
 function layout(nodes) {
-  const key = W + "x" + H + ":" + nodes.map(n => n.name).join();
+  const key = W + "x" + H + ":" + pinAtNode + ":" + nodes.map(n => n.name).join();
   if (key === layoutKey) return;
   layoutKey = key;
   const tall = W / H < 0.9, head = panelBox("head");
@@ -165,14 +182,17 @@ function layout(nodes) {
   g.font = `400 ${font * 0.95}px system-ui`;
   const widest = f => Math.max(...nodes.map(n => g.measureText(f(n)).width), 0) + 10;
   const freeW = widest(n => `${gb(n.mem)} free`), usedW = widest(n => `${gb(n.mem)} / ${gb(n.mem)}`);
+  // Right of each card, the jobs waiting for that node (pinned); none on narrow screens.
+  const pinW = tall || !pinAtNode ? 0 : Math.min(190 * k, w * 0.2), pinGap = pinW ? 10 * k : 0, cw = w - pinW - pinGap;
   const rows = new Map(), heads = [];
   for (const [part, ns] of groups) {
     heads.push({ text: part, x, y: y + groupH * 0.55 }); y += groupH;
     for (const n of ns) {
       const cy = y + label, top = cy + cardPad, bx = x + cardPad + freeW;
-      rows.set(n.name, { node: n, x: bx, w: w - freeW - usedW - 2 * cardPad, label: y,
+      rows.set(n.name, { node: n, x: bx, w: cw - freeW - usedW - 2 * cardPad, label: y,
         cpuY: top, gapY: top + barH, memY: top + barH + bandH, barH,
-        card: { x, y: cy, w, h: cardH } });
+        card: { x, y: cy, w: cw, h: cardH },
+        pin: pinW ? { x: x + cw + pinGap, y: cy, w: pinW, h: cardH } : null });
       y += label + cardH + cardGap;
     }
   }
@@ -241,16 +261,34 @@ function apply(s) {
   const maxCpus = Math.max(...s.nodes.map(n => n.cpus), 1), Q = L.queue;
   const unit = Math.min(Q.w / maxCpus * 1.6, 9 * Math.max(1, ui * 0.8));
   const chipH = L.font * 2.3, gap = 6;
-  let qx = Q.x, qy = Q.y;
+  const chip = (j, t) => {
+    const key = "q:" + j.id; seen.add(key);
+    let v = views.get(key);
+    if (!v) { v = { key, job: j, a: 0 }; v.c = { ...t, cy: t.cy - 20, my: t.my - 20, a: 0 }; views.set(key, v); }
+    v.job = j; target(v, t);
+  };
+  // Jobs waiting for one node: in that node's column, as wide as their share of
+  // its CPUs, two rows; the column's heading counts those that do not fit too.
+  const at = new Map();
+  for (const r of L.rows.values()) r.pinMore = r.pinCount = 0;
   for (const j of s.pending) {
+    const r = j.pinned && L.rows.get(j.pinned);
+    if (!r || !r.pin) continue;
+    const P = r.pin, ph = (P.h - 3 * gap) / 2;
+    const p = at.get(j.pinned) || { x: P.x + gap, y: P.y + gap };
+    const w = Math.min(Math.max(P.w * j.cpus / r.node.cpus, L.font * 2.6), P.w - 2 * gap);
+    if (p.x + w > P.x + P.w - gap && p.x > P.x + gap) { p.x = P.x + gap; p.y += ph + gap; }
+    if (p.y + ph > P.y + P.h) { r.pinMore++; continue; }
+    chip(j, { cx: p.x, cw: w, mx: p.x, mw: w, cy: p.y, my: p.y, h: ph, a: 1 });
+    p.x += w + gap; at.set(j.pinned, p); r.pinCount++;
+  }
+  let qx = Q.x, qy = Q.y;
+  for (const j of [...s.pending].sort(byQueue)) {
+    if (j.pinned && L.rows.has(j.pinned) && L.rows.get(j.pinned).pin) continue;   // at its node
     const w = Math.max(j.cpus * unit, L.font * 3.2);
     if (qx + w > Q.x + Q.w && qx > Q.x) { qx = Q.x; qy += chipH + gap; }
     if (qy + chipH > Q.y + Q.h) break;
-    const key = "q:" + j.id; seen.add(key);
-    let v = views.get(key);
-    const t = { cx: qx, cw: w, mx: qx, mw: w, cy: qy, my: qy, h: chipH, a: 1 };
-    if (!v) { v = { key, job: j, a: 0 }; v.c = { ...t, cy: t.cy - 20, my: t.my - 20, a: 0 }; views.set(key, v); }
-    v.job = j; target(v, t);
+    chip(j, { cx: qx, cw: w, mx: qx, mw: w, cy: qy, my: qy, h: chipH, a: 1 });
     qx += w + gap;
   }
   for (const [k, v] of views) if (!seen.has(k)) v.dead = true;
@@ -327,10 +365,22 @@ function draw() {
   if (!L || !state) return;
   const f = L.font;
   // The queue's heading.
-  if (state.pending_total) text(state.pending_total > state.pending.length
-    ? `Waiting (top ${state.pending.length} by priority)` : "Waiting",
+  // The queue: jobs not waiting for one node; those are at their node.
+  const atNode = j => j.pinned && L.rows.has(j.pinned) && L.rows.get(j.pinned).pin;
+  const inQueue = state.pending.filter(j => !atNode(j)).length;
+  const queueTotal = state.pending.some(atNode) ? (state.queued_total ?? state.pending_total)
+                                                : state.pending_total;
+  if (inQueue) text(queueTotal > inQueue ? `Waiting (top ${inQueue} by priority)` : "Waiting",
     L.queue.x, L.queue.y - f * 0.9, f * 1.05, 650);
   for (const h of L.heads) text(h.text, h.x, h.y, f * 1.25, 650, "#8b949e");
+  // Each node's column of jobs waiting for it, when it has any.
+  for (const r of L.rows.values()) {
+    if (!r.pin || !(r.pinCount || r.pinMore)) continue;
+    text(`waiting here: ${r.pinCount + r.pinMore}`, r.pin.x + 2, r.label + f * 0.7, f * 0.85, 500,
+         "#8b949e");
+    g.strokeStyle = "#30363d"; g.lineWidth = 1; g.setLineDash([4, 4]);
+    roundRect(r.pin.x, r.pin.y, r.pin.w, r.pin.h, 8); g.stroke(); g.setLineDash([]);
+  }
   // Each node: name, two empty bars, the free space at their ends; free
   // amounts on the left, used / total on the right.
   for (const r of L.rows.values()) {
@@ -412,8 +462,10 @@ function draw() {
       g.font = `600 ${f * 0.9}px system-ui`;
       if (g.measureText(both).width + 8 < c.cw) text(both, c.cx + c.cw / 2, c.cy + c.h / 2, f * 0.9, 600, "rgba(255,255,255,0.95)", "center");
       else if (g.measureText(j.id).width + 6 < c.cw) {
-        text(j.id, c.cx + c.cw / 2, c.cy + c.h / 2 - (c.h > f * 2 ? f * 0.45 : 0), f * 0.85, 650, "rgba(255,255,255,0.95)", "center");
-        if (c.h > f * 2) text(`${gbc(mpc)}`, c.cx + c.cw / 2, c.cy + c.h / 2 + f * 0.5, f * 0.75, 500, "rgba(255,255,255,0.8)", "center");
+        g.font = `500 ${f * 0.75}px system-ui`;
+        const two = c.h > f * 2 && g.measureText(gbc(mpc)).width + 6 < c.cw;   // room for GB/C below
+        text(j.id, c.cx + c.cw / 2, c.cy + c.h / 2 - (two ? f * 0.45 : 0), f * 0.85, 650, "rgba(255,255,255,0.95)", "center");
+        if (two) text(`${gbc(mpc)}`, c.cx + c.cw / 2, c.cy + c.h / 2 + f * 0.5, f * 0.75, 500, "rgba(255,255,255,0.8)", "center");
       }
     }
     g.globalAlpha = 1;
@@ -513,7 +565,8 @@ function select(v) {
   const j = v.job, mpc = j.mem / Math.max(j.cpus, 1e-9), running = v.key.startsWith("r:");
   const rows = [
     ["User", j.user], ["Name", j.name],
-    ["State", running ? `running on ${j.node}` + (j.nodes > 1 ? ` (+${j.nodes - 1} nodes)` : "") : `waiting (${j.reason})`],
+    ["State", running ? `running on ${j.node}` + (j.nodes > 1 ? ` (+${j.nodes - 1} nodes)` : "")
+                     : j.pinned ? `waiting for ${j.pinned} (${j.reason})` : `waiting (${j.reason})`],
     ["CPUs", (+j.cpus).toFixed(j.cpus % 1 ? 1 : 0)], ["Memory", gb(j.mem)], ["Memory / CPU", gbc(mpc)],
     running ? ["Time", `${dur(state.now - j.end + j.minutes * 60)} of ${dur(j.minutes * 60)}, ${dur(j.end - state.now)} left`]
             : ["Time limit", dur(j.minutes * 60)],

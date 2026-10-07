@@ -581,6 +581,12 @@ check("the view shows the nodes sjp places on, not GPU or interactive ones",
       [n["name"] for n in vs["nodes"]] == ["s1"])
 check("and their running and waiting jobs",
       [j["id"] for j in vs["running"]] == ["7"] and [j["id"] for j in vs["pending"]] == ["9"])
+pj = [dict(vjobs[2], jobid=str(i), priority=float(i), req_nodes=rn)
+      for i, rn in ((20, "s1"), (21, ""), (22, "g1"), (23, "s1,s2"))]
+vs = viz.build_state(config.defaults(), vnodes, vparts, pj, 500.0)
+pin = {j["id"]: j["pinned"] for j in vs["pending"]}
+check("a waiting job tied to one shown node is drawn there; others queue as usual",
+      pin == {"20": "s1", "21": "", "22": "", "23": ""} and vs["queued_total"] == 3, str(pin))
 demo = viz.Demo(config.defaults(), speed=900, seed=2)
 for _ in range(300):
     demo.step(0.1)

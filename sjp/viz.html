@@ -65,7 +65,7 @@
   <div class="hint">click or <b>C</b>: switch scale</div>
 </div>
 <div id="info" class="panel"><span class="close" id="close">✕</span><h2 id="info-title"></h2><table id="info-body"></table></div>
-<div id="help" class="panel">drag to turn · right-drag or <b>Ctrl</b>+drag to move · scroll to zoom · click a job · <b>R</b> rotate · <b>L</b> labels · <b>C</b> colours · <b>H</b> hide panels</div>
+<div id="help" class="panel">drag to turn · right-drag or <b>Ctrl</b>+drag to move · scroll to zoom · click a job · <b>R</b> rotate · <b>L</b> labels · <b>C</b> colours · <b>P</b> pinned jobs at their node · <b>H</b> hide panels</div>
 <div id="err" class="panel"></div>
 
 <script type="module">
@@ -427,9 +427,27 @@ function place(v, x, y, z, w, h, d) {
 let state = null;
 let queueLabel = textSprite(["Waiting"], { size: 64 }), queueText = "Waiting"; world.add(queueLabel);
 queueLabel.material.depthTest = false; queueLabel.renderOrder = 1;
+// Jobs waiting for one node: drawn at that node, or in the queue like any other
+// (P, or ?pinned=queue to start so). The choice is remembered in this browser.
+let pinAtNode = params.get("pinned") !== "queue";
+try {
+  const v = localStorage.getItem("sjp-pinned");
+  if (v !== null && !params.has("pinned")) pinAtNode = v === "node";
+} catch (e) { /* no storage: the default */ }
+function togglePinned() {
+  pinAtNode = !pinAtNode;
+  try { localStorage.setItem("sjp-pinned", pinAtNode ? "node" : "queue"); } catch (e) { /* fine */ }
+  if (state) apply(state);
+}
+addEventListener("keydown", e => { if (e.key === "p" || e.key === "P") togglePinned(); });
+// squeue's order, for the queue when it holds pinned jobs too: priority, then job ID.
+const byQueue = (a, b) => (b.priority || 0) - (a.priority || 0)
+  || (parseInt(a.id) || 0) - (parseInt(b.id) || 0) || String(a.id).localeCompare(String(b.id));
+
 // "Waiting", or which part of a longer queue is shown.
-const waitingTitle = s => s.pending_total > s.pending.length
-  ? `Waiting (top ${s.pending.length} by priority)` : "Waiting";
+const queued = s => s.pending.filter(j => !(pinAtNode && j.pinned)).sort(byQueue);
+const waitingTitle = s => (pinAtNode ? s.queued_total ?? s.pending_total : s.pending_total)
+  > queued(s).length ? `Waiting (top ${queued(s).length} by priority)` : "Waiting";
 function apply(s) {
   state = s; horizon = s.horizon || horizon;
   for (const n of s.nodes) nodeMpc[n.name] = n.mem / n.cpus;
@@ -495,11 +513,23 @@ function apply(s) {
   }
   // The queue, in front of the nodes, highest priority first.
   let qx = queueLeft, qz = queueBehind ? -sceneDepth - QUEUE_BACK : 0, rowDepth = 0;
-  for (const j of s.pending) {
+  const atNode = new Map();            // node -> where its next pinned job goes
+  for (const j of [...s.pending].sort(byQueue)) {
     const key = "q:" + j.id; seen.add(key);
     let v = views.get(key);
     if (!v) v = jobView(key, j, new THREE.Vector3(qx, NODE_H + 4, qz));
     v.job = j;
+    const nv = pinAtNode && j.pinned && nodeViews.get(j.pinned);
+    if (nv) {
+      // Waiting for this node: a thin tile in front of it, in rows towards the viewer.
+      const o = nv.group.getWorldPosition(new THREE.Vector3());
+      const p = atNode.get(j.pinned) || { x: 0, z: 0.5 };
+      const w = Math.max(sx(j.cpus), 0.15), h = sy(j.mem);
+      if (p.x + w > nv.w && p.x > 0) { p.x = 0; p.z += 0.6; }
+      place(v, o.x + p.x, o.y, o.z + p.z, w, h, 0.35);
+      p.x += w + 0.15; atNode.set(j.pinned, p);
+      continue;
+    }
     const w = sx(j.cpus), h = sy(j.mem), d = sz(j.minutes * 60);
     if (qx + w > queueLeft + queueWidth && qx > queueLeft) { qx = queueLeft; qz -= rowDepth + 0.8; rowDepth = 0; }
     place(v, qx, queueBehind ? QUEUE_UP : 0, qz - d, w, h, d);
@@ -514,7 +544,7 @@ function apply(s) {
   queueLabel.center.set(0, 1);
   queueLabel.position.set(queueLeft, queueBehind ? QUEUE_UP - 0.35 : -0.35,
                           queueBehind ? -sceneDepth - QUEUE_BACK + 1 : 1.0);
-  queueLabel.visible = s.pending_total > 0;
+  queueLabel.visible = queued(s).length > 0;
   for (const [k, v] of views) if (!seen.has(k)) v.dying = true;
   updatePanel(s);
 }
@@ -571,7 +601,8 @@ function select(v) {
   document.getElementById("info-title").textContent = `Job ${j.id}`;
   const rows = [
     ["User", j.user], ["Name", j.name],
-    ["State", running ? `running on ${j.node}` + (j.nodes > 1 ? ` (+${j.nodes - 1} nodes)` : "") : `waiting (${j.reason})`],
+    ["State", running ? `running on ${j.node}` + (j.nodes > 1 ? ` (+${j.nodes - 1} nodes)` : "")
+                     : j.pinned ? `waiting for ${j.pinned} (${j.reason})` : `waiting (${j.reason})`],
     ["CPUs", (+j.cpus).toFixed(j.cpus % 1 ? 1 : 0)], ["Memory", gb(j.mem)], ["Memory / CPU", gbc(mpc)],
     running ? ["Time", `${dur(state.now - j.end + j.minutes * 60)} of ${dur(j.minutes * 60)}, ${dur(j.end - state.now)} left`]
             : ["Time limit", dur(j.minutes * 60)],
