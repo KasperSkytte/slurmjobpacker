@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.14.0](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.13.3...v1.14.0) (2026-10-07)
+
+
+### Features
+
+* show jobs waiting for one node at that node in the visualizer ([09bebf7](https://github.com/KasperSkytte/slurmjobpacker/commit/09bebf7e37c4c72fb534239ec23fedeff234ad59))
+
+
+### Bug Fixes
+
+* reservation details on click in the 2D view, and every reservation listed in 3D ([75cbd5b](https://github.com/KasperSkytte/slurmjobpacker/commit/75cbd5b6f2e34e45512693aed8616863b7a4badb))
+
 ## [1.13.3](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.13.2...v1.13.3) (2026-10-07)
 
 
