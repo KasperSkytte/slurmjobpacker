@@ -357,10 +357,15 @@ function draw() {
                                   [r.memY, `${gb(fm)} free`, `${gb(used[1])} / ${gb(n.mem)}`]]) {
       g.fillStyle = "#161b22"; roundRect(r.x, y, r.w, r.barH, 4); g.fill();
       g.strokeStyle = "#30363d"; g.lineWidth = 1; g.stroke();
-      text(free, r.x - 10, y + r.barH / 2, f * 0.95, 500, "#3fb950", "right");
+      if (n.up) text(free, r.x - 10, y + r.barH / 2, f * 0.95, 500, "#3fb950", "right");
       text(use, r.x + r.w + 10, y + r.barH / 2, f * 0.95, 400, "#8b949e");
     }
     const fx = r.x + r.w * used[0] / n.cpus, fmx = r.x + r.w * used[1] / n.mem;
+    if (!n.up) {                     // takes no jobs: no room to show, whatever is idle
+      text("unavailable", r.x + r.w, r.gapY + (r.memY - r.gapY) / 2, f * 0.85, 600, "#f85149", "right");
+      r.spans = [];
+      continue;
+    }
     g.fillStyle = "rgba(63,185,80,0.16)";
     g.fillRect(fx, r.cpuY, r.x + r.w - fx, r.barH); g.fillRect(fmx, r.memY, r.x + r.w - fmx, r.barH);
     // Cores a reservation holds unused, striped, after its jobs; for a whole node

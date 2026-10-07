@@ -472,7 +472,7 @@ function apply(s) {
     const fw = sx(Math.max(0, nv.node.cpus - cx)), fh = sy(Math.max(0, nv.node.mem - cy));
     for (const m of [nv.free, nv.freeEdge]) {
       m.material.color.set(nv.held ? RESV : 0x3fb950);    // free, or held by a reservation
-      m.visible = fw > 0.05 && fh > 0.05;
+      m.visible = fw > 0.05 && fh > 0.05 && nv.node.up;   // a node taking no jobs has no room
       m.scale.set(Math.max(fw, 1e-3), Math.max(fh, 1e-3), 0.12);
       m.position.set(sx(cx) + fw / 2, sy(cy) + fh / 2, -0.06);
     }
@@ -487,7 +487,7 @@ function apply(s) {
       nv.group.add(nv.freeLabel);
     }
     const ls = Math.min(fw * 0.85, fh * 1.7, 4.5);
-    nv.freeLabel.visible = ls > 0.8 && !isIdle;     // "idle" says it all
+    nv.freeLabel.visible = ls > 0.8 && !isIdle && nv.node.up;     // "idle" says it all
     nv.freeLabel.scale.set(ls, ls / 2, 1);
     nv.freeLabel.position.set(sx(cx) + fw / 2, sy(cy) + fh / 2, 0.02);
   }
