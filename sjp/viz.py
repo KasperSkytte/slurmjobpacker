@@ -50,8 +50,9 @@ def shown_partitions(cfg, parts: dict, nodes: dict) -> list[str]:
 
 
 def build_state(cfg, nodes: dict, parts: dict, jobs: list, now: float, mode="live",
-                resvs=()) -> dict:
-    """What the page draws, from what Slurm reports."""
+                resvs=(), notes=None) -> dict:
+    """What the page draws, from what Slurm reports. notes: job ID -> AdminComment,
+    of which the page shows sjp's marks."""
     keep = shown_partitions(cfg, parts, nodes)
     shown = {}
     for name, d in sorted(nodes.items()):
@@ -63,8 +64,11 @@ def build_state(cfg, nodes: dict, parts: dict, jobs: list, now: float, mode="liv
                            up=d["up"], state=d.get("state", ""))
     running, pending = [], []
     for j in jobs:
+        note = (notes or {}).get(j["jobid"], "")
         info = dict(id=j["jobid"], user=j["user"], name=j["name"], qos=j["qos"],
-                    partition=j["partition"], minutes=j["timelimit"])
+                    partition=j["partition"], minutes=j["timelimit"],
+                    reservation=j.get("reservation") or "",
+                    sjp=note[note.find("sjp:"):] if "sjp:" in note else "")
         if j["state"] in ("R", "CF"):
             on = [n for n in slurm.expand_hostlist(j.get("nodelist") or "") if n in shown]
             if not on:
@@ -74,7 +78,7 @@ def build_state(cfg, nodes: dict, parts: dict, jobs: list, now: float, mode="liv
             end = j.get("end") or now + j["timelimit"] * 60
             for n in on:
                 running.append(dict(info, node=n, cpus=j["cpus"] / nn, mem=mem,
-                                    end=end, nodes=nn, reservation=j.get("reservation") or ""))
+                                    end=end, nodes=nn))
         elif j["state"] == "PD":
             pending.append(dict(info, cpus=j["cpus"], mem=j.get("req_mem") or j["mem"],
                                 reason=j["reason"], priority=j["priority"]))
@@ -122,8 +126,13 @@ class Live:
     def run(self):
         while True:
             try:
+                try:
+                    notes = slurm.admin_comments()   # sjp's marks, for a job's details
+                except slurm.SlurmError:
+                    notes = {}
                 s = build_state(self.cfg, slurm.nodes(), slurm.partitions(),
-                                slurm.queue(), time.time(), resvs=slurm.reservations())
+                                slurm.queue(), time.time(), resvs=slurm.reservations(),
+                                notes=notes)
                 s["poll_ms"] = int(self.interval * 1000)
             except slurm.SlurmError as e:
                 with self.lock:

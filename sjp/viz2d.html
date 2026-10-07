@@ -32,7 +32,7 @@
   #info { position: fixed; top: 16px; right: 16px; width: 260px; display: none; font-size: 13px; }
   #info h2 { margin: 0 0 8px; font-size: 16px; }
   #info table { border-collapse: collapse; width: 100%; }
-  #info td { padding: 2px 0; vertical-align: top; }
+  #info td { padding: 2px 0; vertical-align: top; overflow-wrap: anywhere; }
   #info td:first-child { color: var(--muted); padding-right: 10px; white-space: nowrap; }
   #info .close { position: absolute; top: 8px; right: 10px; cursor: pointer; color: var(--muted); }
   #err { top: 50%; left: 50%; transform: translate(-50%, -50%); display: none; }
@@ -479,9 +479,12 @@ function select(v) {
             : ["Time limit", dur(j.minutes * 60)],
     ...(running ? [] : [["Priority", j.priority == null ? "–" : Math.round(j.priority)]]),
     ["Partition", j.partition || "–"], ["QOS", j.qos],
+    ...(j.reservation ? [["Reservation", j.reservation]] : []),
+    // what sjp did with it, from its AdminComment: one mark per line
+    ...(j.sjp ? [["sjp", j.sjp.replace(/^sjp:/, "").split(";").join("\n")]] : []),
   ];
   document.getElementById("info-body").innerHTML = rows.map(([k, val]) =>
-    `<tr><td>${k}</td><td>${String(val).replace(/</g, "&lt;")}</td></tr>`).join("");
+    `<tr><td>${k}</td><td>${String(val).replace(/</g, "&lt;").replace(/\n/g, "<br>")}</td></tr>`).join("");
   box.style.display = "block";
 }
 addEventListener("keydown", e => {
@@ -493,7 +496,7 @@ addEventListener("keydown", e => {
 resize();
 const manual = params.get("manual") === "1";
 if (!manual) { poll(); requestAnimationFrame(frame); }
-window.sjpViz = { apply, frame(dt) { step(dt); draw(); }, get state() { return state; } };
+window.sjpViz = { apply, views, frame(dt) { step(dt); draw(); }, get state() { return state; } };
 </script>
 </body>
 </html>
