@@ -65,7 +65,7 @@ def nodes() -> dict:
                 alloc_mem=int(d.get("AllocMem", 0)),
                 partitions=[p for p in d.get("Partitions", "").split(",") if p],
                 gpu=_has_gpu(d.get("Gres", ""), d.get("CfgTRES", "")),
-                up=_up(state),
+                up=_up(state), state=state,
             )
         except ValueError:
             continue
@@ -74,14 +74,25 @@ def nodes() -> dict:
     return out
 
 
-# Node states that offer nothing. Matched as whole flags: a substring test would
-# count POWERED_DOWN (idle under power saving, resumed on demand) as DOWN.
-_UNUSABLE = {"DOWN", "DRAIN", "DRAINED", "DRAINING", "FAIL", "FAILING", "INVAL"}
+# Node states in which a node takes no new jobs, as `scontrol show node` prints
+# them: a base state, then +flags. Matched as whole words: a substring test
+# would count POWERED_DOWN (idle under power saving, resumed on demand) as
+# DOWN. Not here: power saving states (Slurm resumes the node for a job),
+# REBOOT_REQUESTED (it keeps taking jobs until the reboot), COMPLETING, PLANNED,
+# and RESERVED, whose cores sjpd counts per reservation. The short forms are
+# what sinfo, and older versions, print.
+_UNUSABLE = {"DOWN", "ERROR", "FUTURE", "UNKNOWN",
+             "DRAIN", "FAIL", "INVALID_REG", "NOT_RESPONDING", "MAINTENANCE",
+             "REBOOT_ISSUED", "BLOCKED", "DYNAMIC_FUTURE",
+             "DRAINED", "DRAINING", "FAILING", "INVAL", "MAINT"}
 
 
 def _up(state: str) -> bool:
-    """'IDLE+CLOUD+POWERED_DOWN' -> True, 'MIXED+DRAIN' -> False."""
-    return not (set(state.upper().rstrip("*~#!%$@^-").split("+")) & _UNUSABLE)
+    """'IDLE+CLOUD+POWERED_DOWN' -> True, 'MIXED+DRAIN' -> False, 'IDLE*'
+    (not responding, in the short form) -> False."""
+    state = state.upper()
+    return not (state.endswith("*") or
+                set(state.rstrip("*~#!%$@^-").split("+")) & _UNUSABLE)
 
 
 def _has_gpu(gres: str, cfg_tres: str) -> bool:

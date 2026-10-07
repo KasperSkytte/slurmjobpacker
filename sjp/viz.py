@@ -49,7 +49,8 @@ def shown_partitions(cfg, parts: dict, nodes: dict) -> list[str]:
     return out
 
 
-def build_state(cfg, nodes: dict, parts: dict, jobs: list, now: float, mode="live") -> dict:
+def build_state(cfg, nodes: dict, parts: dict, jobs: list, now: float, mode="live",
+                resvs=()) -> dict:
     """What the page draws, from what Slurm reports."""
     keep = shown_partitions(cfg, parts, nodes)
     shown = {}
@@ -59,7 +60,7 @@ def build_state(cfg, nodes: dict, parts: dict, jobs: list, now: float, mode="liv
             continue
         shown[name] = dict(name=name, cpus=d["cpus"], mem=d["mem"], partitions=ps,
                            tier=max(parts.get(p, {}).get("tier", 1) for p in ps),
-                           up=d["up"])
+                           up=d["up"], state=d.get("state", ""))
     running, pending = [], []
     for j in jobs:
         info = dict(id=j["jobid"], user=j["user"], name=j["name"], qos=j["qos"],
@@ -78,8 +79,35 @@ def build_state(cfg, nodes: dict, parts: dict, jobs: list, now: float, mode="liv
             pending.append(dict(info, cpus=j["cpus"], mem=j.get("req_mem") or j["mem"],
                                 reason=j["reason"], priority=j["priority"]))
     pending.sort(key=queue_order)
+    reservations(shown, nodes, resvs, jobs, now)
     return dict(mode=mode, now=now, horizon=HORIZON, nodes=list(shown.values()),
                 running=running, pending=pending[:TOP], pending_total=len(pending), top=TOP)
+
+
+def reservations(shown, nodes, resvs, jobs, now):
+    """Each shown node's reservations, now or to come: name, start, end, the CPUs
+    reserved there (all of them for a whole node, else its cores x threads),
+    and, for one in effect, how many of them its own jobs leave free."""
+    used = {}
+    for j in jobs:
+        if j["state"] in ("R", "CF") and j.get("reservation"):
+            ns = slurm.expand_hostlist(j.get("nodelist") or "")
+            for n in ns:
+                key = (j["reservation"], n)
+                used[key] = used.get(key, 0) + j["cpus"] / max(len(ns), 1)
+    for r in resvs:
+        if r["end"] <= now:
+            continue
+        for n, cores in r["nodes"].items():
+            if n not in shown:
+                continue
+            d = nodes[n]
+            cpus = d["cpus"] if cores is None else min(d["cpus"], cores * d.get("threads", 1))
+            active = r["start"] <= now
+            shown[n].setdefault("resv", []).append(dict(
+                name=r["name"], start=r["start"], end=r["end"], cpus=cpus,
+                whole=cores is None, active=active,
+                left=max(0, round(cpus - used.get((r["name"], n), 0))) if active else cpus))
 
 
 class Live:
@@ -95,7 +123,7 @@ class Live:
         while True:
             try:
                 s = build_state(self.cfg, slurm.nodes(), slurm.partitions(),
-                                slurm.queue(), time.time())
+                                slurm.queue(), time.time(), resvs=slurm.reservations())
                 s["poll_ms"] = int(self.interval * 1000)
             except slurm.SlurmError as e:
                 with self.lock:

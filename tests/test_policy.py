@@ -591,6 +591,19 @@ over = [n["name"] for n in ds["nodes"]
 check("the demo keeps its cluster busy without overfilling a node",
       len(ds["running"]) > 20 and not over, f"{len(ds['running'])} running, overfull: {over}")
 
+vn = {"a": dict(cpus=64, threads=2), "b": dict(cpus=64, threads=1), "c": dict(cpus=64)}
+shown = {"a": {}, "b": {}}
+viz.reservations(shown, vn, [
+    dict(name="maint", start=0, end=200, nodes={"a": None}),
+    dict(name="course", start=0, end=200, nodes={"b": 16}),
+    dict(name="later", start=150, end=300, nodes={"a": None, "c": None}),
+    dict(name="over", start=0, end=50, nodes={"b": None})],
+    [dict(state="R", reservation="course", nodelist="b", cpus=8)], 100)
+check("the visualizer is told each node's reservations, now or to come, and what they hold free",
+      [(r["name"], r["cpus"], r["whole"], r["active"], r["left"]) for r in shown["a"]["resv"]]
+      == [("maint", 64, True, True, 64), ("later", 64, True, False, 64)]
+      and [(r["name"], r["cpus"], r["left"]) for r in shown["b"]["resv"]] == [("course", 16, 8)],
+      str(shown))
 q = [dict(id="12", priority=900), dict(id="9_[1-4]", priority=1500),
      dict(id="10", priority=900), dict(id="9_7", priority=1500), dict(id="100", priority=900)]
 check("waiting jobs are listed as squeue lists them: priority, then job ID",
@@ -766,6 +779,13 @@ print("\n14. powered-down nodes are usable; drained and down ones are not")
 check("power saving is not down", slurm._up("IDLE+CLOUD+POWERED_DOWN") and slurm._up("IDLE~"))
 check("down, drained and failing are down",
       not any(slurm._up(x) for x in ("DOWN*", "MIXED+DRAIN", "IDLE+DRAIN", "FAILING", "INVAL")))
+check("so are nodes not responding, in maintenance, rebooting, badly registered or unknown",
+      not any(slurm._up(x) for x in ("IDLE+NOT_RESPONDING", "IDLE*", "IDLE+MAINTENANCE",
+                                     "DOWN+REBOOT_ISSUED", "IDLE+INVALID_REG", "UNKNOWN",
+                                     "FUTURE", "MIXED+BLOCKED", "ERROR")))
+check("but not reserved, rebooting later, completing, powering up or planned",
+      all(slurm._up(x) for x in ("IDLE+RESERVED", "MIXED+REBOOT_REQUESTED",
+                                 "MIXED+COMPLETING", "IDLE+POWERING_UP", "IDLE+PLANNED")))
 
 print("\n15. output paths follow the ones given on the command line")
 def paths(state=None, log=None, text=None):

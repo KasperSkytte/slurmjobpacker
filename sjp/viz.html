@@ -164,7 +164,7 @@ const sun = new THREE.DirectionalLight(0xffffff, 1.6);
 sun.position.set(30, 50, 40); scene.add(sun);
 const world = new THREE.Group(); scene.add(world);
 
-function textSprite(lines, { size = 48, color = "#e6edf3", sub = "#8b949e" } = {}) {
+function textSprite(lines, { size = 48, color = "#e6edf3", sub = "#8b949e", colors = [] } = {}) {
   // The canvas is as wide as the text, so a sprite anchored by its right or
   // centre lines up with its text.
   const c = document.createElement("canvas"), g = c.getContext("2d");
@@ -173,7 +173,7 @@ function textSprite(lines, { size = 48, color = "#e6edf3", sub = "#8b949e" } = {
   c.width = Math.ceil(width + 8); c.height = Math.ceil(size * 1.35 * lines.length + 16);
   g.textBaseline = "top";
   lines.forEach((l, i) => {
-    g.font = font(i); g.fillStyle = i ? sub : color; g.fillText(l, 4, 8 + i * size * 1.35);
+    g.font = font(i); g.fillStyle = colors[i] || (i ? sub : color); g.fillText(l, 4, 8 + i * size * 1.35);
   });
   const tex = new THREE.CanvasTexture(c); tex.anisotropy = 4; tex.colorSpace = THREE.SRGBColorSpace;
   const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }));
@@ -202,6 +202,43 @@ function faceLabel(top, bottom) {
 const nodeViews = new Map();   // name -> {group, origin, w, h, free, freeLabel}
 let queueLeft = -20, queueWidth = 40, queueBehind = false, sceneDepth = 0, rowEnds = [];
 let layoutKey = "";
+
+// Whole-node reservations only: memory cannot be reserved, so part of a node
+// has no shape in CPUs x memory. The one in effect first, else the next.
+const RESV = 0xa371f7;
+const when = t => new Date(t * 1000).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
+function wholeResv(n) {
+  const rs = (n.resv || []).filter(r => r.whole).sort((a, b) => b.active - a.active || a.start - b.start);
+  return rs[0] || null;
+}
+const resvLine = r => !r ? "" : r.active ? `reserved: ${r.name} until ${when(r.end)}`
+                                         : `reserved: ${r.name} from ${when(r.start)}`;
+
+// A node's name and size; when it takes no jobs, its state (DOWN, DRAIN, ...);
+// and a whole-node reservation.
+function nodeLabel(n) {
+  const lines = [n.name, `${n.cpus} CPUs · ${gb(n.mem)} · ${gbc(n.mem / n.cpus)}`], colors = [];
+  if (!n.up) { colors[lines.length] = "#f85149"; lines.push(n.state || "down"); }
+  const r = resvLine(wholeResv(n));
+  if (r) { colors[lines.length] = "#a371f7"; lines.push(r); }
+  const label = textSprite(lines, { colors });
+  label.center.set(0, 1); label.position.set(0, -0.75, 1.0);
+  return label;
+}
+
+// Follow a node coming back, going down or being reserved: the frame red while
+// it takes no jobs, purple while all of it is reserved.
+function nodeState(nv, n) {
+  nv.node = n;
+  const held = wholeResv(n);
+  nv.held = held && held.active ? held : null;
+  nv.frame.material.color.set(!n.up ? 0xf85149 : nv.held ? RESV : 0x6e7681);
+  const state = (n.up ? "" : n.state) + "|" + resvLine(held);
+  if (state === nv.state) return;
+  nv.state = state;
+  nv.group.remove(nv.label); nv.label.material.map.dispose(); nv.label.material.dispose();
+  nv.label = nodeLabel(n); nv.group.add(nv.label);
+}
 
 function layoutNodes(nodes) {
   const key = nodes.map(n => n.name + n.cpus + n.mem).join();
@@ -241,8 +278,7 @@ function layoutNodes(nodes) {
         const tl = textSprite([l], { size: 40, color: "#6e7681" });
         tl.scale.multiplyScalar(0.6); tl.position.set(w + 0.15, 0.02, -sz(t)); g.add(tl);
       }
-      const label = textSprite([n.name, `${n.cpus} CPUs · ${gb(n.mem)} · ${gbc(n.mem / n.cpus)}`]);
-      label.center.set(0, 1); label.position.set(0, -0.75, 1.0); g.add(label);
+      const label = nodeLabel(n); g.add(label);
       // Units on every axis: CPUs along the front edge, memory up the left one.
       const axisText = (txt, x, y, z, cx, cy) => {
         const t = textSprite([txt], { size: 40, color: "#6e7681" });
@@ -285,6 +321,7 @@ function layoutNodes(nodes) {
       taken.visible = false; g.add(taken);
       holder.add(g);
       nodeViews.set(n.name, { group: g, w, h, node: n, free, freeEdge, freeLabel, freeKey: "", taken,
+                              frame, label, state: null,
                               used: [0, 0], idle, floor });
       x += w + GAP_X;
     }
@@ -389,7 +426,9 @@ function apply(s) {
   // started, so the stack ends where the node's free space begins.
   const byNode = new Map();
   for (const j of s.running) { if (!byNode.has(j.node)) byNode.set(j.node, []); byNode.get(j.node).push(j); }
+  const fresh = new Map(s.nodes.map(n => [n.name, n]));
   for (const [name, nv] of nodeViews) {
+    if (fresh.has(name)) nodeState(nv, fresh.get(name));
     const js = (byNode.get(name) || []).sort((a, b) => (+a.id || 0) - (+b.id || 0) || String(a.id).localeCompare(String(b.id)));
     let cx = 0, cy = 0;
     for (const j of js) {
@@ -416,22 +455,24 @@ function apply(s) {
     nv.taken.visible = tw > 0.05 && th > 0.05;
     nv.taken.scale.set(Math.max(tw, 1e-3), Math.max(th, 1e-3), 0.12);
     nv.taken.position.set(tw / 2, th / 2, -0.06);
-    const isIdle = js.length === 0 && nv.node.up;
+    const isIdle = js.length === 0 && nv.node.up && !nv.held;   // idle, and free for anyone
     nv.idle.visible = isIdle;
     nv.floor.material.color.set(isIdle ? 0x14301c : 0x161b22);
     const fw = sx(Math.max(0, nv.node.cpus - cx)), fh = sy(Math.max(0, nv.node.mem - cy));
     for (const m of [nv.free, nv.freeEdge]) {
+      m.material.color.set(nv.held ? RESV : 0x3fb950);    // free, or held by a reservation
       m.visible = fw > 0.05 && fh > 0.05;
       m.scale.set(Math.max(fw, 1e-3), Math.max(fh, 1e-3), 0.12);
       m.position.set(sx(cx) + fw / 2, sy(cy) + fh / 2, -0.06);
     }
     // What still fits: the free CPUs and memory, and their memory per CPU.
     const fc = Math.max(0, nv.node.cpus - cx), fm = Math.max(0, nv.node.mem - cy);
-    const fkey = `${Math.round(fc)} ${gb(fm)}`;
+    const fkey = `${Math.round(fc)} ${gb(fm)} ${nv.held ? nv.held.name : ""}`;
     if (fkey !== nv.freeKey) {
       nv.freeKey = fkey;
       const old = nv.freeLabel; nv.group.remove(old); old.material.map.dispose(); old.material.dispose();
-      nv.freeLabel = faceLabel(`${cpus(fc)} · ${gb(fm)}`, fc >= 1 ? `room: ${gbc(fm / fc)}` : "full");
+      nv.freeLabel = faceLabel(`${cpus(fc)} · ${gb(fm)}`, nv.held ? `reserved: ${nv.held.name}`
+                               : fc >= 1 ? `room: ${gbc(fm / fc)}` : "full");
       nv.group.add(nv.freeLabel);
     }
     const ls = Math.min(fw * 0.85, fh * 1.7, 4.5);
