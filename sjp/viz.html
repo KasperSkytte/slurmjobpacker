@@ -206,13 +206,24 @@ let layoutKey = "";
 // Whole-node reservations only: memory cannot be reserved, so part of a node
 // has no shape in CPUs x memory. The one in effect first, else the next.
 const RESV = 0xa371f7;
-const when = t => new Date(t * 1000).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
+// A date and a 24-hour time, with the year only when it is not this year: "Oct 19, 08:00".
+const when = t => {
+  const d = new Date(t * 1000);
+  return d.toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit",
+    hourCycle: "h23", ...(d.getFullYear() !== new Date().getFullYear() && { year: "numeric" }) });
+};
+// "Oct 19, 08:00 – Oct 21, 08:00 (2.0 d)"; the end as a time only on the same day
+const span = r => {
+  const a = new Date(r.start * 1000), b = new Date(r.end * 1000);
+  const end = a.toDateString() === b.toDateString()
+    ? b.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }) : when(r.end);
+  return `${when(r.start)} – ${end} (${dur(r.end - r.start)})`;
+};
 function wholeResv(n) {
   const rs = (n.resv || []).filter(r => r.whole).sort((a, b) => b.active - a.active || a.start - b.start);
   return rs[0] || null;
 }
-const resvLine = r => !r ? "" : r.active ? `reserved: ${r.name} until ${when(r.end)}`
-                                         : `reserved: ${r.name} from ${when(r.start)}`;
+const resvLine = r => r ? `reserved: ${r.name}, ${span(r)}` : "";
 
 // A node's name and size; when it takes no jobs, its state (DOWN, DRAIN, ...);
 // and a whole-node reservation.

@@ -202,9 +202,19 @@ function apply(s) {
   for (const [name, r] of L.rows) {
     if (fresh.has(name)) r.node = fresh.get(name);   // its state can change, its place not
     const n = r.node;
-    const js = (byNode.get(name) || []).sort((a, b) => (+a.id || 0) - (+b.id || 0) || String(a.id).localeCompare(String(b.id)));
+    // Jobs in order, those of a reservation last and together, next to the
+    // reservation's unused cores: the reservation is one block on the CPU bar.
+    const held = (n.resv || []).filter(v => v.active).map(v => v.name);
+    const group = j => j.reservation ? 1 + Math.max(held.indexOf(j.reservation), 0) : 0;
+    const js = (byNode.get(name) || []).sort((a, b) => group(a) - group(b)
+      || (+a.id || 0) - (+b.id || 0) || String(a.id).localeCompare(String(b.id)));
     let cx = 0, cm = 0;
+    const block = {};                  // reservation -> [first CPU of its jobs, their CPUs]
     for (const j of js) {
+      if (j.reservation) {
+        const b = block[j.reservation] || (block[j.reservation] = [cx, 0]);
+        b[1] += j.cpus;
+      }
       const key = "r:" + j.id + "@" + name; seen.add(key);
       let v = views.get(key);
       const t = { cx: r.x + r.w * cx / n.cpus, cw: r.w * j.cpus / n.cpus,
@@ -223,6 +233,7 @@ function apply(s) {
       cx += j.cpus; cm += j.mem;
     }
     r.used = [cx, cm];
+    r.blocks = block;
   }
   // The queue: chips as wide as their CPUs (on the scale of the biggest node),
   // highest priority first, flowing in rows.
@@ -282,18 +293,26 @@ function stripe(x, y, w, h) {
     stripes = g.createPattern(c, "repeat");
   }
   g.fillStyle = stripes; g.fillRect(x, y, w, h);
-  g.strokeStyle = RESV; g.lineWidth = 1; g.strokeRect(x + 0.5, y + 0.5, Math.max(w - 1, 0), h - 1);
 }
-const when = t => new Date(t * 1000).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
-// "reserved: name until Tue 14:00", or "reserved: name from Tue 14:00" for one to
-// come; "+N" for more.
+// A date and a 24-hour time, with the year only when it is not this year: "Oct 19, 08:00".
+const when = t => {
+  const d = new Date(t * 1000);
+  return d.toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit",
+    hourCycle: "h23", ...(d.getFullYear() !== new Date().getFullYear() && { year: "numeric" }) });
+};
+// "Oct 19, 08:00 – Oct 21, 08:00 (2.0 d)"; the end as a time only on the same day
+const span = r => {
+  const a = new Date(r.start * 1000), b = new Date(r.end * 1000);
+  const end = a.toDateString() === b.toDateString()
+    ? b.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }) : when(r.end);
+  return `${when(r.start)} – ${end} (${dur(r.end - r.start)})`;
+};
+// "reserved: name (32 CPUs), <span> · name, <span>": those in effect first, then by start.
 function resvText(n) {
   const rs = [...(n.resv || [])].sort((a, b) => b.active - a.active || a.start - b.start);
   if (!rs.length) return "";
-  const r = rs[0], what = r.whole ? "" : ` (${r.cpus} CPUs)`;
-  const t = r.active ? `reserved: ${r.name}${what} until ${when(r.end)}`
-                     : `reserved: ${r.name}${what} from ${when(r.start)}`;
-  return t + (rs.length > 1 ? ` +${rs.length - 1}` : "");
+  return "reserved: " + rs.map(r => `${r.name}${r.whole ? "" : ` (${r.cpus} CPUs)`}, ${span(r)}`)
+    .join(" · ");
 }
 
 function text(s, x, y, size, weight = 400, fill = "#e6edf3", align = "left") {
@@ -326,8 +345,11 @@ function draw() {
       [n.up ? "" : (n.state || "down"), "#f85149", 650],
       [resvText(n), RESV, 600]]) {
       if (!t) continue;
-      text(t, hx, r.label + f * 0.7, f * 0.9, weight, colour);
-      g.font = `${weight} ${f * 0.9}px system-ui`; hx += g.measureText(t).width + 12;
+      g.font = `${weight} ${f * 0.9}px system-ui`;
+      let fit = t;                   // cut at the card's edge
+      while (fit.length > 1 && g.measureText(fit).width > c.x + c.w - hx) fit = fit.slice(0, -2) + "…";
+      text(fit, hx, r.label + f * 0.7, f * 0.9, weight, colour);
+      hx += g.measureText(fit).width + 12;
     }
     const used = r.used || [0, 0];
     const fc = Math.max(0, n.cpus - used[0]), fm = Math.max(0, n.mem - used[1]);
@@ -341,12 +363,19 @@ function draw() {
     const fx = r.x + r.w * used[0] / n.cpus, fmx = r.x + r.w * used[1] / n.mem;
     g.fillStyle = "rgba(63,185,80,0.16)";
     g.fillRect(fx, r.cpuY, r.x + r.w - fx, r.barH); g.fillRect(fmx, r.memY, r.x + r.w - fmx, r.barH);
-    // Free space a reservation holds, striped: its cores on the CPU bar, and for
-    // a whole node its memory too. (Memory cannot be reserved on its own.)
-    const held = (n.resv || []).filter(v => v.active);
-    const hc = Math.min(fc, held.reduce((a, v) => a + v.left, 0));
-    if (hc > 0) stripe(fx, r.cpuY, r.w * hc / n.cpus, r.barH);
-    if (held.some(v => v.whole) && fm > 0) stripe(fmx, r.memY, r.x + r.w - fmx, r.barH);
+    // Cores a reservation holds unused, striped, after its jobs; for a whole node
+    // its free memory too. (Memory cannot be reserved on its own.)
+    r.spans = [];
+    let sx = used[0];
+    for (const v of (n.resv || []).filter(v => v.active)) {
+      const [x0, inUse] = (r.blocks || {})[v.name] || [sx, 0];
+      const hc = Math.max(0, Math.min(v.left, n.cpus - sx));
+      if (hc > 0) stripe(r.x + r.w * sx / n.cpus, r.cpuY, r.w * hc / n.cpus, r.barH);
+      // one outline when its jobs end where its unused cores begin, else two
+      r.spans.push(...(x0 + inUse === sx ? [[x0, inUse + hc]] : [[x0, inUse], [sx, hc]]));
+      sx += hc;
+      if (v.whole && fm > 0) stripe(fmx, r.memY, r.x + r.w - fmx, r.barH);
+    }
     // Between the bars: the free space's memory per CPU. When one runs out
     // first, the rest of the other is stranded until something ends.
     const freeTxt = fc < 1 && fm < 1024 ? "full" : fc < 1 ? "CPUs full"
@@ -382,6 +411,14 @@ function draw() {
       }
     }
     g.globalAlpha = 1;
+  }
+  // Each reservation in effect: one outline around its jobs and its unused cores.
+  g.strokeStyle = RESV; g.lineWidth = 2;
+  for (const r of L.rows.values()) {
+    for (const [x0, w] of r.spans || []) {
+      if (w <= 0) continue;
+      g.strokeRect(r.x + r.w * x0 / r.node.cpus + 1, r.cpuY + 1, r.w * w / r.node.cpus - 2, r.barH - 2);
+    }
   }
 }
 

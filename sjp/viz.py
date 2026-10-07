@@ -74,7 +74,7 @@ def build_state(cfg, nodes: dict, parts: dict, jobs: list, now: float, mode="liv
             end = j.get("end") or now + j["timelimit"] * 60
             for n in on:
                 running.append(dict(info, node=n, cpus=j["cpus"] / nn, mem=mem,
-                                    end=end, nodes=nn))
+                                    end=end, nodes=nn, reservation=j.get("reservation") or ""))
         elif j["state"] == "PD":
             pending.append(dict(info, cpus=j["cpus"], mem=j.get("req_mem") or j["mem"],
                                 reason=j["reason"], priority=j["priority"]))
