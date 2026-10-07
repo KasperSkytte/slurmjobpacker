@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.13.1](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.13.0...v1.13.1) (2026-10-07)
+
+
+### Bug Fixes
+
+* follow nodes going down and coming back in the visualizer, count more states as down, and show reservations ([95e3fdd](https://github.com/KasperSkytte/slurmjobpacker/commit/95e3fdde0c54616470fa2961c85e42081bc6bc18))
+
 ## [1.13.0](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.12.2...v1.13.0) (2026-10-06)
 
 
