@@ -20,7 +20,7 @@ from __future__ import annotations
 import argparse, json, os, random, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import config, policy, slurm
+from . import __version__, config, policy, slurm
 
 HTML = os.path.join(os.path.dirname(os.path.abspath(__file__)), "viz.html")
 HTML_2D = os.path.join(os.path.dirname(os.path.abspath(__file__)), "viz2d.html")
@@ -91,8 +91,9 @@ def build_state(cfg, nodes: dict, parts: dict, jobs: list, now: float, mode="liv
     # The queue's top, and the jobs waiting for a node, which are drawn at that node.
     queued = [p for p in pending if not p["pinned"]]
     pinned = [p for p in pending if p["pinned"]]
-    return dict(mode=mode, now=now, horizon=HORIZON, nodes=list(shown.values()),
-                running=running, pending=queued[:TOP] + pinned[:PINNED],
+    return dict(mode=mode, version=__version__, now=now, horizon=HORIZON,
+                nodes=list(shown.values()), running=running,
+                pending=queued[:TOP] + pinned[:PINNED],
                 pending_total=len(pending), queued_total=len(queued), top=TOP)
 
 
@@ -173,8 +174,9 @@ class Demo:
     capacity, the closest match in memory per CPU breaking ties."""
 
     def __init__(self, cfg, speed: float = 900.0, seed: int = 1, load: float = 1.4,
-                 time_aware: bool = True, slim: int = 3, fat: int = 3):
+                 time_aware: bool = True, slim: int = 3, fat: int = 3, pinned: float = 0.5):
         self.cfg, self.speed, self.time_aware = cfg, speed, time_aware
+        self.pinned = pinned        # share of jobs that wait pinned to a node ([pin] wait_for_room)
         self.rng = random.Random(seed)
         self.demand = [tuple(x) for x in cfg["policy"]["demand"]]
         self.now = 1_800_000_000.0
@@ -219,7 +221,8 @@ class Demo:
                     name=self.rng.choice(DEMO_NAMES), qos="normal", partition="",
                     cpus=cpus, mem=int(cpus * mpc // 1024 * 1024) or 1024,
                     minutes=minutes, submitted=self.now, reason="Resources",
-                    runtime=minutes * 60 * self.rng.uniform(0.3, 0.95))
+                    runtime=minutes * 60 * self.rng.uniform(0.3, 0.95),
+                    waits=self.rng.random() < self.pinned)
 
     def _free(self):
         used = {n: [0, 0] for n in self.nodes}
@@ -243,6 +246,7 @@ class Demo:
                            if p in d["partitions"]] for p in total}
             allowed = policy.choose(j["cpus"], j["mem"], total, by_part, self.demand,
                                     self.cfg["policy"]["tolerance"])
+            j["allowed"] = allowed
             fits = {n: f for n, f in free.items()
                     if f[0] >= j["cpus"] and f[1] >= j["mem"] and set(f[2]) & set(allowed)}
             if not fits:
@@ -263,7 +267,29 @@ class Demo:
             self.pending.remove(j)
             self.running.append(dict(j, node=node, nodes=1, partition=",".join(allowed),
                                      end=self.now + j["minutes"] * 60,
-                                     done=self.now + j["runtime"]))
+                                     done=self.now + j["runtime"], pinned=""))
+        self._pin(tiers)
+
+    def _pin(self, tiers):
+        """Jobs that wait pinned, as with [pin] wait_for_room: each on the node
+        expected to have room for it first, chosen again every step; the jobs
+        ahead of it waiting there count against that node."""
+        free = self._free()
+        ends = {}
+        for r in self.running:
+            ends.setdefault(r["node"], []).append((r["end"], r["cpus"], r["mem"]))
+        for e in ends.values():
+            e.sort()
+        for j in sorted(self.pending, key=queue_order):
+            j["pinned"] = ""
+            if not j.get("waits") or not j.get("allowed"):
+                continue
+            node, _, _ = policy.soonest_node(j["cpus"], j["mem"], j["allowed"], free, ends,
+                                             self.now, tiers)
+            if node:
+                j["pinned"] = node
+                fc, fm, ps = free[node]
+                free[node] = (fc - j["cpus"], fm - j["mem"], ps)
 
     def step(self, real_seconds: float):
         with self.lock:
@@ -290,14 +316,18 @@ class Demo:
 
     def get(self) -> dict:
         with self.lock:
-            hide = ("runtime", "done", "submitted")
-            return dict(mode="demo", now=self.now, horizon=HORIZON, speed=self.speed,
+            hide = ("runtime", "done", "submitted", "waits", "allowed")
+            pending = sorted(self.pending, key=queue_order)
+            queued = [j for j in pending if not j.get("pinned")]
+            pinned = [j for j in pending if j.get("pinned")]
+            return dict(mode="demo", version=__version__, now=self.now, horizon=HORIZON,
+                        speed=self.speed,
                         poll_ms=250, nodes=list(self.nodes.values()),
                         running=[{k: v for k, v in j.items() if k not in hide}
                                  for j in self.running],
                         pending=[{k: v for k, v in j.items() if k not in hide}
-                                 for j in sorted(self.pending, key=queue_order)[:TOP]],
-                        pending_total=len(self.pending), top=TOP)
+                                 for j in queued[:TOP] + pinned[:PINNED]],
+                        pending_total=len(pending), queued_total=len(queued), top=TOP)
 
 
 def serve(source, bind: str, port: int):
@@ -341,12 +371,16 @@ def main(argv=None):
     ap.add_argument("--seed", type=int, default=1, help="demo: random seed")
     ap.add_argument("--slim", type=int, default=3, help="demo: slim nodes (default 3)")
     ap.add_argument("--fat", type=int, default=3, help="demo: fat nodes (default 3)")
+    ap.add_argument("--pinned", type=float, default=0.5,
+                    help="demo: share of jobs that wait pinned to a node, as with "
+                         "[pin] wait_for_room (default 0.5)")
     ap.add_argument("--load", type=float, default=1.4,
                     help="demo: how much work arrives, relative to the cluster (default 1.4)")
     a = ap.parse_args(argv)
     cfg = config.load(a.config)
     slurm.set_actuation(False)                  # read-only, whatever happens
-    source = (Demo(cfg, a.speed, a.seed, a.load, slim=a.slim, fat=a.fat) if a.demo
+    source = (Demo(cfg, a.speed, a.seed, a.load, slim=a.slim, fat=a.fat, pinned=a.pinned)
+              if a.demo
               else Live(cfg, a.interval))
     threading.Thread(target=source.run, daemon=True).start()
     serve(source, a.bind, a.port)

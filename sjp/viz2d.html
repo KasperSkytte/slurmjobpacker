@@ -18,6 +18,7 @@
   #head h1 { margin: 0 0 2px; font-size: 18px; font-weight: 650; letter-spacing: .2px; }
   #head h1 a { color: inherit; text-decoration: none; }
   #head h1 a:hover { text-decoration: underline; }
+  #version { margin-left: 8px; font-size: 12px; font-weight: 400; color: var(--muted); }
   #head .sub { color: var(--muted); font-size: 13px; }
   #head a { color: var(--accent); text-decoration: none; }
   .stats { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 10px;
@@ -44,7 +45,7 @@
 <body>
 <canvas id="c"></canvas>
 <div id="head" class="panel">
-  <h1><a id="title" href="https://github.com/KasperSkytte/slurmjobpacker" target="_blank" rel="noopener">slurmjobpacker</a></h1>
+  <h1><a id="title" href="https://github.com/KasperSkytte/slurmjobpacker" target="_blank" rel="noopener">slurmjobpacker</a><span id="version"></span></h1>
   <div class="sub" id="subtitle">Memory per CPU of every job, live. A slanted band: the job's memory per CPU differs significantly from its node's.</div>
   <div class="stats">
     <span>CPUs</span><div class="bar"><i id="cpubar"></i></div><span id="cpu">–</span>
@@ -58,7 +59,7 @@
   <span id="legend-title">Memory per CPU of each job (GB/C)</span>
   <div class="ramp" id="ramp"></div>
   <div class="ticks" id="ticks"></div>
-  <div class="hint">click or <b>C</b>: switch scale · <b>P</b>: pinned jobs at their node</div>
+  <div class="hint">click or <b>C</b>: switch scale · <b>L</b>: labels · <b>P</b>: pinned jobs at their node</div>
 </div>
 <div id="info" class="panel"><span class="close" id="close">✕</span><h2 id="info-title"></h2><table id="info-body"></table></div>
 <div id="err" class="panel"></div>
@@ -296,6 +297,7 @@ function apply(s) {
 }
 
 function updatePanel(s) {
+  if (s.version) document.getElementById("version").textContent = "v" + s.version;
   const cap = s.nodes.reduce((a, n) => [a[0] + n.cpus, a[1] + n.mem], [0, 0]);
   const use = s.running.reduce((a, j) => [a[0] + j.cpus, a[1] + j.mem], [0, 0]);
   const pc = 100 * use[0] / Math.max(cap[0], 1), pm = 100 * use[1] / Math.max(cap[1], 1);
@@ -483,7 +485,7 @@ function draw() {
 }
 
 // ------------------------------------------------------------------ animation
-let showLabels = params.get("labels") !== "0";
+let showLabels = params.get("labels") === "1";   // off unless ?labels=1; L toggles
 function step(dt) {
   const k = 1 - Math.exp(-dt * 6);
   for (const [key, v] of views) {

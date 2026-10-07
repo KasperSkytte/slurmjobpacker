@@ -11,9 +11,10 @@ WebGL in software). Needs Playwright with Chromium, and imageio-ffmpeg:
     ~/sjp-rec/bin/python tools/record_demo.py demo.mp4
 
 Options: --view 3d|2d --seconds 10 --fps 30 --size 1920x1080 (1080x1920 for phones)
-         --slim 3 --fat 3 (nodes in the demo cluster) --ui 1.0 (panel size)
-         --sim 120 (simulated seconds per frame) --orbit 0.3 (radians of camera turn)
-         --load 1.8 --seed 5 --title ... --subtitle ...
+         --slim 3 --fat 3 (nodes in the demo cluster) --pinned 0.5 (jobs waiting
+         pinned to a node) --ui 1.0 (panel size)
+         --sim 60 (simulated seconds per frame) --orbit 0.3 (radians of camera turn)
+         --load 2.0 --seed 5 --title ... --subtitle ...
 """
 import argparse, asyncio, os, subprocess, sys, tempfile, urllib.parse
 
@@ -26,11 +27,12 @@ async def record(a):
     import imageio_ffmpeg
     w, h = (int(x) for x in a.size.split("x"))
     demo = viz.Demo(config.defaults(), speed=a.sim * a.fps, seed=a.seed, load=a.load,
-                    slim=a.slim, fat=a.fat)
+                    slim=a.slim, fat=a.fat, pinned=a.pinned)
     for _ in range(a.warmup):                                    # fill the cluster first
         demo.step(0.1)
     query = urllib.parse.urlencode({k: v for k, v in dict(
-        manual=1, clean=1, title=a.title, subtitle=a.subtitle, ui=a.ui).items() if v is not None})
+        manual=1, clean=1, labels=1, title=a.title, subtitle=a.subtitle, ui=a.ui).items()
+        if v is not None})
     frames = tempfile.mkdtemp(prefix="sjp-frames-")
     async with async_playwright() as p:
         # 3D needs WebGL, which a headless browser renders in software; 2D does not.
@@ -66,14 +68,16 @@ def main():
     ap.add_argument("--fps", type=int, default=30)
     ap.add_argument("--size", default="1920x1080")
     ap.add_argument("--view", choices=("3d", "2d"), default="3d")
-    ap.add_argument("--sim", type=float, default=120, help="simulated seconds per frame")
+    ap.add_argument("--sim", type=float, default=60, help="simulated seconds per frame")
     ap.add_argument("--orbit", type=float, default=0.3, help="camera turn over the video, radians")
-    ap.add_argument("--load", type=float, default=1.8)
+    ap.add_argument("--load", type=float, default=2.0)
     ap.add_argument("--slim", type=int, default=3, help="slim nodes in the demo cluster")
     ap.add_argument("--fat", type=int, default=3, help="fat nodes in the demo cluster")
+    ap.add_argument("--pinned", type=float, default=0.5,
+                    help="share of jobs that wait pinned to a node (wait_for_room)")
     ap.add_argument("--ui", type=float, default=1.0, help="size of the text panels, e.g. 1.6 for phones")
     ap.add_argument("--seed", type=int, default=5)
-    ap.add_argument("--warmup", type=int, default=400, help="simulator steps before recording")
+    ap.add_argument("--warmup", type=int, default=800, help="simulator steps before recording")
     ap.add_argument("--title", default="slurmjobpacker")
     ap.add_argument("--subtitle", help="default: the page's own")
     asyncio.run(record(ap.parse_args()))
