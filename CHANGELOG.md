@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.13.2](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.13.1...v1.13.2) (2026-10-07)
+
+
+### Bug Fixes
+
+* no free space shown on nodes that take no jobs ([ba6577a](https://github.com/KasperSkytte/slurmjobpacker/commit/ba6577a1131a32d2b0a40a71dcb81609f743579e))
+* show reservations whole in the 2D view, with full dates and length ([e0cb2f5](https://github.com/KasperSkytte/slurmjobpacker/commit/e0cb2f55a608ec08e4f34aaa692f1bbc9c1b3ad6))
+
 ## [1.13.1](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.13.0...v1.13.1) (2026-10-07)
 
 
