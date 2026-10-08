@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.16.0](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.15.0...v1.16.0) (2026-10-08)
+
+
+### Features
+
+* optionally count jobs waiting for room against the idle share for QOS limits ([3e96c75](https://github.com/KasperSkytte/slurmjobpacker/commit/3e96c75911ab19d838ce79da53f86f2dff8f4cec))
+
+
+### Bug Fixes
+
+* busyness from blue through yellow to red, and why a node takes no jobs in its middle ([1d40af3](https://github.com/KasperSkytte/slurmjobpacker/commit/1d40af386d22595c4d22e4ac0536becb50c9cd18))
+
 ## [1.15.0](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.14.0...v1.15.0) (2026-10-08)
 
 
