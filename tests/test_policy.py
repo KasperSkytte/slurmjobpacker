@@ -171,6 +171,29 @@ finally:
     slurm._run, slurm.qos_cpu_limits = real_run, real_q
     slurm.set_actuation(False)
 
+print("\n10h. with [limits] count_pending, jobs waiting for room count against the idle share")
+real_q = slurm.qos_cpu_limits
+slurm.qos_cpu_limits = lambda qos: (864, 1760)
+try:
+    shares = {}
+    for on in (False, True):
+        cfg = config.defaults()
+        cfg["limits"]["mode"], cfg["limits"]["count_pending"] = "global", on
+        cfg["general"]["state_dir"] = tempfile.mkdtemp()
+        d = daemon.Daemon(cfg); d.log_fh = io.StringIO()
+        d.sh.nodes, d.sh.parts = nodes, {p: dict(tier=1, state="UP") for p in TOTAL}
+        total_cpu = sum(c for v in TOTAL.values() for c, _ in v)
+        d.sh.pending = [dict(jobid=str(i), user="u", cpus=total_cpu // 10, mem=8192, req_mem=8192,
+                             qos="normal", reason=r, partition="slim1", state="PD", req_nodes="")
+                        for i, r in enumerate(["Resources"] * 6 + ["Priority"] * 6
+                                              + ["Dependency", "QOSMaxCpuPerUserLimit"])]
+        d.act_once()
+        shares[on] = json.load(open(d.status_path))["idle_fraction"]
+    check("an idle cluster with a long queue waiting for room is not idle with count_pending",
+          shares[False] > 0.5 and shares[True] == 0.0, str(shares))
+finally:
+    slurm.qos_cpu_limits = real_q
+
 print("\n10a. QOS caps are raised only in a short pulse, only for jobs they hold")
 from sjp import limits
 cfg = config.defaults()

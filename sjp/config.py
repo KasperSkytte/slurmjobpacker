@@ -124,6 +124,10 @@ DEFAULTS: dict = {
         "ceiling": 2.0,               # the raised caps, as a multiple of base
         "min_idle_share": 0.25,       # act only while at least this share of the
                                       # cluster's placeable capacity is idle
+        # Count the CPUs of jobs waiting for room (Resources, Priority) as taken
+        # when working out the idle share: they get the idle capacity first.
+        # Not jobs the caps hold (a raise is for them) or that cannot start yet.
+        "count_pending": False,
         "lower_below": 0.10,          # end a pulse early if idle falls below this
         "hysteresis": 5,              # consecutive checks meeting both conditions
         "pulse_seconds": 60.0,        # how long the caps stay raised

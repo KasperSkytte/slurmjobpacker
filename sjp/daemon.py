@@ -982,6 +982,9 @@ class Daemon:
             if self.sh.stop.wait(max(0.0, iv - (time.time() - t0))):
                 return
 
+    # Pending reasons of jobs that only wait for room or their turn.
+    WAITING_REASONS = ("None", "Resources", "Priority")
+
     def act_once(self):
         with self.sh.lock:
             nodes, parts = dict(self.sh.nodes), dict(self.sh.parts)
@@ -994,7 +997,11 @@ class Daemon:
         total_cpu = sum(c for v in total.values() for c, _ in v) or 1
         phi = sum(policy.phi_node(fc, fm, self.demand)
                   for v in free.values() for fc, fm in v)
-        idle_frac = phi / total_cpu
+        # [limits] count_pending: jobs waiting for room get the idle capacity
+        # first, so their CPUs count as taken. Jobs pinned to a node already are.
+        waiting = sum(j["cpus"] for j in pend if j["reason"] in self.WAITING_REASONS
+                      and not j.get("req_nodes")) if self.cfg["limits"]["count_pending"] else 0
+        idle_frac = max(0.0, phi - waiting) / total_cpu
         capped = [j for j in pend if j["reason"] in slurm.LIMIT_REASONS]
         # Jobs a pulse could release, per QOS: held by a CPU cap of their QOS,
         # and small enough for some node's free space right now.
@@ -1020,7 +1027,7 @@ class Daemon:
                     self.set_caps(qos, change, before, idle_frac, held.get(qos, 0))
         self._write_atomic(self.status_path, json.dumps(dict(
             ts=time.time(), mode=self.mode, version=self.version,
-            idle_fraction=round(idle_frac, 4), total_cpu=total_cpu,
+            idle_fraction=round(idle_frac, 4), total_cpu=total_cpu, waiting_cpus=waiting,
             capped_jobs=len(capped), pending=len(pend),
             limits=[lim.state() for lim in self.limiters.values()],
             errors=self.sh.errors), indent=1))

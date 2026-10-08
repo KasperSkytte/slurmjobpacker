@@ -65,6 +65,7 @@ mode = "off"
 state_file = "/var/lib/sjp/limits.json"
 ceiling = 2.0
 min_idle_share = 0.25
+count_pending = false
 lower_below = 0.1
 hysteresis = 5
 pulse_seconds = 60.0
