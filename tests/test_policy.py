@@ -817,6 +817,9 @@ check("so are nodes not responding, in maintenance, rebooting, badly registered 
       not any(slurm._up(x) for x in ("IDLE+NOT_RESPONDING", "IDLE*", "IDLE+MAINTENANCE",
                                      "DOWN+REBOOT_ISSUED", "IDLE+INVALID_REG", "UNKNOWN",
                                      "FUTURE", "MIXED+BLOCKED", "ERROR")))
+check("the visualizer names only what keeps jobs off a node",
+      slurm.blocking("IDLE+CLOUD+DRAIN+POWERED_DOWN") == "DRAIN" and slurm.blocking("IDLE*")
+      == "NOT_RESPONDING" and slurm.blocking("MIXED+RESERVED") == "")
 check("but not reserved, rebooting later, completing, powering up or planned",
       all(slurm._up(x) for x in ("IDLE+RESERVED", "MIXED+REBOOT_REQUESTED",
                                  "MIXED+COMPLETING", "IDLE+POWERING_UP", "IDLE+PLANNED")))

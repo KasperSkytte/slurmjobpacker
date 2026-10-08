@@ -62,7 +62,8 @@ def build_state(cfg, nodes: dict, parts: dict, jobs: list, now: float, mode="liv
             continue
         shown[name] = dict(name=name, cpus=d["cpus"], mem=d["mem"], partitions=ps,
                            tier=max(parts.get(p, {}).get("tier", 1) for p in ps),
-                           up=d["up"], state=d.get("state", ""))
+                           up=d["up"], state=d.get("state", ""),
+                           why=slurm.blocking(d.get("state", "")), reason=d.get("reason", ""))
     running, pending = [], []
     for j in jobs:
         note = (notes or {}).get(j["jobid"], "")

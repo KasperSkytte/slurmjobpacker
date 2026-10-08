@@ -66,6 +66,8 @@ def nodes() -> dict:
                 partitions=[p for p in d.get("Partitions", "").split(",") if p],
                 gpu=_has_gpu(d.get("Gres", ""), d.get("CfgTRES", "")),
                 up=_up(state), state=state,
+                # why an admin took it out, without Slurm's "[user@time]"
+                reason=re.sub(r"\s*\[[^]]*\]\s*$", "", d.get("Reason", "")).strip(),
             )
         except ValueError:
             continue
@@ -85,6 +87,16 @@ _UNUSABLE = {"DOWN", "ERROR", "FUTURE", "UNKNOWN",
              "DRAIN", "FAIL", "INVALID_REG", "NOT_RESPONDING", "MAINTENANCE",
              "REBOOT_ISSUED", "BLOCKED", "DYNAMIC_FUTURE",
              "DRAINED", "DRAINING", "FAILING", "INVAL", "MAINT"}
+
+
+def blocking(state: str) -> str:
+    """The parts of a node state that keep jobs off it: "IDLE+CLOUD+DRAIN" ->
+    "DRAIN", "IDLE*" -> "NOT_RESPONDING"; "" for a node that takes jobs."""
+    state = state.upper()
+    words = [w for w in state.rstrip("*~#!%$@^-").split("+") if w in _UNUSABLE]
+    if state.endswith("*") and "NOT_RESPONDING" not in words:
+        words.append("NOT_RESPONDING")
+    return "+".join(words)
 
 
 def _up(state: str) -> bool:

@@ -83,7 +83,7 @@
   <div class="hint">click to switch scale</div>
   <div id="busy-legend">Node: CPUs allocated
     <div class="ramp" id="busy-ramp"></div>
-    <div class="ticks"><span>0%</span><span>50%</span><span>99%</span><span style="color:#e3b341">full</span></div>
+    <div class="ticks"><span>idle</span><span>50%</span><span>full</span></div>
   </div>
 </div>
 <div id="help" class="panel"><div id="opt-head" title="Click, or press ?, to open or close">options</div><table id="keys"></table></div>
@@ -170,13 +170,13 @@ addEventListener("keydown", e => {
   if (e.key === "b" || e.key === "B") toggleBusy();
   if (e.key === "a" || e.key === "A") toggleAll();
 });
-// Busyness: grey when idle, a brighter blue as CPUs fill, gold with every CPU allocated
-// (not red or purple: those mean down and reserved).
-const BUSY_FULL = "#e3b341";
-const busyColor = f => f >= 0.999 ? BUSY_FULL : `hsl(212, ${12 + 70 * f}%, ${32 + 30 * f}%)`;
-const busyText = f => f >= 0.999 ? BUSY_FULL : `hsl(212, ${20 + 65 * f}%, ${58 + 12 * f}%)`;   // readable on the dark card
+// Busyness: blue when idle, yellow at half, red with every CPU allocated. A
+// node that takes no jobs is red too, with its reason in the middle.
+const busyHue = f => f < 0.5 ? 215 - 165 * f / 0.5 : 50 - 50 * (f - 0.5) / 0.5;
+const busyColor = f => `hsl(${busyHue(Math.min(1, Math.max(0, f)))}, 80%, 55%)`;
+const busyText = f => `hsl(${busyHue(Math.min(1, Math.max(0, f)))}, 85%, 66%)`;   // readable on the dark card
 document.getElementById("busy-ramp").style.background = "linear-gradient(90deg," +
-  [0, 0.25, 0.5, 0.75, 0.99].map(busyColor).join(",") + `, ${BUSY_FULL} 92%)`;
+  [0, 0.25, 0.5, 0.75, 1].map(busyColor).join(",") + ")";
 // The top 50 (state.top) of the queue and the top 10 waiting at each node, or all (a).
 const cap = s => allWaiting ? Infinity : (s.top || 50);
 const PER_NODE = 10;
@@ -466,7 +466,7 @@ function draw() {
     let hx = c.x + 2 + nw + 10;
     for (const [t, colour, weight] of [
       [`${n.cpus} CPUs · ${gb(n.mem)} · ${gbc(n.mem / n.cpus)}`, "#8b949e", 400],
-      [n.up ? "" : (n.state || "down"), "#f85149", 650],
+      [n.up ? "" : (n.why || n.state || "down"), "#f85149", 650],
       [resvText(n), RESV, 600]]) {
       if (!t) continue;
       g.font = `${weight} ${f * 0.9}px system-ui`;
@@ -488,8 +488,11 @@ function draw() {
            busyMode && n.up ? busyText(frac) : "#8b949e");
     }
     const fx = r.x + r.w * used[0] / n.cpus, fmx = r.x + r.w * used[1] / n.mem;
-    if (!n.up) {                     // takes no jobs: no room to show, whatever is idle
-      text("unavailable", r.x + r.w, r.gapY + (r.memY - r.gapY) / 2, f * 0.85, 600, "#f85149", "right");
+    if (!n.up) {                     // takes no jobs: why, in the middle; no room to show
+      const mid = c.y + c.h / 2;
+      text(n.why || n.state || "down", r.x + r.w / 2, mid - (n.reason ? f * 0.7 : 0), f * 1.3, 700,
+           "#f85149", "center");
+      if (n.reason) text(n.reason, r.x + r.w / 2, mid + f * 0.8, f, 500, "#e6edf3", "center");
       r.spans = [];
       continue;
     }
