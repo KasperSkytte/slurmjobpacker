@@ -56,7 +56,7 @@ tmp = tempfile.mkdtemp(prefix="sjp-lua-")
 DISABLE = os.path.join(tmp, "disable")
 
 
-def write_table(name, full=None, ends=None, generated_at=None, version=1, free=None):
+def write_table(name, full=None, ends=None, generated_at=None, version=1, free=None, cfg=CFG):
     """The table sjpd would write; free: other free space than FREE."""
     table = TABLE
     if free is not None:
@@ -68,7 +68,7 @@ def write_table(name, full=None, ends=None, generated_at=None, version=1, free=N
     pin = dict(nodes=free or FREE, tiers=TIERS, room=None, enabled=True, queue_at=0, ends=ends)
     path = os.path.join(tmp, name)
     with open(path, "w") as f:
-        f.write(policy.render_lua(table, CFG, generated_at or time.time(), version, TOTAL,
+        f.write(policy.render_lua(table, cfg, generated_at or time.time(), version, TOTAL,
                                   pin, full))
     return path
 
@@ -119,23 +119,33 @@ def expect(j, full, ends):
     mem_given = j["min_mem_per_node"] != 0xfffffffffffffffe
     mem = j["min_mem_per_node"] if mem_given else 512
     parts = policy.plugin_lookup(TABLE, CAP, CFG, cpus, mem, minutes)[0]
+    # the nodes it may use, and the partitions holding them
+    want = j.get("req_nodes", "").split(",") if j.get("req_nodes") else []
+    skip = j.get("exc_nodes", "").split(",") if j.get("exc_nodes") else []
+    free = policy.eligible(FREE, want, skip)
+    if free != FREE:
+        parts = policy.restrict(parts, free, want)
     by_shape = False
-    if not policy.has_room(cpus, mem, parts, FREE):
+    if not policy.has_room(cpus, mem, parts, free):
         if full is None:
             return False, "", ""
         parts, by_shape = policy.plugin_lookup(full, CAP, CFG, cpus, mem, minutes)[0], True
+        if free != FREE:
+            parts = policy.restrict(parts, free, want) or parts
     node, pparts = None, []
-    if mem_given and not by_shape:
-        node, pparts, _ = policy.pick_node(cpus, mem, parts, FREE, TIERS, DEMAND,
+    if mem_given and not want and not by_shape:
+        node, pparts, _ = policy.pick_node(cpus, mem, parts, free, TIERS, DEMAND,
                                            CFG["pin"]["min_gain"], CFG["pin"]["min_ratio_gain"])
-    elif mem_given and ends is not None:
-        node, pparts, _ = policy.soonest_node(cpus, mem, parts, FREE, ends, NOW, TIERS)
-    return True, ",".join(sorted(pparts if node else parts)), node or ""
+    elif mem_given and not want and ends is not None:
+        node, pparts, _ = policy.soonest_node(cpus, mem, parts, free, ends, NOW, TIERS)
+    # a --nodelist stays the user's own
+    return True, ",".join(sorted(pparts if node else parts)), node or ",".join(want)
 
 
 JOBS = {"small": job(8, 32000), "himem": job(4, 160000), "wide": job(40, 160000),
         "fat-wide": job(40, 640000), "big": job(60, 240000), "whole": job(64, 1000000),
-        "nomem": job(1), "long": job(16, 64000, minutes=4000)}
+        "nomem": job(1), "long": job(16, 64000, minutes=4000),
+        "nodelist": job(4, 16000, req_nodes="n3"), "exclude": job(8, 32000, exc_nodes="n1")}
 
 for title, full, ends in (("1. as sjpd decides: room now, or not placed", None, None),
                           ("2. always_place: by shape when no node has room", FULL, None),
@@ -160,6 +170,15 @@ check("the slurmctld log line says why", "no room, by shape pin=n4 eta 0.5h" in 
 check("a job with room is marked with the node's free space",
       ";free=" in got["small"][3] and "room=no" not in got["small"][3], got["small"][3])
 
+print("\n4b. [policy] user_nodes = ignore: a job's own nodes are dropped, and it is placed like any other")
+icfg = config.defaults(); icfg["policy"]["user_nodes"] = "ignore"
+got = run(write_table("t4b.lua", cfg=icfg), [("nodelist", job(8, 32000, req_nodes="n3"), True),
+                                             ("plain", job(8, 32000), True),
+                                             ("exclude", job(8, 32000, exc_nodes="n1"), True)])
+check("placed as if it had asked for no node: the same partitions and pin as a plain job",
+      got["nodelist"][:3] == got["plain"][:3] == got["exclude"][:3]
+      and got["nodelist"][2] != "n3", str(got))
+
 print("\n5. a burst: pins the plugin made count until sjpd has seen them")
 # Room for one 16-CPU job on n1 (a match by memory per CPU) and one on n2.
 bfree = {"n1": (16, 64000, ["slim1"]), "n2": (20, 64000, ["slim1"]),
@@ -174,12 +193,20 @@ check("the second no longer sees room there; only n2 has, so Slurm picks it",
 
 print("\n6. jobs the plugin leaves to the site's rules")
 skip = {"not batch": job(1, 1000, script=""), "gpu": job(1, 1000, tres_per_node="gres/gpu:1"),
-        "constraint": job(1, 1000, features="avx512"), "multi-node": job(1, 1000, min_nodes=2),
-        "no memory": job(1, 0), "reservation": job(1, 1000, reservation="r1")}
+        "constraint": job(1, 1000, features="zen5"), "multi-node": job(1, 1000, min_nodes=2),
+        "no memory": job(1, 0), "reservation": job(1, 1000, reservation="r1"),
+        "no usable node in --nodelist": job(1, 1000, req_nodes="n9")}
 got = run(write_table("t6.lua"), [(k, v, True) for k, v in skip.items()])
 for k in skip:
-    check(f"{k}: not placed, says {k!r}", got[k][0] is False and got[k][4] == k,
+    check(f"{k}: not placed, says {k!r}, and the job says so too",
+          got[k][0] is False and got[k][4] == k and got[k][3].startswith(f"sjp:skipped={k}"),
           str(got[k]))
+got = run(write_table("t6b.lua"), [("full", job(60, 240000), True),
+                                   ("own", dict(job(60, 240000), admin_comment="site note"), True)])
+check("a job skipped for want of room is marked so, with its shape",
+      got["full"][3] == "sjp:skipped=no room;job=60c,234G,3.9G/c", got["full"][3])
+check("an AdminComment the job already has is left alone", got["own"][3] == "site note",
+      got["own"][3])
 got = run(write_table("t7.lua", generated_at=time.time() - 3600), [("old", job(8, 32000), True)])
 check("a table sjpd has not refreshed: not placed, \"stale\"",
       got["old"][0] is False and got["old"][4] == "stale", str(got["old"]))

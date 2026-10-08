@@ -27,6 +27,7 @@ sjp_config:
                                    # e.g. sacctmgr -i modify account root set qos+=flex
     min_idle_share: 0.25           # act only while at least this share of the cluster is idle
   policy:
+    user_nodes: follow             # ignore: drop users' --nodelist/--exclude, sjp chooses
     always_place: false            # true: place jobs even when no node has room now
   pin:
     time_aware: false              # true: weigh time limits when choosing a node

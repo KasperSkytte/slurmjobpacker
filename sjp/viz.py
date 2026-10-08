@@ -25,8 +25,8 @@ from . import __version__, config, policy, slurm
 HTML = os.path.join(os.path.dirname(os.path.abspath(__file__)), "viz.html")
 HTML_2D = os.path.join(os.path.dirname(os.path.abspath(__file__)), "viz2d.html")
 HORIZON = 14 * 86400          # the depth of a node: two weeks, Slurm's usual MaxTime
-TOP = 50                      # waiting jobs shown in the queue
-PINNED = 300                  # and at most this many waiting pinned to a node
+TOP = 50                      # waiting jobs the page shows unless asked for all (A)
+MAX_WAITING = 5000            # waiting jobs sent to the page at most, highest priority first
 
 
 def queue_order(j):
@@ -88,12 +88,11 @@ def build_state(cfg, nodes: dict, parts: dict, jobs: list, now: float, mode="liv
                                 pinned=req[0] if len(req) == 1 and req[0] in shown else ""))
     pending.sort(key=queue_order)
     reservations(shown, nodes, resvs, jobs, now)
-    # The queue's top, and the jobs waiting for a node, which are drawn at that node.
+    # The page shows the top TOP of the queue and of those waiting for a node,
+    # or all of them; pinned ones are drawn at their node.
     queued = [p for p in pending if not p["pinned"]]
-    pinned = [p for p in pending if p["pinned"]]
     return dict(mode=mode, version=__version__, now=now, horizon=HORIZON,
-                nodes=list(shown.values()), running=running,
-                pending=queued[:TOP] + pinned[:PINNED],
+                nodes=list(shown.values()), running=running, pending=pending[:MAX_WAITING],
                 pending_total=len(pending), queued_total=len(queued), top=TOP)
 
 
@@ -319,14 +318,13 @@ class Demo:
             hide = ("runtime", "done", "submitted", "waits", "allowed")
             pending = sorted(self.pending, key=queue_order)
             queued = [j for j in pending if not j.get("pinned")]
-            pinned = [j for j in pending if j.get("pinned")]
             return dict(mode="demo", version=__version__, now=self.now, horizon=HORIZON,
                         speed=self.speed,
                         poll_ms=250, nodes=list(self.nodes.values()),
                         running=[{k: v for k, v in j.items() if k not in hide}
                                  for j in self.running],
                         pending=[{k: v for k, v in j.items() if k not in hide}
-                                 for j in queued[:TOP] + pinned[:PINNED]],
+                                 for j in pending[:MAX_WAITING]],
                         pending_total=len(pending), queued_total=len(queued), top=TOP)
 
 

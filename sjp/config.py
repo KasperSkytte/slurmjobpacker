@@ -47,6 +47,10 @@ DEFAULTS: dict = {
         # false ("no room") and the site's own rule places it. The recheck
         # moves such jobs once room opens elsewhere.
         "always_place": False,
+        # A job's own --nodelist/--exclude: "follow" places it among those nodes
+        # (in partitions holding them); "ignore" drops them and places the job
+        # like any other, for sites where users ask for hardware by features only.
+        "user_nodes": "follow",
         "buckets": {
             "mem_per_cpu": [1024, 2048, 4096, 6144, 8192, 12288, 24576],
             "cpus": [1, 4, 8, 16, 32, 64, 128],
@@ -93,9 +97,10 @@ DEFAULTS: dict = {
     },
     "recheck": {
         # Every interval seconds, in enforce mode, sjp's choice for each pending
-        # job it placed is made again against the cluster and queue as they are
-        # now, and the job moved if it changed and a node there has room. Not
-        # arrays, GPU jobs or pinned jobs. 0 = off.
+        # job it placed -- or skipped for want of room ("sjp:skipped=no room") --
+        # is made again against the cluster and queue as they are now, and the
+        # job moved if it changed and a node there has room. Not arrays, GPU
+        # jobs or jobs on the user's own --nodelist. 0 = off.
         "interval": 60.0,
     },
     "limits": {

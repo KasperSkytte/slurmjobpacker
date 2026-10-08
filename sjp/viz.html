@@ -35,7 +35,26 @@
   #info td { padding: 2px 0; vertical-align: top; overflow-wrap: anywhere; }
   #info td:first-child { color: var(--muted); padding-right: 10px; white-space: nowrap; }
   #info .close { position: absolute; top: 8px; right: 10px; cursor: pointer; color: var(--muted); }
-  #help { bottom: 16px; right: 16px; font-size: 12px; color: var(--muted); }
+  #help { bottom: 16px; right: 16px; font-size: 12px; color: var(--muted); padding: 8px 12px;
+    cursor: pointer; user-select: none; }
+  #opt-head { color: var(--text); }
+  #opt-head::after { content: " ▸"; color: var(--muted); }
+  body.keys #opt-head::after { content: " ▾"; }
+  #keys { display: none; border-collapse: collapse; margin-top: 6px; }
+  body.keys #keys { display: table; }
+  #keys td { padding: 2px 0; vertical-align: middle; }
+  #keys tr.opt { cursor: pointer; color: var(--text); }
+  #keys tr.opt:hover td { color: #fff; }
+  #keys td.k { padding-left: 12px; color: var(--muted); font-family: ui-monospace, monospace; }
+  #keys tr.how td:nth-child(2) { padding-top: 3px; }
+  .sw { display: inline-block; width: 26px; height: 14px; margin-right: 8px; border-radius: 7px;
+    background: var(--line); position: relative; vertical-align: middle; transition: background .2s; }
+  .sw::after { content: ""; position: absolute; top: 2px; left: 2px; width: 10px; height: 10px;
+    border-radius: 50%; background: var(--muted); transition: left .2s, background .2s; }
+  .sw.on { background: #1f6feb; }
+  .sw.on::after { left: 14px; background: #fff; }
+  #busy-legend { display: none; margin-top: 10px; }
+  body.busy #busy-legend { display: block; }
   #err { top: 50%; left: 50%; transform: translate(-50%, -50%); display: none; }
   body.clean #help, body.clean #info, body.clean .switch { display: none !important; }
   body.bare .panel { display: none !important; }
@@ -63,10 +82,14 @@
   <span id="legend-title">Memory per CPU of each job (GB/C)</span>
   <div class="ramp" id="ramp"></div>
   <div class="ticks" id="ticks"></div>
-  <div class="hint">click or <b>C</b>: switch scale</div>
+  <div class="hint">click to switch scale</div>
+  <div id="busy-legend">Node: CPUs allocated
+    <div class="ramp" id="busy-ramp"></div>
+    <div class="ticks"><span>0%</span><span>50%</span><span>99%</span><span style="color:#e3b341">full</span></div>
+  </div>
 </div>
 <div id="info" class="panel"><span class="close" id="close">✕</span><h2 id="info-title"></h2><table id="info-body"></table></div>
-<div id="help" class="panel">drag to turn · right-drag or <b>Ctrl</b>+drag to move · scroll to zoom · click a job · <b>R</b> rotate · <b>L</b> labels · <b>C</b> colours · <b>P</b> pinned jobs at their node · <b>H</b> hide panels</div>
+<div id="help" class="panel"><div id="opt-head" title="Click, or press ?, to open or close">options</div><table id="keys"></table></div>
 <div id="err" class="panel"></div>
 
 <script type="module">
@@ -133,7 +156,10 @@ function drawLegend() {
     sc.stops.map(([m, n]) => `hsl(${hueOf(m, n)}, 62%, 52%)`).join(",") + ")";
   document.getElementById("ticks").innerHTML = sc.ticks.map(t => `<span>${t}</span>`).join("");
 }
-function switchScale() { colorMode = colorMode === "mpc" ? "fit" : "mpc"; drawLegend(); recolor(); }
+function switchScale() {
+  colorMode = colorMode === "mpc" ? "fit" : "mpc"; drawLegend(); recolor();
+  if (typeof renderOptions === "function") renderOptions();
+}
 document.getElementById("legend").addEventListener("click", switchScale);
 addEventListener("keydown", e => { if (e.key === "c" || e.key === "C") switchScale(); });
 drawLegend();
@@ -438,17 +464,51 @@ try {
 function togglePinned() {
   pinAtNode = !pinAtNode;
   try { localStorage.setItem("sjp-pinned", pinAtNode ? "node" : "queue"); } catch (e) { /* fine */ }
+  renderOptions();
   if (state) apply(state);
 }
 addEventListener("keydown", e => { if (e.key === "p" || e.key === "P") togglePinned(); });
+// More toggles, remembered the same way: B colours nodes by how busy they are
+// (?busy=1), A shows every waiting job instead of the top 50 (?waiting=all).
+const remembered = (key, param, on, dflt) => {
+  if (params.has(param)) return params.get(param) === on;
+  try { const v = localStorage.getItem("sjp-" + key); return v === null ? dflt : v === "1"; }
+  catch (e) { return dflt; }
+};
+const remember = (key, v) => { try { localStorage.setItem("sjp-" + key, v ? "1" : "0"); } catch (e) { /* fine */ } };
+let busyMode = remembered("busy", "busy", "1", true);
+let allWaiting = remembered("all", "waiting", "all", false);
+document.body.classList.toggle("busy", busyMode);
+function toggleBusy() {
+  busyMode = !busyMode; remember("busy", busyMode);
+  document.body.classList.toggle("busy", busyMode); renderOptions();
+  if (state) apply(state);
+}
+function toggleAll() { allWaiting = !allWaiting; remember("all", allWaiting); renderOptions(); if (state) apply(state); }
+addEventListener("keydown", e => {
+  if (e.key === "b" || e.key === "B") toggleBusy();
+  if (e.key === "a" || e.key === "A") toggleAll();
+});
+// Busyness: grey when idle, a brighter blue as CPUs fill, gold with every CPU allocated
+// (not red or purple: those mean down and reserved).
+const BUSY_FULL = "#e3b341";
+const busyColor = f => f >= 0.999 ? BUSY_FULL : `hsl(212, ${12 + 70 * f}%, ${32 + 30 * f}%)`;
+document.getElementById("busy-ramp").style.background = "linear-gradient(90deg," +
+  [0, 0.25, 0.5, 0.75, 0.99].map(busyColor).join(",") + `, ${BUSY_FULL} 92%)`;
 // squeue's order, for the queue when it holds pinned jobs too: priority, then job ID.
 const byQueue = (a, b) => (b.priority || 0) - (a.priority || 0)
   || (parseInt(a.id) || 0) - (parseInt(b.id) || 0) || String(a.id).localeCompare(String(b.id));
 
 // "Waiting", or which part of a longer queue is shown.
 const queued = s => s.pending.filter(j => !(pinAtNode && j.pinned)).sort(byQueue);
-const waitingTitle = s => (pinAtNode ? s.queued_total ?? s.pending_total : s.pending_total)
-  > queued(s).length ? `Waiting (top ${queued(s).length} by priority)` : "Waiting";
+// The top 50 (s.top) of the queue and the top 10 waiting at each node, or all (a).
+const cap = s => allWaiting ? Infinity : (s.top || 50);
+const PER_NODE = 10;
+const waitingTitle = s => {
+  const total = pinAtNode ? s.queued_total ?? s.pending_total : s.pending_total;
+  const shown = Math.min(queued(s).length, cap(s));
+  return total > shown ? `Waiting (top ${shown} by priority)` : allWaiting ? `Waiting (all ${total})` : "Waiting";
+};
 function apply(s) {
   state = s; horizon = s.horizon || horizon;
   for (const n of s.nodes) nodeMpc[n.name] = n.mem / n.cpus;
@@ -483,6 +543,10 @@ function apply(s) {
       cx += j.cpus; cy += j.mem;
     }
     nv.used = [cx, cy];
+    // B: the frame by how busy the node is, unless it is down (red) or reserved (purple)
+    if (busyMode && nv.node.up && !nv.held) {
+      nv.frame.material.color.setStyle(busyColor(cx / nv.node.cpus));
+    } else nv.frame.material.color.set(!nv.node.up ? 0xf85149 : nv.held ? RESV : 0x6e7681);
     const tw = sx(cx), th = sy(cy);
     nv.taken.visible = tw > 0.05 && th > 0.05;
     nv.taken.scale.set(Math.max(tw, 1e-3), Math.max(th, 1e-3), 0.12);
@@ -515,7 +579,14 @@ function apply(s) {
   // The queue, in front of the nodes, highest priority first.
   let qx = queueLeft, qz = queueBehind ? -sceneDepth - QUEUE_BACK : 0, rowDepth = 0;
   const atNode = new Map();            // node -> where its next pinned job goes
+  let nq = 0;
+  const perNode = new Map();
   for (const j of [...s.pending].sort(byQueue)) {
+    const here = pinAtNode && j.pinned && nodeViews.has(j.pinned);
+    if (here) {
+      perNode.set(j.pinned, (perNode.get(j.pinned) || 0) + 1);
+      if (!allWaiting && perNode.get(j.pinned) > PER_NODE) continue;   // beyond its top 10
+    } else if (++nq > cap(s)) continue;                                  // beyond the top 50
     const key = "q:" + j.id; seen.add(key);
     let v = views.get(key);
     if (!v) v = jobView(key, j, new THREE.Vector3(qx, NODE_H + 4, qz));
@@ -623,7 +694,39 @@ addEventListener("keydown", e => {
   if (e.key === "r" || e.key === "R") controls.autoRotate = !controls.autoRotate;
   if (e.key === "l" || e.key === "L") showLabels = !showLabels;
   if (e.key === "h" || e.key === "H") document.body.classList.toggle("bare");
+  if (e.key === "?") toggleOptions();
+  renderOptions();
 });
+// The options: a switch for each setting, which is also its key; and how to
+// move around. Open or closed is remembered.
+function optionRows() {
+  return [
+    { key: "b", text: "colour nodes by how busy they are", get: () => busyMode, toggle: toggleBusy },
+    { key: "c", text: "colour jobs by memory per CPU (else fit)", get: () => colorMode === "mpc", toggle: switchScale },
+    { key: "p", text: "jobs waiting for one node at that node", get: () => pinAtNode, toggle: togglePinned },
+    { key: "a", text: "all waiting jobs (else top 50, 10 per node)", get: () => allWaiting, toggle: toggleAll },
+    { key: "l", text: "job labels", get: () => showLabels, toggle: () => { showLabels = !showLabels; } },
+    { key: "r", text: "rotate", get: () => controls.autoRotate, toggle: () => { controls.autoRotate = !controls.autoRotate; } },
+    { key: "drag", text: "turn" }, { key: "right-drag", text: "move (or Ctrl+drag)" },
+    { key: "scroll", text: "zoom" },
+    { key: "click", text: "a job's details" },
+    { key: "h", text: "hide the panels" }, { key: "?", text: "open or close these options" }];
+}
+function renderOptions() {
+  document.getElementById("keys").innerHTML = optionRows().map((r, i) => r.get
+    ? `<tr class="opt" data-i="${i}"><td><span class="sw${r.get() ? " on" : ""}"></span>${r.text}</td><td class="k">${r.key}</td></tr>`
+    : `<tr class="how"><td>${r.text}</td><td class="k">${r.key}</td></tr>`).join("");
+}
+document.getElementById("keys").addEventListener("click", e => {
+  const tr = e.target.closest("tr.opt");
+  if (tr) { optionRows()[+tr.dataset.i].toggle(); renderOptions(); }
+});
+function toggleOptions() {
+  document.body.classList.toggle("keys"); remember("options", document.body.classList.contains("keys"));
+}
+document.getElementById("opt-head").addEventListener("click", toggleOptions);
+document.body.classList.toggle("keys", remembered("options", "options", "1", false));
+renderOptions();
 addEventListener("resize", () => {
   camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);

@@ -68,8 +68,9 @@ def job(r) -> str:
                 f": {r['pin_why']}" if not r.get("pin") else
                 f" [recomputed now: would pin {r['pin']}, {r['pin_why']}]"))
         else:
-            why = "no node that could take it had room" if not r.get("room", True) else \
-                "see the sjp line in the slurmctld log"
+            why = (r["sjp_skipped"] if r.get("sjp_skipped") else
+                   "no node that could take it had room" if not r.get("room", True) else
+                   "see the sjp line in the slurmctld log")
             lines.append(f"    partitions   {r['actual']} (your job_submit.lua; sjp did not "
                          f"place it: {why})")
             lines.append("    node         left to Slurm")

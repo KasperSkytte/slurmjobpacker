@@ -99,7 +99,8 @@ Then run `scontrol reconfigure` (again after every sjp upgrade). If you have no
 `slurm.conf` and set the few variables at its top.
 
 `sjp.place()` never rejects a job. It returns `true` when it placed the job, or `false`
-and a reason (such as `"no room"`) when it left the job for your own rules. On a busy
+and a reason (such as `"no room"`) when it left the job for your own rules, noting the
+reason in the job's `AdminComment`. On a busy
 cluster, set `[policy] always_place` (and `[pin] wait_for_room`) to have sjp place every
 job anyway and move it as room opens. What sjp did
 is noted in the job's `AdminComment` and in the `slurmctld` log. See

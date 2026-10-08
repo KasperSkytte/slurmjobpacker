@@ -37,6 +37,27 @@
   #info td:first-child { color: var(--muted); padding-right: 10px; white-space: nowrap; }
   #info a { color: #a371f7; }
   #info .close { position: absolute; top: 8px; right: 10px; cursor: pointer; color: var(--muted); }
+  #help { position: fixed; bottom: 16px; right: 16px; font-size: 12px; color: var(--muted);
+    padding: 8px 12px; cursor: pointer; user-select: none; }
+  #opt-head { color: var(--text); }
+  #opt-head::after { content: " ▸"; color: var(--muted); }
+  body.keys #opt-head::after { content: " ▾"; }
+  #keys { display: none; border-collapse: collapse; margin-top: 6px; }
+  body.keys #keys { display: table; }
+  #keys td { padding: 2px 0; vertical-align: middle; }
+  #keys tr.opt { cursor: pointer; color: var(--text); }
+  #keys tr.opt:hover td { color: #fff; }
+  #keys td.k { padding-left: 12px; color: var(--muted); font-family: ui-monospace, monospace; }
+  #keys tr.how td:nth-child(2) { padding-top: 3px; }
+  .sw { display: inline-block; width: 26px; height: 14px; margin-right: 8px; border-radius: 7px;
+    background: var(--line); position: relative; vertical-align: middle; transition: background .2s; }
+  .sw::after { content: ""; position: absolute; top: 2px; left: 2px; width: 10px; height: 10px;
+    border-radius: 50%; background: var(--muted); transition: left .2s, background .2s; }
+  .sw.on { background: #1f6feb; }
+  .sw.on::after { left: 14px; background: #fff; }
+  #busy-legend { display: none; margin-top: 10px; }
+  body.busy #busy-legend { display: block; }
+  body.clean #help { display: none !important; }
   #err { top: 50%; left: 50%; transform: translate(-50%, -50%); display: none; }
   body.clean #info, body.clean .switch { display: none !important; }
   body.bare .panel { display: none !important; }
@@ -59,8 +80,13 @@
   <span id="legend-title">Memory per CPU of each job (GB/C)</span>
   <div class="ramp" id="ramp"></div>
   <div class="ticks" id="ticks"></div>
-  <div class="hint">click or <b>C</b>: switch scale · <b>L</b>: labels · <b>P</b>: pinned jobs at their node</div>
+  <div class="hint">click to switch scale</div>
+  <div id="busy-legend">Node: CPUs allocated
+    <div class="ramp" id="busy-ramp"></div>
+    <div class="ticks"><span>0%</span><span>50%</span><span>99%</span><span style="color:#e3b341">full</span></div>
+  </div>
 </div>
+<div id="help" class="panel"><div id="opt-head" title="Click, or press ?, to open or close">options</div><table id="keys"></table></div>
 <div id="info" class="panel"><span class="close" id="close">✕</span><h2 id="info-title"></h2><table id="info-body"></table></div>
 <div id="err" class="panel"></div>
 
@@ -107,7 +133,10 @@ function drawLegend() {
     sc.stops.map(([m, n]) => `hsl(${hueOf(m, n)}, 62%, 52%)`).join(",") + ")";
   document.getElementById("ticks").innerHTML = sc.ticks.map(t => `<span>${t}</span>`).join("");
 }
-function switchScale() { colorMode = colorMode === "mpc" ? "fit" : "mpc"; drawLegend(); recolor(); }
+function switchScale() {
+  colorMode = colorMode === "mpc" ? "fit" : "mpc"; drawLegend(); recolor();
+  if (typeof renderOptions === "function") renderOptions();
+}
 document.getElementById("legend").addEventListener("click", switchScale);
 addEventListener("keydown", e => { if (e.key === "c" || e.key === "C") switchScale(); });
 // Jobs waiting for one node: drawn at that node, or in the queue like any other
@@ -120,9 +149,37 @@ try {
 function togglePinned() {
   pinAtNode = !pinAtNode;
   try { localStorage.setItem("sjp-pinned", pinAtNode ? "node" : "queue"); } catch (e) { /* fine */ }
+  renderOptions();
   if (state) apply(state);
 }
 addEventListener("keydown", e => { if (e.key === "p" || e.key === "P") togglePinned(); });
+// More toggles, remembered the same way: B colours nodes by how busy they are
+// (?busy=1), A shows every waiting job instead of the top 50 (?waiting=all).
+const remembered = (key, param, on, dflt) => {
+  if (params.has(param)) return params.get(param) === on;
+  try { const v = localStorage.getItem("sjp-" + key); return v === null ? dflt : v === "1"; }
+  catch (e) { return dflt; }
+};
+const remember = (key, v) => { try { localStorage.setItem("sjp-" + key, v ? "1" : "0"); } catch (e) { /* fine */ } };
+let busyMode = remembered("busy", "busy", "1", true);
+let allWaiting = remembered("all", "waiting", "all", false);
+document.body.classList.toggle("busy", busyMode);
+function toggleBusy() { busyMode = !busyMode; remember("busy", busyMode); document.body.classList.toggle("busy", busyMode); renderOptions(); }
+function toggleAll() { allWaiting = !allWaiting; remember("all", allWaiting); renderOptions(); if (state) apply(state); }
+addEventListener("keydown", e => {
+  if (e.key === "b" || e.key === "B") toggleBusy();
+  if (e.key === "a" || e.key === "A") toggleAll();
+});
+// Busyness: grey when idle, a brighter blue as CPUs fill, gold with every CPU allocated
+// (not red or purple: those mean down and reserved).
+const BUSY_FULL = "#e3b341";
+const busyColor = f => f >= 0.999 ? BUSY_FULL : `hsl(212, ${12 + 70 * f}%, ${32 + 30 * f}%)`;
+const busyText = f => f >= 0.999 ? BUSY_FULL : `hsl(212, ${20 + 65 * f}%, ${58 + 12 * f}%)`;   // readable on the dark card
+document.getElementById("busy-ramp").style.background = "linear-gradient(90deg," +
+  [0, 0.25, 0.5, 0.75, 0.99].map(busyColor).join(",") + `, ${BUSY_FULL} 92%)`;
+// The top 50 (state.top) of the queue and the top 10 waiting at each node, or all (a).
+const cap = s => allWaiting ? Infinity : (s.top || 50);
+const PER_NODE = 10;
 // squeue's order, for the queue when it holds pinned jobs too: priority, then job ID.
 const byQueue = (a, b) => (b.priority || 0) - (a.priority || 0)
   || (parseInt(a.id) || 0) - (parseInt(b.id) || 0) || String(a.id).localeCompare(String(b.id));
@@ -198,8 +255,9 @@ function layout(nodes) {
     }
   }
   CH = Math.max(H, y + pad + (tall ? 110 * ui : 0));
+  const nodesH = CH;
   cv.width = W * dpr; cv.height = CH * dpr; cv.style.width = W + "px"; cv.style.height = CH + "px";
-  L = { tall, queue, rows, heads, font };
+  L = { tall, queue, rows, heads, font, nodesH };
 }
 
 // ------------------------------------------------------------------ jobs
@@ -269,28 +327,39 @@ function apply(s) {
     v.job = j; target(v, t);
   };
   // Jobs waiting for one node: in that node's column, as wide as their share of
-  // its CPUs, two rows; the column's heading counts those that do not fit too.
-  const at = new Map();
-  for (const r of L.rows.values()) r.pinMore = r.pinCount = 0;
-  for (const j of s.pending) {
+  // its CPUs, two rows; the column's heading counts all that wait there.
+  // The top 50 of these and of the queue, or all (A).
+  const at = new Map(), order = [...s.pending].sort(byQueue);
+  for (const r of L.rows.values()) r.pinTotal = r.pinCount = 0;
+  for (const j of order) {
     const r = j.pinned && L.rows.get(j.pinned);
     if (!r || !r.pin) continue;
+    r.pinTotal++;
+    if (!allWaiting && r.pinTotal > PER_NODE) continue;     // beyond its top 10
     const P = r.pin, ph = (P.h - 3 * gap) / 2;
     const p = at.get(j.pinned) || { x: P.x + gap, y: P.y + gap };
     const w = Math.min(Math.max(P.w * j.cpus / r.node.cpus, L.font * 2.6), P.w - 2 * gap);
     if (p.x + w > P.x + P.w - gap && p.x > P.x + gap) { p.x = P.x + gap; p.y += ph + gap; }
-    if (p.y + ph > P.y + P.h) { r.pinMore++; continue; }
+    if (p.y + ph > P.y + P.h) continue;
     chip(j, { cx: p.x, cw: w, mx: p.x, mw: w, cy: p.y, my: p.y, h: ph, a: 1 });
     p.x += w + gap; at.set(j.pinned, p); r.pinCount++;
   }
-  let qx = Q.x, qy = Q.y;
-  for (const j of [...s.pending].sort(byQueue)) {
+  let qx = Q.x, qy = Q.y, nq = 0;
+  L.queued = 0;
+  for (const j of order) {
     if (j.pinned && L.rows.has(j.pinned) && L.rows.get(j.pinned).pin) continue;   // at its node
+    if (++nq > cap(s)) break;
     const w = Math.max(j.cpus * unit, L.font * 3.2);
     if (qx + w > Q.x + Q.w && qx > Q.x) { qx = Q.x; qy += chipH + gap; }
-    if (qy + chipH > Q.y + Q.h) break;
+    if (qy + chipH > Q.y + Q.h && !allWaiting) break;   // all (A): the page grows instead
     chip(j, { cx: qx, cw: w, mx: qx, mw: w, cy: qy, my: qy, h: chipH, a: 1 });
-    qx += w + gap;
+    qx += w + gap; L.queued++;
+  }
+  // All waiting jobs may need a longer page than the nodes do.
+  const need = Math.max(L.nodesH, allWaiting ? qy + chipH + 40 : 0);
+  if (need !== CH) {
+    CH = need;
+    cv.height = CH * dpr; cv.style.height = CH + "px";
   }
   for (const [k, v] of views) if (!seen.has(k)) v.dead = true;
   updatePanel(s);
@@ -369,16 +438,16 @@ function draw() {
   // The queue's heading.
   // The queue: jobs not waiting for one node; those are at their node.
   const atNode = j => j.pinned && L.rows.has(j.pinned) && L.rows.get(j.pinned).pin;
-  const inQueue = state.pending.filter(j => !atNode(j)).length;
   const queueTotal = state.pending.some(atNode) ? (state.queued_total ?? state.pending_total)
                                                 : state.pending_total;
-  if (inQueue) text(queueTotal > inQueue ? `Waiting (top ${inQueue} by priority)` : "Waiting",
+  if (L.queued) text(allWaiting && L.queued >= queueTotal ? `Waiting (all ${queueTotal})`
+      : queueTotal > L.queued ? `Waiting (top ${L.queued} by priority)` : "Waiting",
     L.queue.x, L.queue.y - f * 0.9, f * 1.05, 650);
   for (const h of L.heads) text(h.text, h.x, h.y, f * 1.25, 650, "#8b949e");
   // Each node's column of jobs waiting for it, when it has any.
   for (const r of L.rows.values()) {
-    if (!r.pin || !(r.pinCount || r.pinMore)) continue;
-    text(`waiting here: ${r.pinCount + r.pinMore}`, r.pin.x + 2, r.label + f * 0.7, f * 0.85, 500,
+    if (!r.pin || !r.pinTotal) continue;
+    text(`waiting here: ${r.pinTotal}`, r.pin.x + 2, r.label + f * 0.7, f * 0.85, 500,
          "#8b949e");
     g.strokeStyle = "#30363d"; g.lineWidth = 1; g.setLineDash([4, 4]);
     roundRect(r.pin.x, r.pin.y, r.pin.w, r.pin.h, 8); g.stroke(); g.setLineDash([]);
@@ -388,7 +457,9 @@ function draw() {
   for (const r of L.rows.values()) {
     const n = r.node, c = r.card;
     g.fillStyle = "#11161d"; roundRect(c.x, c.y, c.w, c.h, 8); g.fill();
-    g.strokeStyle = n.up ? "#30363d" : "#f85149"; g.lineWidth = n.up ? 1 : 2; g.stroke();
+    // red: takes no jobs; B: by how busy it is (gold: every CPU allocated)
+    const busy = busyMode && n.up ? busyColor((r.used || [0])[0] / n.cpus) : null;
+    g.strokeStyle = !n.up ? "#f85149" : busy || "#30363d"; g.lineWidth = !n.up || busy ? 2 : 1; g.stroke();
     text(n.name, c.x + 2, r.label + f * 0.7, f * 1.05, 650);
     g.font = `650 ${f * 1.05}px system-ui`; const nw = g.measureText(n.name).width;
     // After the name: its size; why it takes no jobs (DOWN, DRAIN, ...); its reservations.
@@ -411,7 +482,10 @@ function draw() {
       g.fillStyle = "#161b22"; roundRect(r.x, y, r.w, r.barH, 4); g.fill();
       g.strokeStyle = "#30363d"; g.lineWidth = 1; g.stroke();
       if (n.up) text(free, r.x - 10, y + r.barH / 2, f * 0.95, 500, "#3fb950", "right");
-      text(use, r.x + r.w + 10, y + r.barH / 2, f * 0.95, 400, "#8b949e");
+      // used / total, coloured by how much of it is used (b)
+      const frac = y === r.cpuY ? used[0] / n.cpus : used[1] / n.mem;
+      text(use, r.x + r.w + 10, y + r.barH / 2, f * 0.95, busyMode && n.up ? 600 : 400,
+           busyMode && n.up ? busyText(frac) : "#8b949e");
     }
     const fx = r.x + r.w * used[0] / n.cpus, fmx = r.x + r.w * used[1] / n.mem;
     if (!n.up) {                     // takes no jobs: no room to show, whatever is idle
@@ -585,7 +659,36 @@ function select(v) {
 addEventListener("keydown", e => {
   if (e.key === "l" || e.key === "L") showLabels = !showLabels;
   if (e.key === "h" || e.key === "H") document.body.classList.toggle("bare");
+  if (e.key === "?") toggleOptions();
+  renderOptions();
 });
+// The options: a switch for each setting, which is also its key; and how to
+// move around. Open or closed is remembered.
+function optionRows() {
+  return [
+    { key: "b", text: "colour nodes by how busy they are", get: () => busyMode, toggle: toggleBusy },
+    { key: "c", text: "colour jobs by memory per CPU (else fit)", get: () => colorMode === "mpc", toggle: switchScale },
+    { key: "p", text: "jobs waiting for one node at that node", get: () => pinAtNode, toggle: togglePinned },
+    { key: "a", text: "all waiting jobs (else top 50, 10 per node)", get: () => allWaiting, toggle: toggleAll },
+    { key: "l", text: "job labels", get: () => showLabels, toggle: () => { showLabels = !showLabels; } },
+    { key: "click", text: "a job's or a reservation's details" },
+    { key: "h", text: "hide the panels" }, { key: "?", text: "open or close these options" }];
+}
+function renderOptions() {
+  document.getElementById("keys").innerHTML = optionRows().map((r, i) => r.get
+    ? `<tr class="opt" data-i="${i}"><td><span class="sw${r.get() ? " on" : ""}"></span>${r.text}</td><td class="k">${r.key}</td></tr>`
+    : `<tr class="how"><td>${r.text}</td><td class="k">${r.key}</td></tr>`).join("");
+}
+document.getElementById("keys").addEventListener("click", e => {
+  const tr = e.target.closest("tr.opt");
+  if (tr) { optionRows()[+tr.dataset.i].toggle(); renderOptions(); }
+});
+function toggleOptions() {
+  document.body.classList.toggle("keys"); remember("options", document.body.classList.contains("keys"));
+}
+document.getElementById("opt-head").addEventListener("click", toggleOptions);
+document.body.classList.toggle("keys", remembered("options", "options", "1", false));
+renderOptions();
 
 // ?manual=1: no polling and no clock; a recorder feeds states and steps frames.
 resize();

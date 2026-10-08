@@ -513,10 +513,11 @@ class Daemon:
             if j["jobid"] in self.seen:
                 continue
             actual = [p for p in j["partition"].split(",") if p]
-            # GPU, --constraint, multi-node, interactive and other partitions: the
-            # plugin leaves them to the site's rules; sjp has no opinion on them.
+            # GPU, --constraint, multi-node, reservation, interactive and other
+            # partitions: the plugin leaves them to the site's rules; sjp has no
+            # opinion on them.
             if (j.get("gpu") or j.get("features") or j.get("nnodes", 1) > 1
-                    or not set(actual) & set(s["cap"])):
+                    or j.get("reservation") or not set(actual) & set(s["cap"])):
                 continue
             new.append((j, actual))
         # Once the plugin acts, its marks say which jobs it placed: read them all at once.
@@ -552,6 +553,14 @@ class Daemon:
         if node in nf:
             fc, fm, ps = nf[node]
             nf[node] = (fc + cpus, fm + mem, ps)
+        # Only the nodes it may use (--nodelist, --exclude), and the partitions
+        # holding them, as the plugin narrows them ([policy] user_nodes = follow).
+        follow = self.cfg["policy"]["user_nodes"] != "ignore"
+        want = slurm.expand_hostlist(j.get("req_nodes") or "") if follow and not running else []
+        exc = slurm.expand_hostlist(j.get("exc_nodes") or "") if follow else []
+        if want or exc:
+            nf = policy.eligible(nf, want, exc)
+            would = policy.restrict(would, nf, want) or would
         # The plugin places a job only if some node in those partitions has room
         # for it now; with [policy] always_place, otherwise by its shape alone.
         room = policy.has_room(cpus, mem, would, nf)
@@ -559,6 +568,8 @@ class Daemon:
         if by_shape:
             would, key, refit = policy.plugin_lookup(s["full"], s["cap"], self.cfg, cpus, mem,
                                                      j["timelimit"])
+            if want or exc:
+                would = policy.restrict(would, nf, want) or would
         if running:
             verdict = "allowed" if actual[0] in would else "excluded"
         else:
@@ -586,6 +597,7 @@ class Daemon:
             marks = slurm.sjp_marks(note)
         sjp_pin, sjp_from = marks.get("pin", ""), marks.get("from", "")
         sjp_placed = bool(marks.keys() & {"placed", "pin", "released"})
+        sjp_skipped = marks.get("skipped", "")
         # Recompute against what the job was given: sjp's partitions before the
         # pin, or, once the plugin acts, the partitions it set.
         allowed = sjp_from.split(",") if sjp_from else (actual if acted else would)
@@ -638,6 +650,7 @@ class Daemon:
                     pin=pin, pin_parts=",".join(pin_parts), pin_why=pin_why,
                     acted=acted, sjp_placed=sjp_placed, sjp_pin=sjp_pin, sjp_from=sjp_from,
                     sjp_eta=marks.get("eta", ""), sjp_by_shape=marks.get("room") == "no",
+                    sjp_skipped=sjp_skipped,
                     why=why, cost={p: round(c, 1) for c, p in cost})
 
     @staticmethod
@@ -763,6 +776,11 @@ class Daemon:
             if not marks.keys() & {"placed", "pin", "released"}:
                 continue
             wide = sorted(policy.feasible(cpus, mem, total))
+            exc = slurm.expand_hostlist(j.get("exc_nodes") or "") \
+                if self.cfg["policy"]["user_nodes"] != "ignore" else []
+            if exc:                      # only partitions with a node it may use
+                ok = policy.eligible(s["node_free"], (), exc)
+                wide = [p for p in wide if p in {q for _, _, ps in ok.values() for q in ps}]
             if not wide or set(wide) <= set(current):
                 continue                 # already everywhere it can go
             argv = slurm.cmd_set_job_partitions(jid, wide)
@@ -776,6 +794,8 @@ class Daemon:
 
     # Pending reasons a recheck can help with: the job could start somewhere.
     RECHECK_REASONS = ("None", "Resources", "Priority", BUSY_NODE)
+    # The plugin's reasons for skipping a job that sjp places once room opens.
+    TAKE_OVER = ("no room", "stale")
 
     def recheck(self, jobs, now):
         """Make sjp's choice again for every pending job it placed: jobs that
@@ -796,7 +816,7 @@ class Daemon:
         for j in sorted(jobs, key=lambda j: -j.get("priority", 0)):
             jid = j["jobid"]
             if (j["state"] != "PD" or j["reason"] not in self.RECHECK_REASONS
-                    or "_" in jid or j.get("gpu") or j.get("features")
+                    or "_" in jid or j.get("gpu") or j.get("features") or j.get("reservation")
                     or j.get("nnodes", 1) > 1 or jid in self.widened
                     or self.past_budget(j, now)):
                 continue
@@ -811,8 +831,12 @@ class Daemon:
                     return
             note = notes.get(jid, "")
             marks = slurm.sjp_marks(note)
-            if not marks.keys() & {"placed", "released", "pin"}:
-                continue                 # placed by the site's own rule
+            ours = bool(marks.keys() & {"placed", "released", "pin"})
+            # Jobs the plugin skipped for want of room (or of fresh data) are
+            # sjp's to place once room opens; the site's own rule placed them only
+            # as its fallback. Other skips (GPU, reservation, ...) are not sjp's.
+            if not ours and marks.get("skipped") not in self.TAKE_OVER:
+                continue
             pinned = j.get("req_nodes") or ""
             if pinned and "eta" not in marks:
                 continue                 # the user's own --nodelist, or a pin release_pins handles
@@ -831,8 +855,14 @@ class Daemon:
                 nf[pinned][1] += mem
             would = policy.plugin_lookup(s["table"], s["cap"], self.cfg, cpus, mem,
                                          j["timelimit"])[0]
-            free = policy.free_for({n: tuple(v) for n, v in nf.items()}, s.get("later"),
-                                   now, j["timelimit"])
+            # only the nodes it may use (--exclude, if followed), and partitions holding them
+            exc = slurm.expand_hostlist(j.get("exc_nodes") or "") \
+                if self.cfg["policy"]["user_nodes"] != "ignore" else []
+            mine = policy.eligible({n: tuple(v) for n, v in nf.items()}, (), exc)
+            if exc:
+                would = policy.restrict(would, mine)
+                base = policy.restrict(base, mine) or base
+            free = policy.free_for(mine, s.get("later"), now, j["timelimit"])
             fits = [n for n, (fc, fm, ps) in free.items()
                     if fc >= cpus and fm >= mem and set(ps) & set(would)]
             waited = now - (j.get("eligible") or now)
@@ -846,8 +876,11 @@ class Daemon:
                                                              drop=("eta",)), "moved", moved)
                     argvs = slurm.cmd_release_pin(jid, ",".join(would), note2)
                 else:
+                    # a job sjp takes over is sjp's from now on
+                    own = note if ours else slurm.rename_mark(note, "skipped", "placed",
+                                                              ",".join(would))
                     argvs = [slurm.cmd_set_job_partitions(jid, would) + [
-                        f"admincomment={slurm.set_mark(note, 'moved', moved)}"]]
+                        f"admincomment={slurm.set_mark(own, 'moved', moved)}"]]
                 self.intend("move_partitions", " && ".join(slurm.cmdline(a) for a in argvs),
                             f"pending {waited / 60:.0f} min ({j['reason']}); sjp now chooses "
                             f"{','.join(would)}, and {cpus} CPUs x {mem} MB fit on {node} now"
@@ -870,9 +903,11 @@ class Daemon:
             # placed=a,b -> pin=node;from=a,b, where the mark was
             if "pin" in marks:
                 note2 = slurm.rename_mark(note, "pin", "pin", target)
-            else:
+            elif ours:
                 note2 = slurm.rename_mark(note, "released" if "released" in marks else "placed",
                                           "pin", target)
+            else:                        # taken over: skipped for want of room
+                note2 = slurm.rename_mark(note, "skipped", "pin", target)
             note2 = slurm.set_mark(slurm.set_mark(note2, "from", ",".join(base)),
                                    "eta", hours(eta))
             argvs = slurm.cmd_pin(jid, target, ",".join(parts), note2)

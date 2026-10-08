@@ -32,6 +32,7 @@ exclude_gpu_nodes = true
 demand = [[800, 0.1], [1280, 0.15], [4267, 0.25], [7680, 0.25], [14178, 0.15], [30720, 0.1]]
 demand_median = 4267
 tolerance = 0.25
+user_nodes = "follow"
 always_place = false
 
 [policy.buckets]

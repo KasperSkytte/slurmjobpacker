@@ -3,8 +3,8 @@
 
   Load it from your cluster's own job_submit.lua and call sjp.place() where the
   partition (and node) should be chosen. It returns true if it placed the job,
-  or false and a reason if not, leaving the job untouched; then your own rule
-  applies:
+  or false and a reason if not, leaving the job to you (its admin_comment says
+  why); then your own rule applies:
 
       local ok, sjp = pcall(dofile, "/opt/slurmjobpacker/lua/sjp.lua")
       if not ok then sjp = nil end
@@ -19,16 +19,20 @@
   sjp.place() places a batch job only where it can start: when some node in a
   partition that can hold it has room for it right now. It then sets the job's
   partitions -- and, when the job can start at once, its node -- from the
-  table sjpd keeps in /run/sjp, and marks it in admin_comment ("sjp:..."). It
-  never rejects a job. It does not place (returns false):
+  table sjpd keeps in /run/sjp, and marks it in admin_comment ("sjp:..."). A
+  job asking for nodes (--nodelist, --exclude) is placed among those nodes, or,
+  with [policy] user_nodes = "ignore", the request is dropped and it is placed
+  like any other. It never rejects a job. It does not place (returns false,
+  and marks the job "sjp:skipped=<reason>"):
     "no room"     no node that could take the job has room for it now
     "no table"    sjpd is not running, or the disable file exists
     "stale"       sjpd has not refreshed the table or free space recently
     "not batch"   an interactive allocation (salloc, srun)
     "gpu"         the job asks for GPUs
     "reservation" the job runs in a reservation
-    "constraint"  the job asks for node features (--constraint), which sjp
-                  does not know; the site's own rule places it
+    "constraint"  the job asks for node features (--constraint)
+    "no usable node in --nodelist", "no partition holds those nodes"
+                  no node sjp places on fits the nodes the job asked for
     "multi-node"  the job asks for more than one node (-N 2 or more)
     "no memory"   --mem=0, all of a node's memory
     "error"       anything raised; the error is logged
@@ -329,9 +333,7 @@ local function pin_eligible(job_desc, submit_uid, cpus, tbl, mem_given)
     if not tbl.generated_at or (os.time() - tbl.generated_at) > pin.max_age then
         return false, "node data too old"
     end
-    if not blank(job_desc.req_nodes) or not blank(job_desc.exc_nodes) then
-        return false, "--nodelist or --exclude"
-    end
+    if not blank(job_desc.req_nodes) then return false, "--nodelist" end
     -- A job with a dependency is treated like any other: if it has not started
     -- by [pin] release_after, sjpd releases the pin.
     if not blank(job_desc.array_inx) then return false, "array" end
@@ -423,11 +425,73 @@ local function mpc(cpus, mem)
     return string.format("%.0f", mem / cpus)
 end
 
--- place() returns placed, why, and the details the verbose log adds.
+-- "n[01-03],gpu1" -> {"n01", "n02", "n03", "gpu1"}
+local function expand(list)
+    local out = {}
+    for head, ranges, tail in string.gmatch(list .. ",", "([^,%[]+)%[?([^%]]*)%]?([^,]*),") do
+        if ranges == "" then
+            out[#out + 1] = head .. tail
+        else
+            for r in string.gmatch(ranges, "[^,]+") do
+                local a, b = string.match(r, "^(%d+)%-?(%d*)$")
+                if a then
+                    for i = tonumber(a), tonumber(b ~= "" and b or a) do
+                        out[#out + 1] = string.format("%s%0" .. #a .. "d%s", head, i, tail)
+                    end
+                end
+            end
+        end
+    end
+    return out
+end
+
+-- Mirrors sjp.policy.eligible and restrict. The nodes a job may use: those it
+-- asked for (--nodelist), less those it excluded (--exclude); as a view of pin
+-- with only those nodes. Then its partitions narrowed to those holding such
+-- nodes -- every node it named, since Slurm requires each of its partitions
+-- to contain them.
+local function eligible(pin, job_desc)
+    local want, skip, named = nil, {}, 0
+    if not blank(job_desc.req_nodes) then
+        want = {}
+        for _, n in ipairs(expand(job_desc.req_nodes)) do want[n] = true; named = named + 1 end
+    end
+    if not blank(job_desc.exc_nodes) then
+        for _, n in ipairs(expand(job_desc.exc_nodes)) do skip[n] = true end
+    end
+    if not want and not next(skip) then return pin, nil, 0 end
+    local nodes = {}
+    for name, n in pairs(pin.nodes) do
+        if (not want or want[name]) and not skip[name] then nodes[name] = n end
+    end
+    if not next(nodes) then return nil, "no usable node in --nodelist" end
+    return setmetatable({ nodes = nodes }, { __index = pin }), want, named
+end
+
+local function restrict(parts, pin, want, named)
+    local held = {}
+    for name, n in pairs(pin.nodes) do
+        for p in string.gmatch(n[3], "[^,]+") do held[p] = (held[p] or 0) + 1 end
+    end
+    local ok = function(p) return held[p] and (not want or held[p] >= named) end
+    local out = {}
+    for p in string.gmatch(parts, "[^,]+") do if ok(p) then out[#out + 1] = p end end
+    if #out == 0 then
+        for p in pairs(held) do if ok(p) then out[#out + 1] = p end end
+        table.sort(out)
+    end
+    if #out == 0 then return nil end
+    return table.concat(out, ",")
+end
+
+-- place() returns placed, why, the details the verbose log adds, and the job's
+-- shape for the mark a job sjp skips gets.
 local function place(job_desc, submit_uid)
     if not job_desc.script or job_desc.script == "" then return false, "not batch" end
     if has_gpu(job_desc) then return false, "gpu" end
     if not blank(job_desc.reservation) then return false, "reservation" end
+    -- Node features (--constraint) are the user's way to ask for particular
+    -- hardware; sjp stands aside.
     if not blank(job_desc.features) then return false, "constraint" end
     -- sjp sizes a job against single nodes; one spanning several is the site's.
     local nodes = job_desc.min_nodes
@@ -446,28 +510,51 @@ local function place(job_desc, submit_uid)
                                  cpus, mem, mpc(cpus, mem),
                                  mem_given and "" or ", no memory request", minutes)
 
+    local shape = string.format("job=%dc,%s,%s/c", cpus, gb(mem), gb(mem / cpus))
     local parts, why, tbl, looked_up, key = packed_choice(mem, cpus, minutes)
-    if not parts then return false, why, detail end
+    if not parts then return false, why, detail, shape end
     detail = detail .. "; table " .. looked_up
     if parts ~= looked_up then detail = detail .. ", refit to " .. parts end
+    -- The nodes it may use (--nodelist, --exclude), and the partitions holding
+    -- them; all decisions below see only those nodes. With [policy] user_nodes
+    -- = "ignore" the request is dropped once the job is placed.
+    local own, want, named, narrowed = tbl.pin, nil, 0, false
+    local drop_nodes = tbl.user_nodes == "ignore"
+    if drop_nodes then
+        -- placed like any other job
+    elseif type(tbl.pin) == "table" and type(tbl.pin.nodes) == "table" then
+        own, want, named = eligible(tbl.pin, job_desc)
+        if not own then return false, want, detail, shape end
+        narrowed = own ~= tbl.pin
+        if narrowed then
+            parts = restrict(parts, own, want, named)
+            if not parts then return false, "no partition holds those nodes", detail, shape end
+            detail = detail .. ", narrowed to " .. parts
+            tbl = setmetatable({ pin = own }, { __index = tbl })
+        end
+    end
     local room = has_room(tbl, parts, cpus, mem, has_limit and minutes or nil)
-    if room == nil then return false, "stale", detail end
+    if room == nil then return false, "stale", detail, shape end
     local by_shape = false
     if not room then
         if not tbl.always or type(tbl.tf) ~= "table" or type(tbl.tf[key]) ~= "string" then
-            return false, "no room", detail .. "; no node there has the CPUs and memory free"
+            return false, "no room", detail .. "; no node there has the CPUs and memory free", shape
         end
         -- [policy] always_place: where the job's shape fits best on an empty cluster
         parts = keep_feasible(tbl.tf[key], tbl, mem, cpus)
+        if narrowed then parts = restrict(parts, own, want, named) or parts end
         by_shape = true
         why = why .. " no room, by shape"
         detail = detail .. "; no node there has room now, so by shape: " .. parts
     end
 
     job_desc.partition = parts
+    if drop_nodes and not (blank(job_desc.req_nodes) and blank(job_desc.exc_nodes)) then
+        detail = detail .. "; dropped the job's own --nodelist/--exclude (user_nodes = ignore)"
+        job_desc.req_nodes, job_desc.exc_nodes = "", ""
+    end
     -- What sjp did, for `scontrol show job`: the job's shape and the table
     -- version, and for a pin the node's free space when it was chosen.
-    local shape = string.format("job=%dc,%s,%s/c", cpus, gb(mem), gb(mem / cpus))
     local version = string.format("v=%d", tbl.version or 0)
     local mark = "sjp:placed=" .. parts .. ";" .. shape .. ";" .. version
     if by_shape then mark = mark .. ";room=no" end
@@ -520,12 +607,18 @@ local function place(job_desc, submit_uid)
 end
 
 -- Place a batch job where it fits now. Returns true, or false and a reason
--- (see the top of this file); a job that is not placed is left untouched.
+-- (see the top of this file); a job that is not placed keeps its partitions
+-- and nodes, and gets "sjp:skipped=<reason>" if it has no admin_comment.
 function sjp.place(job_desc, submit_uid)
-    local ok, placed, why, detail = pcall(place, job_desc, submit_uid)
+    local ok, placed, why, detail, shape = pcall(place, job_desc, submit_uid)
     if not ok then
         slurm.log_error("sjp: %s", tostring(placed))
         return false, "error"
+    end
+    -- Not placed: say why on the job, for `scontrol show job` and for sjpd,
+    -- which takes over the ones skipped for want of room once room opens.
+    if not placed and blank(job_desc.admin_comment) then
+        job_desc.admin_comment = "sjp:skipped=" .. tostring(why) .. (shape and (";" .. shape) or "")
     end
     local line = string.format("sjp: uid=%.0f name='%s' -> %s (%s)", submit_uid,
                                job_desc.name or "?",

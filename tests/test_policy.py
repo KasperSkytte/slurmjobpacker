@@ -312,6 +312,22 @@ check("pending jobs move, highest priority first, only as many as fit",
 check("the move is marked in AdminComment",
       "admincomment=sjp:placed=slim1;moved=slim1>fat1" in mv["1"]["cmd"] and mv["1"]["node"] == "f1",
       mv["1"]["cmd"])
+d = daemon.Daemon(config.defaults()); d.log_fh = io.StringIO()
+d.snap = dict(total=TOTAL, table={}, cap={}, later=None, node_free={
+    "s1": (0, 0, ("slim1",)), "f1": (24, 200000, ("fat1",))})
+slurm.admin_comments = lambda: {"3": "sjp:skipped=no room;job=8c,32G,4.0G/c", "4": "",
+                                "5": "sjp:skipped=multi-node"}
+policy.plugin_lookup = lambda *a: (["fat1"], (0, 0, 0), False)
+try:
+    d.recheck([rjob("3"), rjob("4"), rjob("5")], now)
+finally:
+    slurm.admin_comments, policy.plugin_lookup = real_acs, real_lookup
+mv = {r["jobid"]: r for r in map(json.loads, d.log_fh.getvalue().splitlines())
+      if r.get("action") == "move_partitions"}
+check("a job the plugin skipped for want of room is taken over once room opens, and marked "
+      "sjp's; not one it never saw, nor one skipped for another reason", sorted(mv) == ["3"]
+      and "admincomment=sjp:placed=fat1;job=8c,32G,4.0G/c;moved=slim1>fat1" in mv["3"]["cmd"],
+      str({k: v["cmd"] for k, v in mv.items()}))
 
 print("\n10f. a setting's old name keeps working")
 import tomllib as _t
@@ -734,6 +750,18 @@ r.update(sjp_placed=True, sjp_by_shape=True, sjp_pin="n1", sjp_from="zen5", sjp_
 check("and for a job sjp placed by shape and pinned to wait",
       "(sjp's choice at submission; no node had room, so by its shape)" in narrate.job(r)
       and "expected to have room first (in 3.2h)" in narrate.job(r), narrate.job(r))
+
+print("\n12f. jobs asking for nodes are placed among those nodes")
+nfx = {"a": (8, 1, ["slim1"]), "b": (8, 1, ["slim1", "slim2"]), "c": (8, 1, ["fat1"])}
+check("the nodes a job may use: those asked for, less those excluded",
+      sorted(policy.eligible(nfx, skip=["a"])) == ["b", "c"]
+      and sorted(policy.eligible(nfx, want=["b"])) == ["b"])
+check("and its partitions: those holding them, every named node in each",
+      policy.restrict(["fat1"], policy.eligible(nfx, want=["b"]), ["b"]) == ["slim1", "slim2"]
+      and policy.restrict(["slim1", "fat1"], policy.eligible(nfx, skip=["c"])) == ["slim1"]
+      and policy.restrict(["slim1"], {}) == [])
+check("the plugin is told whether to follow a job's own nodes",
+      'user_nodes = "follow",' in policy.render_lua({}, CFG, 0, 1))
 
 print("\n13. stale pins are released, and only sjp's own")
 real_ac, real_apply = slurm.admin_comment, slurm.apply
