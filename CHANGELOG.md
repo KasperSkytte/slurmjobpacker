@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.15.0](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.14.0...v1.15.0) (2026-10-08)
+
+
+### Features
+
+* mark the jobs sjp skips, take over those skipped for want of room, and an options panel in the visualizer ([ce9c25b](https://github.com/KasperSkytte/slurmjobpacker/commit/ce9c25bd2b81d277a768f758265061305b523e13))
+
+
+### Bug Fixes
+
+* show the sjp version in the visualizer, and job labels off by default ([859e35d](https://github.com/KasperSkytte/slurmjobpacker/commit/859e35dcce5a2a30120225aec038e1c366902374))
+
 ## [1.14.0](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.13.3...v1.14.0) (2026-10-07)
 
 
