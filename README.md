@@ -4,7 +4,7 @@ SLURM plugin for automatic partition and compute node selection that also packs 
 
 `slurmjobpacker` is a single sourced Lua function to use among your existing job submission logics defined in the [job submit Lua script](https://slurm.schedmd.com/job_submit_plugins.html), if any, so it easily integrates in any slurm configuration. It does not interfere with the normal scheduling by the slurm controller, priorities, fair-share, etc, it simply sets the partition and nodelist automatically at job submission, SLURM takes care of the rest.
 
-An optional web-based visualizer shows the cluster live, every node and job in CPU, memory and time space, in 3D or 2D (see [Live cluster view in 2D and 3D](#live-cluster-view-in-2d-and-3d)):
+Included is an optional web-based visualizer showing the job packing action and cluster status live in CPU, memory and time space, in 3D or 2D (see [Live cluster view in 2D and 3D](#live-cluster-view-in-2d-and-3d)):
 
 ![3D view of a simulated cluster: three slim and three fat nodes, each a box of CPUs × memory × time, with running jobs inside and waiting jobs beside them](docs/img/sjp-demo-3d.webp)
 
