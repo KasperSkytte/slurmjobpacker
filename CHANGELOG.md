@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.17.0](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.16.0...v1.17.0) (2026-10-09)
+
+
+### Features
+
+* show one user's or one account's jobs in the visualizer ([badc397](https://github.com/KasperSkytte/slurmjobpacker/commit/badc397c00b3ec0edf9bc549d5332bea42568b14))
+
 ## [1.16.0](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.15.0...v1.16.0) (2026-10-08)
 
 
