@@ -20,7 +20,7 @@ from __future__ import annotations
 import argparse, json, os, random, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import __version__, config, policy, slurm
+from . import __version__, config, describe, policy, slurm
 
 HTML = os.path.join(os.path.dirname(os.path.abspath(__file__)), "viz.html")
 HTML_2D = os.path.join(os.path.dirname(os.path.abspath(__file__)), "viz2d.html")
@@ -51,7 +51,7 @@ def shown_partitions(cfg, parts: dict, nodes: dict) -> list[str]:
 
 
 def build_state(cfg, nodes: dict, parts: dict, jobs: list, now: float, mode="live",
-                resvs=(), notes=None) -> dict:
+                resvs=(), notes=None, version=__version__) -> dict:
     """What the page draws, from what Slurm reports. notes: job ID -> AdminComment,
     of which the page shows sjp's marks."""
     keep = shown_partitions(cfg, parts, nodes)
@@ -93,7 +93,7 @@ def build_state(cfg, nodes: dict, parts: dict, jobs: list, now: float, mode="liv
     # The page shows the top TOP of the queue and of those waiting for a node,
     # or all of them; pinned ones are drawn at their node.
     queued = [p for p in pending if not p["pinned"]]
-    return dict(mode=mode, version=__version__, now=now, horizon=HORIZON,
+    return dict(mode=mode, version=version, now=now, horizon=HORIZON,
                 nodes=list(shown.values()), running=running, pending=pending[:MAX_WAITING],
                 pending_total=len(pending), queued_total=len(queued), top=TOP)
 
@@ -129,6 +129,8 @@ def reservations(shown, nodes, resvs, jobs, now):
 class Live:
     """Reads the cluster every few seconds; the page gets the latest read."""
 
+    version = __version__        # the version shown; main() asks git for it
+
     def __init__(self, cfg, interval: float):
         self.cfg, self.interval = cfg, interval
         self.state = dict(mode="live", now=time.time(), horizon=HORIZON, nodes=[],
@@ -150,7 +152,7 @@ class Live:
                     notes = {}
                 s = build_state(self.cfg, slurm.nodes(), slurm.partitions(),
                                 slurm.queue(), time.time(), resvs=slurm.reservations(),
-                                notes=notes)
+                                notes=notes, version=self.version)
                 s["poll_ms"] = int(self.interval * 1000)
                 s["accounts"] = accounts
             except slurm.SlurmError as e:
@@ -182,6 +184,7 @@ class Demo:
     """A simulated cluster, sped up. Jobs arrive, wait, and are placed the way
     sjp places them: on the node where they destroy the least placeable
     capacity, the closest match in memory per CPU breaking ties."""
+    version = __version__        # the version shown; main() asks git for it
 
     def __init__(self, cfg, speed: float = 900.0, seed: int = 1, load: float = 1.4,
                  time_aware: bool = True, slim: int = 3, fat: int = 3, pinned: float = 0.5):
@@ -330,7 +333,7 @@ class Demo:
             hide = ("runtime", "done", "submitted", "waits", "allowed")
             pending = sorted(self.pending, key=queue_order)
             queued = [j for j in pending if not j.get("pinned")]
-            return dict(mode="demo", version=__version__, now=self.now, horizon=HORIZON,
+            return dict(mode="demo", version=self.version, now=self.now, horizon=HORIZON,
                         speed=self.speed,
                         poll_ms=250, nodes=list(self.nodes.values()),
                         running=[{k: v for k, v in j.items() if k not in hide}
@@ -393,6 +396,7 @@ def main(argv=None):
     source = (Demo(cfg, a.speed, a.seed, a.load, slim=a.slim, fat=a.fat, pinned=a.pinned)
               if a.demo
               else Live(cfg, a.interval))
+    source.version = describe()          # the release, or where a checkout is
     threading.Thread(target=source.run, daemon=True).start()
     serve(source, a.bind, a.port)
 

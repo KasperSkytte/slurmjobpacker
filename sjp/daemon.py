@@ -1284,7 +1284,7 @@ class Daemon:
     # ---------------------------------------------------------------- run
     def run(self):
         self.open_logs()
-        self.log("start", version=__import__("sjp").__version__,
+        self.log("start", version=__import__("sjp").describe(),
                  limits_mode=self.cfg["limits"]["mode"],
                  cadence=self.cfg["cadence"])
         self.preflight()
