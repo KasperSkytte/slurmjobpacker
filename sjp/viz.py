@@ -67,7 +67,8 @@ def build_state(cfg, nodes: dict, parts: dict, jobs: list, now: float, mode="liv
     running, pending = [], []
     for j in jobs:
         note = (notes or {}).get(j["jobid"], "")
-        info = dict(id=j["jobid"], user=j["user"], name=j["name"], qos=j["qos"],
+        info = dict(id=j["jobid"], user=j["user"], account=j.get("account", ""),
+                    name=j["name"], qos=j["qos"],
                     partition=j["partition"], minutes=j["timelimit"],
                     reservation=j.get("reservation") or "",
                     sjp=note[note.find("sjp:"):] if "sjp:" in note else "")
@@ -135,8 +136,14 @@ class Live:
         self.lock = threading.Lock()
 
     def run(self):
+        accounts, accounts_at = [], 0.0
         while True:
             try:
+                if time.time() - accounts_at > 600:  # the accounts, for the filter
+                    try:
+                        accounts, accounts_at = slurm.accounts(), time.time()
+                    except slurm.SlurmError:
+                        accounts_at = time.time() - 540     # try again in a minute
                 try:
                     notes = slurm.admin_comments()   # sjp's marks, for a job's details
                 except slurm.SlurmError:
@@ -145,6 +152,7 @@ class Live:
                                 slurm.queue(), time.time(), resvs=slurm.reservations(),
                                 notes=notes)
                 s["poll_ms"] = int(self.interval * 1000)
+                s["accounts"] = accounts
             except slurm.SlurmError as e:
                 with self.lock:
                     self.state = dict(self.state, error=str(e))
@@ -164,6 +172,8 @@ def demo_nodes(slim: int = 3, fat: int = 3) -> list:
     return ([("slim%02d" % i, 96, 384 * 1024, "slim", 10) for i in range(1, slim + 1)]
             + [("fat%02d" % i, 96, 1536 * 1024, "fat", 9) for i in range(1, fat + 1)])
 DEMO_USERS = ["anna", "bo", "carlos", "dina", "erik", "fatima", "gustav", "hiro"]
+DEMO_ACCOUNTS = {"anna": "genomics", "bo": "genomics", "carlos": "ecology", "dina": "ecology",
+                 "erik": "microbio", "fatima": "microbio", "gustav": "teaching", "hiro": "genomics"}
 DEMO_NAMES = ["assembly", "align", "polish", "binning", "blast", "phylo", "kraken",
               "mapping", "qc", "annotate"]
 
@@ -217,7 +227,8 @@ class Demo:
         mpc = self._pick([(q, w) for q, w in self.demand]) * self.rng.uniform(0.7, 1.3)
         minutes = self._pick(self.LIMITS)
         self.next_id += 1
-        return dict(id=str(self.next_id), user=self.rng.choice(DEMO_USERS),
+        user = self.rng.choice(DEMO_USERS)
+        return dict(id=str(self.next_id), user=user, account=DEMO_ACCOUNTS[user],
                     name=self.rng.choice(DEMO_NAMES), qos="normal", partition="",
                     cpus=cpus, mem=int(cpus * mpc // 1024 * 1024) or 1024,
                     minutes=minutes, submitted=self.now, reason="Resources",
@@ -326,7 +337,8 @@ class Demo:
                                  for j in self.running],
                         pending=[{k: v for k, v in j.items() if k not in hide}
                                  for j in pending[:MAX_WAITING]],
-                        pending_total=len(pending), queued_total=len(queued), top=TOP)
+                        pending_total=len(pending), queued_total=len(queued), top=TOP,
+                        accounts=sorted(set(DEMO_ACCOUNTS.values())))
 
 
 def serve(source, bind: str, port: int):

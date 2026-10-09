@@ -342,6 +342,12 @@ def qos_exists(qos: str) -> bool:
                      timeout=30.0).strip())
 
 
+def accounts() -> list[str]:
+    """Every account in the Slurm database, sorted."""
+    txt = _run(["sacctmgr", "-nP", "show", "account", "format=Account"])
+    return sorted({a.strip() for a in txt.splitlines() if a.strip()})
+
+
 def qos_cpu_limits(qos: str) -> tuple[int | None, int | None]:
     """Current (MaxTRESPU cpu, MaxTRESPA cpu) on a QOS; None where unset."""
     txt = _run(["sacctmgr", "-nP", "show", "qos", f"name={qos}",

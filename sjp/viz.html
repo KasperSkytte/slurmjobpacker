@@ -22,6 +22,9 @@
   #head .sub { color: var(--muted); font-size: 13px; }
   .stats { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 10px;
     margin-top: 10px; align-items: center; font-size: 13px; }
+  .filters { display: flex; gap: 6px; }
+  .filters select { background: var(--line); color: var(--text); border: 1px solid #484f58;
+    border-radius: 6px; padding: 1px 4px; font: inherit; font-size: 12px; max-width: 160px; }
   .bar { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; }
   .bar i { display: block; height: 100%; background: var(--accent); width: 0; transition: width .4s; }
   #legend { bottom: 16px; left: 16px; font-size: 12px; color: var(--muted); }
@@ -75,6 +78,7 @@
     <span>Memory</span><div class="bar"><i id="membar"></i></div><span id="mem">–</span>
     <span>Jobs</span><span id="jobs" style="grid-column: span 2">–</span>
     <span>Time</span><span id="clock" style="grid-column: span 2">–</span>
+    <span>Show</span><span class="filters" style="grid-column: span 2"><select id="f-user" title="Only this user's jobs"><option value="">all users</option></select><select id="f-account" title="Only this account's jobs"><option value="">all accounts</option></select></span>
   </div>
   <div class="sub switch" style="margin-top:8px"><a id="to2d" href="2d" style="color:var(--accent);text-decoration:none">2D view</a></div>
 </div>
@@ -509,17 +513,19 @@ const byQueue = (a, b) => (b.priority || 0) - (a.priority || 0)
   || (parseInt(a.id) || 0) - (parseInt(b.id) || 0) || String(a.id).localeCompare(String(b.id));
 
 // "Waiting", or which part of a longer queue is shown.
-const queued = s => s.pending.filter(j => !(pinAtNode && j.pinned)).sort(byQueue);
+const queued = s => s.pending.filter(j => !(pinAtNode && j.pinned) && matches(j)).sort(byQueue);
 // The top 50 (s.top) of the queue and the top 10 waiting at each node, or all (a).
 const cap = s => allWaiting ? Infinity : (s.top || 50);
 const PER_NODE = 10;
 const waitingTitle = s => {
-  const total = pinAtNode ? s.queued_total ?? s.pending_total : s.pending_total;
+  const total = filtering() ? queued(s).length
+              : pinAtNode ? s.queued_total ?? s.pending_total : s.pending_total;
   const shown = Math.min(queued(s).length, cap(s));
   return total > shown ? `Waiting (top ${shown} by priority)` : allWaiting ? `Waiting (all ${total})` : "Waiting";
 };
 function apply(s) {
   state = s; horizon = s.horizon || horizon;
+  fillFilters(s);
   for (const n of s.nodes) nodeMpc[n.name] = n.mem / n.cpus;
   layoutNodes(s.nodes);
   const seen = new Set();
@@ -591,6 +597,7 @@ function apply(s) {
   let nq = 0;
   const perNode = new Map();
   for (const j of [...s.pending].sort(byQueue)) {
+    if (!matches(j)) continue;                       // filtered out: not shown
     const here = pinAtNode && j.pinned && nodeViews.has(j.pinned);
     if (here) {
       perNode.set(j.pinned, (perNode.get(j.pinned) || 0) + 1);
@@ -640,7 +647,7 @@ function updatePanel(s) {
   document.getElementById("cpu").textContent = `${Math.round(use[0])} / ${cap[0]} (${pc.toFixed(0)}%)`;
   document.getElementById("mem").textContent = `${gb(use[1])} / ${gb(cap[1])} (${pm.toFixed(0)}%)`;
   const running = new Set(s.running.map(j => j.id)).size;
-  document.getElementById("jobs").textContent = `${running} running · ${s.pending_total} waiting`;
+  document.getElementById("jobs").textContent = `${running} running · ${s.pending_total} waiting` + filterCount(s);
   const d = new Date(s.now * 1000);
   document.getElementById("clock").textContent = s.mode === "demo"
     ? `demo, ${Math.round(s.speed)}× real time · ${d.toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" })}`
@@ -706,6 +713,48 @@ addEventListener("keydown", e => {
   if (e.key === "?") toggleOptions();
   renderOptions();
 });
+// ------------------------------------------------------------------ filter
+// Show one user's or one account's jobs: the others' running jobs fade and the
+// queue holds only theirs. Kept in the URL (?user=, ?account=), so a link shows
+// the same.
+let fUser = params.get("user") || "", fAcct = params.get("account") || "";
+const matches = j => (!fUser || j.user === fUser) && (!fAcct || j.account === fAcct);
+const filtering = () => !!(fUser || fAcct);
+const escH = s => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
+function fillSelect(id, all, items, cur) {
+  if (cur && !items.includes(cur)) items = [...items, cur];
+  const el = document.getElementById(id), key = items.join("\n") + "|" + cur;
+  if (el.dataset.k === key) return;
+  el.dataset.k = key;
+  el.innerHTML = `<option value="">${all}</option>` + items.map(x =>
+    `<option value="${escH(x)}"${x === cur ? " selected" : ""}>${escH(x)}</option>`).join("");
+}
+// Users with a job running or waiting; every account in the Slurm database.
+function fillFilters(s) {
+  const jobs = [...s.running, ...s.pending];
+  fillSelect("f-user", "all users", [...new Set(jobs.map(j => j.user))].sort(), fUser);
+  fillSelect("f-account", "all accounts",
+    [...new Set([...(s.accounts || []), ...jobs.map(j => j.account).filter(Boolean)])].sort(), fAcct);
+}
+for (const [id, set] of [["f-user", v => { fUser = v; }], ["f-account", v => { fAcct = v; }]]) {
+  document.getElementById(id).addEventListener("change", e => {
+    set(e.target.value);
+    const u = new URL(location);
+    for (const [k, v] of [["user", fUser], ["account", fAcct]]) v ? u.searchParams.set(k, v) : u.searchParams.delete(k);
+    history.replaceState(null, "", u);
+    e.target.blur();
+    if (state) apply(state);
+  });
+}
+// Keys typed in a dropdown pick its options; they are not shortcuts.
+addEventListener("keydown", e => { if (e.target.closest && e.target.closest("select")) e.stopImmediatePropagation(); }, true);
+// "· theirs: 3 running, 1 waiting", when filtering.
+function filterCount(s) {
+  if (!filtering()) return "";
+  const r = new Set(s.running.filter(matches).map(j => j.id)).size, w = s.pending.filter(matches).length;
+  return ` · shown: ${r} running, ${w} waiting`;
+}
+
 // The options: a switch for each setting, which is also its key; and how to
 // move around. Open or closed is remembered.
 function optionRows() {
@@ -761,9 +810,10 @@ function step(dt) {
     v.fill.scale.z = Math.max(v.ran, 1e-3); v.fill.position.z = 0.5 - v.ran / 2;
     v.line.position.z = 0.5 - v.ran;
     v.line.visible = v.ran < 0.995;
-    v.mesh.material.opacity = 0.35 * v.opacity;
-    v.fill.material.opacity = 0.94 * v.opacity;
-    v.line.material.opacity = 0.9 * v.opacity;
+    const dim = matches(v.job) ? 1 : 0.12;           // another user's job, while filtering
+    v.mesh.material.opacity = 0.35 * v.opacity * dim;
+    v.fill.material.opacity = 0.94 * v.opacity * dim;
+    v.line.material.opacity = 0.9 * v.opacity * dim;
     // The label sits on the front face, sized to fit it; on the top face when
     // the front is too low to read (jobs with little memory); hidden if neither fits.
     const fw = v.scale.x, front = Math.min(fw * 0.9, v.scale.y * 1.8),
@@ -778,7 +828,7 @@ function step(dt) {
       v.label.position.set(v.pos.x, v.pos.y + v.scale.y / 2 + 0.02, v.pos.z);
     }
     v.label.visible = showLabels && Math.max(front, top) > 0.55 && v.opacity > 0.5;
-    v.label.material.opacity = v.opacity;
+    v.label.material.opacity = v.opacity * dim;
   }
 }
 function frame(now) {

@@ -23,6 +23,9 @@
   #head a { color: var(--accent); text-decoration: none; }
   .stats { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 10px;
     margin-top: 10px; align-items: center; font-size: 13px; }
+  .filters { display: flex; gap: 6px; }
+  .filters select { background: var(--line); color: var(--text); border: 1px solid #484f58;
+    border-radius: 6px; padding: 1px 4px; font: inherit; font-size: 12px; max-width: 160px; }
   .bar { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; }
   .bar i { display: block; height: 100%; background: var(--accent); width: 0; transition: width .4s; }
   #legend { position: fixed; bottom: 16px; left: 16px; font-size: 12px; color: var(--muted); }
@@ -73,6 +76,7 @@
     <span>Memory</span><div class="bar"><i id="membar"></i></div><span id="mem">–</span>
     <span>Jobs</span><span id="jobs" style="grid-column: span 2">–</span>
     <span>Time</span><span id="clock" style="grid-column: span 2">–</span>
+    <span>Show</span><span class="filters" style="grid-column: span 2"><select id="f-user" title="Only this user's jobs"><option value="">all users</option></select><select id="f-account" title="Only this account's jobs"><option value="">all accounts</option></select></span>
   </div>
   <div class="sub switch" style="margin-top:8px"><a id="to3d" href="./">3D view</a></div>
 </div>
@@ -272,6 +276,7 @@ function target(v, t) { v.t = t; if (!v.c) v.c = { ...t }; }
 let state = null;
 function apply(s) {
   state = s;
+  fillFilters(s);
   for (const n of s.nodes) nodeMpc[n.name] = n.mem / n.cpus;
   if (!W) resize();
   layout(s.nodes);
@@ -333,7 +338,7 @@ function apply(s) {
   for (const r of L.rows.values()) r.pinTotal = r.pinCount = 0;
   for (const j of order) {
     const r = j.pinned && L.rows.get(j.pinned);
-    if (!r || !r.pin) continue;
+    if (!r || !r.pin || !matches(j)) continue;
     r.pinTotal++;
     if (!allWaiting && r.pinTotal > PER_NODE) continue;     // beyond its top 10
     const P = r.pin, ph = (P.h - 3 * gap) / 2;
@@ -348,6 +353,7 @@ function apply(s) {
   L.queued = 0;
   for (const j of order) {
     if (j.pinned && L.rows.has(j.pinned) && L.rows.get(j.pinned).pin) continue;   // at its node
+    if (!matches(j)) continue;                                                     // filtered out
     if (++nq > cap(s)) break;
     const w = Math.max(j.cpus * unit, L.font * 3.2);
     if (qx + w > Q.x + Q.w && qx > Q.x) { qx = Q.x; qy += chipH + gap; }
@@ -375,7 +381,7 @@ function updatePanel(s) {
   document.getElementById("cpu").textContent = `${Math.round(use[0])} / ${cap[0]} (${pc.toFixed(0)}%)`;
   document.getElementById("mem").textContent = `${gb(use[1])} / ${gb(cap[1])} (${pm.toFixed(0)}%)`;
   document.getElementById("jobs").textContent =
-    `${new Set(s.running.map(j => j.id)).size} running · ${s.pending_total} waiting`;
+    `${new Set(s.running.map(j => j.id)).size} running · ${s.pending_total} waiting` + filterCount(s);
   const d = new Date(s.now * 1000);
   document.getElementById("clock").textContent = s.mode === "demo"
     ? `demo, ${Math.round(s.speed)}× real time · ${d.toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" })}`
@@ -438,8 +444,8 @@ function draw() {
   // The queue's heading.
   // The queue: jobs not waiting for one node; those are at their node.
   const atNode = j => j.pinned && L.rows.has(j.pinned) && L.rows.get(j.pinned).pin;
-  const queueTotal = state.pending.some(atNode) ? (state.queued_total ?? state.pending_total)
-                                                : state.pending_total;
+  const queueTotal = filtering() ? state.pending.filter(j => !atNode(j) && matches(j)).length
+    : state.pending.some(atNode) ? (state.queued_total ?? state.pending_total) : state.pending_total;
   if (L.queued) text(allWaiting && L.queued >= queueTotal ? `Waiting (all ${queueTotal})`
       : queueTotal > L.queued ? `Waiting (top ${L.queued} by priority)` : "Waiting",
     L.queue.x, L.queue.y - f * 0.9, f * 1.05, 650);
@@ -522,14 +528,14 @@ function draw() {
   for (const v of live) {
     const c = v.c, mpc = v.job.mem / Math.max(v.job.cpus, 1e-9);
     if (!v.key.startsWith("r:") || c.a <= 0.01) continue;
-    g.fillStyle = color(v.job, 0.28 * c.a);
+    g.fillStyle = color(v.job, 0.28 * c.a * (matches(v.job) ? 1 : 0.15));
     g.beginPath(); g.moveTo(c.cx, c.cy + c.h); g.lineTo(c.cx + c.cw, c.cy + c.h);
     g.lineTo(c.mx + c.mw, c.my); g.lineTo(c.mx, c.my); g.closePath(); g.fill();
   }
   for (const v of live) {
     const c = v.c, j = v.job, mpc = j.mem / Math.max(j.cpus, 1e-9);
     if (c.a <= 0.01) continue;
-    g.globalAlpha = c.a;
+    g.globalAlpha = c.a * (matches(j) ? 1 : 0.15);   // another user's job, while filtering
     const sel = selected === v;
     for (const [x, w, y] of v.key.startsWith("r:") ? [[c.cx, c.cw, c.cy], [c.mx, c.mw, c.my]] : [[c.cx, c.cw, c.cy]]) {
       g.fillStyle = color(j); roundRect(x + 0.5, y, Math.max(w - 1, 0.8), c.h, 3); g.fill();
@@ -665,6 +671,48 @@ addEventListener("keydown", e => {
   if (e.key === "?") toggleOptions();
   renderOptions();
 });
+// ------------------------------------------------------------------ filter
+// Show one user's or one account's jobs: the others' running jobs fade and the
+// queue holds only theirs. Kept in the URL (?user=, ?account=), so a link shows
+// the same.
+let fUser = params.get("user") || "", fAcct = params.get("account") || "";
+const matches = j => (!fUser || j.user === fUser) && (!fAcct || j.account === fAcct);
+const filtering = () => !!(fUser || fAcct);
+const escH = s => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
+function fillSelect(id, all, items, cur) {
+  if (cur && !items.includes(cur)) items = [...items, cur];
+  const el = document.getElementById(id), key = items.join("\n") + "|" + cur;
+  if (el.dataset.k === key) return;
+  el.dataset.k = key;
+  el.innerHTML = `<option value="">${all}</option>` + items.map(x =>
+    `<option value="${escH(x)}"${x === cur ? " selected" : ""}>${escH(x)}</option>`).join("");
+}
+// Users with a job running or waiting; every account in the Slurm database.
+function fillFilters(s) {
+  const jobs = [...s.running, ...s.pending];
+  fillSelect("f-user", "all users", [...new Set(jobs.map(j => j.user))].sort(), fUser);
+  fillSelect("f-account", "all accounts",
+    [...new Set([...(s.accounts || []), ...jobs.map(j => j.account).filter(Boolean)])].sort(), fAcct);
+}
+for (const [id, set] of [["f-user", v => { fUser = v; }], ["f-account", v => { fAcct = v; }]]) {
+  document.getElementById(id).addEventListener("change", e => {
+    set(e.target.value);
+    const u = new URL(location);
+    for (const [k, v] of [["user", fUser], ["account", fAcct]]) v ? u.searchParams.set(k, v) : u.searchParams.delete(k);
+    history.replaceState(null, "", u);
+    e.target.blur();
+    if (state) apply(state);
+  });
+}
+// Keys typed in a dropdown pick its options; they are not shortcuts.
+addEventListener("keydown", e => { if (e.target.closest && e.target.closest("select")) e.stopImmediatePropagation(); }, true);
+// "· theirs: 3 running, 1 waiting", when filtering.
+function filterCount(s) {
+  if (!filtering()) return "";
+  const r = new Set(s.running.filter(matches).map(j => j.id)).size, w = s.pending.filter(matches).length;
+  return ` · shown: ${r} running, ${w} waiting`;
+}
+
 // The options: a switch for each setting, which is also its key; and how to
 // move around. Open or closed is remembered.
 function optionRows() {
