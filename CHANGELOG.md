@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.17.1](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.17.0...v1.17.1) (2026-10-09)
+
+
+### Bug Fixes
+
+* show the version running, including a checkout between releases ([ab7e5b3](https://github.com/KasperSkytte/slurmjobpacker/commit/ab7e5b31a872277a3137bf7ac08b91cf4c18273a))
+
 ## [1.17.0](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.16.0...v1.17.0) (2026-10-09)
 
 
