@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.17.1](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.17.0...v1.17.1) (2026-10-14)
+
+
+### Bug Fixes
+
+* a job's account and features in its details, and the 2D used / total figures always coloured by how full they are ([c0dc895](https://github.com/KasperSkytte/slurmjobpacker/commit/c0dc8950d10244448158ad7d50c5d5e80a99097f))
+* show the version running, including a checkout between releases ([ab7e5b3](https://github.com/KasperSkytte/slurmjobpacker/commit/ab7e5b31a872277a3137bf7ac08b91cf4c18273a))
+
 ## [1.17.0](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.16.0...v1.17.0) (2026-10-09)
 
 
