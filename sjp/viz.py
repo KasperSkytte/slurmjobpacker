@@ -70,7 +70,7 @@ def build_state(cfg, nodes: dict, parts: dict, jobs: list, now: float, mode="liv
         info = dict(id=j["jobid"], user=j["user"], account=j.get("account", ""),
                     name=j["name"], qos=j["qos"],
                     partition=j["partition"], minutes=j["timelimit"],
-                    reservation=j.get("reservation") or "",
+                    reservation=j.get("reservation") or "", features=j.get("features") or "",
                     sjp=note[note.find("sjp:"):] if "sjp:" in note else "")
         if j["state"] in ("R", "CF"):
             on = [n for n in slurm.expand_hostlist(j.get("nodelist") or "") if n in shown]

@@ -689,7 +689,7 @@ function select(v) {
   const j = v.job, mpc = j.mem / Math.max(j.cpus, 1e-9), running = v.key.startsWith("r:");
   document.getElementById("info-title").textContent = `Job ${j.id}`;
   const rows = [
-    ["User", j.user], ["Name", j.name],
+    ["User", j.user], ...(j.account ? [["Account", j.account]] : []), ["Name", j.name],
     ["State", running ? `running on ${j.node}` + (j.nodes > 1 ? ` (+${j.nodes - 1} nodes)` : "")
                      : j.pinned ? `waiting for ${j.pinned} (${j.reason})` : `waiting (${j.reason})`],
     ["CPUs", (+j.cpus).toFixed(j.cpus % 1 ? 1 : 0)], ["Memory", gb(j.mem)], ["Memory / CPU", gbc(mpc)],
@@ -697,6 +697,7 @@ function select(v) {
             : ["Time limit", dur(j.minutes * 60)],
     ...(running ? [] : [["Priority", j.priority == null ? "–" : Math.round(j.priority)]]),
     ["Partition", j.partition || "–"], ["QOS", j.qos],
+    ...(j.features ? [["Features", j.features]] : []),
     ...(j.reservation ? [["Reservation", j.reservation]] : []),
     // what sjp did with it, from its AdminComment: one mark per line
     ...(j.sjp ? [["sjp", j.sjp.replace(/^sjp:/, "").split(";").join("\n")]] : []),

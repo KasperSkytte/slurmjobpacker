@@ -488,10 +488,10 @@ function draw() {
       g.fillStyle = "#161b22"; roundRect(r.x, y, r.w, r.barH, 4); g.fill();
       g.strokeStyle = "#30363d"; g.lineWidth = 1; g.stroke();
       if (n.up) text(free, r.x - 10, y + r.barH / 2, f * 0.95, 500, "#3fb950", "right");
-      // used / total, coloured by how much of it is used (b)
+      // used / total, coloured by how much of it is used
       const frac = y === r.cpuY ? used[0] / n.cpus : used[1] / n.mem;
-      text(use, r.x + r.w + 10, y + r.barH / 2, f * 0.95, busyMode && n.up ? 600 : 400,
-           busyMode && n.up ? busyText(frac) : "#8b949e");
+      text(use, r.x + r.w + 10, y + r.barH / 2, f * 0.95, n.up ? 600 : 400,
+           n.up ? busyText(frac) : "#8b949e");
     }
     const fx = r.x + r.w * used[0] / n.cpus, fmx = r.x + r.w * used[1] / n.mem;
     if (!n.up) {                     // takes no jobs: why, in the middle; no room to show
@@ -649,7 +649,7 @@ function select(v) {
   if (v.resv) { showResv(v.resv, v.node); return; }
   const j = v.job, mpc = j.mem / Math.max(j.cpus, 1e-9), running = v.key.startsWith("r:");
   const rows = [
-    ["User", j.user], ["Name", j.name],
+    ["User", j.user], ...(j.account ? [["Account", j.account]] : []), ["Name", j.name],
     ["State", running ? `running on ${j.node}` + (j.nodes > 1 ? ` (+${j.nodes - 1} nodes)` : "")
                      : j.pinned ? `waiting for ${j.pinned} (${j.reason})` : `waiting (${j.reason})`],
     ["CPUs", (+j.cpus).toFixed(j.cpus % 1 ? 1 : 0)], ["Memory", gb(j.mem)], ["Memory / CPU", gbc(mpc)],
@@ -657,6 +657,7 @@ function select(v) {
             : ["Time limit", dur(j.minutes * 60)],
     ...(running ? [] : [["Priority", j.priority == null ? "–" : Math.round(j.priority)]]),
     ["Partition", j.partition || "–"], ["QOS", j.qos],
+    ...(j.features ? [["Features", j.features]] : []),
     ...(j.reservation ? [["Reservation", j.reservation, running
       ? `<a href="#" data-resv="${esc(j.reservation)}" data-node="${esc(j.node)}">${esc(j.reservation)}</a>`
       : ""]] : []),
