@@ -277,14 +277,14 @@ real_ac = slurm.admin_comment
 slurm.admin_comment = lambda jid: "" if jid == "8" else ("sjp:pin=n1;from=slim1" if jid == "3"
                                                         else "sjp:placed")
 def pjob(jid, part, waited_h, cpus=8, mem=32768, reason="Resources", **kw):
-    return dict(dict(jobid=jid, state="PD", reason=reason, partition=part, cpus=cpus,
+    return dict(dict(jobid=jid, id=jid, state="PD", reason=reason, partition=part, cpus=cpus,
                      mem=mem, req_mem=mem, eligible=now - waited_h * 3600, gpu=False,
                      req_nodes=""), **kw)
 jobs = [pjob("1", "slim1", 5),                     # slim, over its 4 h budget
         pjob("2", "slim1", 2),                     # within budget
         pjob("3", "fat1", 2, cpus=1, mem=65536),   # fat, over its 1 h budget
         pjob("4", "slim1", 9, reason="QOSMaxCpuPerUserLimit"),   # widening cannot help
-        pjob("5_[1-9]", "slim1", 9),               # array: left alone
+        pjob("5_3", "slim1", 9, id="5", array="5"),  # an array task: a job like any other
         pjob("6", "gpu", 9),                       # not a batch partition sjp assigns
         pjob("7", "slim1", 9, req_nodes="node12"), # pinned: left alone
         pjob("8", "slim1", 9),                     # placed by the site's own rule
@@ -297,13 +297,15 @@ recs = [json.loads(l) for l in d.log_fh.getvalue().splitlines()]
 w = {r["jobid"]: r for r in recs if r.get("action") == "widen_partitions"}
 check("slim job over its budget, and fat job over its shorter one, are widened; "
       "a job sjp did not place is not",
-      sorted(w) == ["1", "3"], str(sorted(w)))
+      sorted(w) == ["1", "3", "5_3"], str(sorted(w)))
+check("an array task is widened on its own, by its task ID",
+      w["5_3"]["cmd"].startswith("scontrol update jobid=5_3 partition="), w["5_3"]["cmd"])
 check("widened to every partition that can hold the job",
       w["1"]["after"] == ",".join(sorted(policy.feasible(8, 32768, TOTAL))), w["1"]["after"])
 check("a dry run only says what it would do", not w["1"]["executed"]
       and w["1"]["cmd"].startswith("scontrol update jobid=1 partition="))
 d.widen_starving(jobs, now)
-check("each job is considered once", d.log_fh.getvalue().count("widen_partitions") == 2)
+check("each job is considered once", d.log_fh.getvalue().count("widen_partitions") == 3)
 
 print("\n10g. the recheck moves pending jobs whose choice changed, as many as fit")
 cfg = config.defaults()
@@ -314,7 +316,7 @@ real_acs, real_lookup = slurm.admin_comments, policy.plugin_lookup
 slurm.admin_comments = lambda: {str(k): "" if k == 3 else "sjp:placed=slim1" for k in range(1, 9)}
 policy.plugin_lookup = lambda *a: (["fat1"], (0, 0, 0), False)
 def rjob(jid, part="slim1", waited_min=10, prio=10, **kw):
-    return dict(dict(jobid=jid, state="PD", reason="Resources", partition=part, cpus=8,
+    return dict(dict(jobid=jid, id=jid, state="PD", reason="Resources", partition=part, cpus=8,
                      mem=32768, req_mem=32768, eligible=now - waited_min * 60, gpu=False,
                      req_nodes="", priority=prio, timelimit=60), **kw)
 jobs = [rjob("6", prio=10),                    # no room left once 1, 2 and 4 have moved
@@ -375,7 +377,7 @@ slurm.cluster_name = lambda: "c"
 slurm.admin_comment = lambda jid: notes[jid]
 slurm.apply = lambda argv, timeout=10.0: ran.append(argv) or True
 def fj(jid, cpus, prio, reason="QOSMaxCpuPerUserLimit", qos="normal", **kw):
-    return dict(dict(jobid=jid, cpus=cpus, mem=cpus * 4000, req_mem=cpus * 4000,
+    return dict(dict(jobid=jid, id=jid, cpus=cpus, mem=cpus * 4000, req_mem=cpus * 4000,
                      priority=prio, reason=reason, qos=qos, partition="slim1",
                      gpu=False, req_nodes="", user="u", account="a"), **kw)
 nf10 = {"a": (64, 512000, ["slim1"]), "b": (16, 64000, ["slim1", "slim2"])}
@@ -512,9 +514,11 @@ check("a job waiting on a dependency is pinned like any other",
       policy.pin_eligible(dict(jobid="5", nnodes=1, req_nodes="", reason="Dependency")) is None)
 node, _, info = policy.pick_node(512, 8192, ['slim1'], nf3, TIERS, DEMAND, 1.0)
 check("no pin when nothing has room", node is None and "no node" in info["why"])
-check("arrays, multi-node, user nodelists and held jobs are never pinned",
+check("an array task waiting on its own can be pinned like any other job",
+      policy.pin_eligible(dict(jobid="5_1", nnodes=1, req_nodes="", reason="None")) is None)
+check("multi-node, user nodelists and held jobs are never pinned",
       all(policy.pin_eligible(dict(jobid=i, nnodes=n, req_nodes=r, reason=why))
-          for i, n, r, why in (("5_1", 1, "", "None"), ("5", 2, "", "None"),
+          for i, n, r, why in (("5", 2, "", "None"),
                                ("5", 1, "node01", "None"), ("5", 1, "", "JobHeldUser")))
       and policy.pin_eligible(dict(jobid="5", nnodes=1, req_nodes="", reason="None", ntasks=100))
       and policy.pin_eligible(dict(jobid="5", nnodes=1, req_nodes="", reason="None", ntasks=1)) is None)
@@ -719,7 +723,7 @@ policy.plugin_lookup = lambda table, cap, cfg_, cpus, mem, minutes: (cur["would"
 applied = []
 slurm.apply = lambda argv, timeout=10.0: applied.append(argv) or True
 def wjob(jid, req, prio):
-    return dict(jobid=jid, state="PD", reason="Resources", partition="slim1", cpus=8,
+    return dict(jobid=jid, id=jid, state="PD", reason="Resources", partition="slim1", cpus=8,
                 mem=32768, req_mem=32768, eligible=now - 600, gpu=False, req_nodes=req,
                 priority=prio, timelimit=60)
 try:
@@ -794,9 +798,8 @@ applied = []
 slurm.apply = lambda argv, timeout=10.0: applied.append(argv) or True
 try:
     now = time.time()
-    jobs = [dict(jobid="7", state="PD", req_nodes="n16", submit=now - 120, reason="Resources"),
-            dict(jobid="8", state="PD", req_nodes="n03", submit=now - 120, reason="Resources"),
-            dict(jobid="9", state="PD", req_nodes="n16", submit=now - 5, reason="Resources")]
+    jobs = [dict(jobid=i, id=i, state="PD", req_nodes=n, submit=now - t, reason="Resources")
+            for i, n, t in (("7", "n16", 120), ("8", "n03", 120), ("9", "n16", 5))]
     for mode in ("observe", "enforce"):
         cfg = config.defaults(); cfg["general"]["mode"] = mode
         d = daemon.Daemon(cfg); d.log_fh = io.StringIO()
@@ -861,6 +864,173 @@ check("--text-log alone puts the JSON log beside it",
 check("--text-log '' still turns the text log off", paths(state="/h/u/s", text="")[2] == "")
 check("nothing given keeps the config's paths",
       paths() == ("/run/sjp", "/var/log/sjp/decisions.jsonl", "/var/log/sjp/sjp.log"))
+
+print("\n16. job arrays: each task is a job of its own")
+def qrow(rid, aid, state="PD", req="", node="", reason="Resources"):
+    return (f"{rid}|u|a|4|16G|1:00:00|100|{reason}|normal|slim1|x|{state}|cpu=4,mem=16G,node=1|"
+            f"{req}|{node}|2026-10-14T10:00:00|1|2026-10-14T10:00:00|(null)|N/A|(null)|(null)|{aid}|")
+squeue = "\n".join([qrow("30", "30"), qrow("32", "1_0", "R", node="n1"),
+                    qrow("1", "1_17"), qrow("1", "1_18"), qrow("18", "1_16", req="n3")])
+scontrol = "\n".join(["JobId=32 ArrayJobId=1 ArrayTaskId=0 AdminComment=a",
+                      "JobId=18 ArrayJobId=1 ArrayTaskId=16 AdminComment=sjp:pin=n3",
+                      "JobId=1 ArrayJobId=1 ArrayTaskId=17-18 AdminComment=sjp:placed=slim1"])
+asked = []
+real_run = slurm._run
+slurm._run = lambda args, timeout=10.0: asked.append(args) or (
+    squeue if args[0] == "squeue" else scontrol)
+try:
+    q = slurm.queue()
+    note1, notes = slurm.admin_comment("1"), slurm.admin_comments()
+finally:
+    slurm._run = real_run
+check("squeue lists each array task (-r), named as scontrol updates it, with the record it is in",
+      "-r" in asked[0] and [(j["jobid"], j["id"], j["array"]) for j in q] ==
+      [("30", "30", ""), ("1_0", "32", "1"), ("1_17", "1", "1"), ("1_18", "1", "1"),
+       ("1_16", "18", "1")], str([(j["jobid"], j["id"], j["array"]) for j in q]))
+check("a record's AdminComment is its own, though scontrol lists the whole array",
+      note1 == "sjp:placed=slim1" and notes["18"] == "sjp:pin=n3" and sorted(notes) == ["1", "18", "32"])
+
+def ajob(t, **kw):
+    return rjob(f"1_{t}", id="1", array="1", **kw)
+d = daemon.Daemon(config.defaults()); d.log_fh = io.StringIO()
+d.snap = dict(total=TOTAL, table={}, cap={}, later=None, node_free={
+    "f1": (16, 200000, ("fat1",)), "s1": (0, 0, ("slim1",))})
+real_acs, real_lookup = slurm.admin_comments, policy.plugin_lookup
+slurm.admin_comments = lambda: {"1": "sjp:placed=slim1"}
+policy.plugin_lookup = lambda *a: (["fat1"], (0, 0, 0), False)
+try:
+    d.recheck([ajob(t) for t in range(4)], time.time())
+finally:
+    slurm.admin_comments, policy.plugin_lookup = real_acs, real_lookup
+mv = [r["jobid"] for r in map(json.loads, d.log_fh.getvalue().splitlines())
+      if r.get("action") == "move_partitions"]
+check("an array's waiting tasks move one by one, only as many as fit",
+      mv == ["1_0", "1_1"], str(mv))
+
+cfg = config.defaults()
+cfg["general"]["mode"] = "enforce"
+cfg["policy"]["always_place"] = cfg["pin"]["wait_for_room"] = True
+d = daemon.Daemon(cfg); d.log_fh = io.StringIO()
+now = time.time()
+d.snap = dict(total=TOTAL, table={}, full={}, cap={}, later=None, tiers={"slim1": 10},
+              node_free={"a": (0, 0, ("slim1",)), "b": (0, 0, ("slim1",))},
+              ends={"a": [(now + 3600, 8, 32768)], "b": [(now + 1800, 8, 32768)]})
+real_acs, real_lookup, real_apply = slurm.admin_comments, policy.plugin_lookup, slurm.apply
+slurm.admin_comments = lambda: {"1": "sjp:placed=slim1;job=8c,32G,4.0G/c;v=3;room=no"}
+policy.plugin_lookup = lambda *a: (["slim1"], (0, 0, 0), False)
+applied = []
+slurm.apply = lambda argv, timeout=10.0: applied.append(argv) or True
+try:
+    d.recheck([ajob(1, prio=20), ajob(2, prio=20)], now)
+finally:
+    slurm.admin_comments, policy.plugin_lookup, slurm.apply = real_acs, real_lookup, real_apply
+pins = {r["jobid"]: r["node"] for r in map(json.loads, d.log_fh.getvalue().splitlines())
+        if r.get("action") == "pin_waiting"}
+check("waiting tasks are pinned one by one, each where room is expected for it first, "
+      "counting those before it: once b's room is taken, the next waits for a",
+      pins == {"1_1": "b", "1_2": "a"}
+      and ["scontrol", "update", "jobid=1_1", "reqnodelist=b",
+           "admincomment=sjp:pin=b;job=8c,32G,4.0G/c;v=3;room=no;from=slim1;eta=0.5h"] in applied,
+      str(pins))
+
+# The recheck read a newer queue than the node figures: they do not count the
+# pin it made last time yet, so there is nothing of its own to give back.
+d = daemon.Daemon(cfg); d.log_fh = io.StringIO()
+d.snap = dict(d.snap if d.snap else {}, total=TOTAL, table={}, full={}, cap={}, later=None,
+              tiers={"slim1": 10}, node_free={"b": (0, 0, ("slim1",))},
+              ends={"b": [(now + 1800, 8, 32768)]}, claimed=set())
+slurm.admin_comments = lambda: {"1": "sjp:pin=b;from=slim1;job=8c,32G,4.0G/c;v=3;room=no;eta=0.5h"}
+policy.plugin_lookup = lambda *a: (["slim1"], (0, 0, 0), False)
+try:
+    d.snap["node_free"]["c"] = (0, 0, ("slim1",))         # as soon as b, but empty of pins
+    d.snap["ends"]["c"] = [(now + 1800, 8, 32768)]
+    d.recheck([ajob(1, req_nodes="b"), ajob(2, prio=5)], now)
+    pins = [r["node"] for r in map(json.loads, d.log_fh.getvalue().splitlines())
+            if r.get("action") == "pin_waiting"]
+    check("and the next job waits elsewhere, not for the room that pin has taken",
+          pins == ["c"], str(pins))
+    d.log_fh = io.StringIO()
+    d.snap["node_free"].pop("c"); d.snap["ends"].pop("c")
+    d.snap["claimed"] = {"1_1"}
+    d.snap["node_free"] = {"b": (-8, -32768, ("slim1",))}
+    d.recheck([ajob(1, req_nodes="b")], now)
+finally:
+    slurm.admin_comments, policy.plugin_lookup = real_acs, real_lookup
+acts = [r["action"] for r in map(json.loads, d.log_fh.getvalue().splitlines()) if r["event"] == "action"]
+check("a pin the node figures do not count yet is counted, not given back as room: "
+      "the job stays pinned", acts == [], str(acts))
+d = daemon.Daemon(cfg); d.log_fh = io.StringIO()
+d.snap = dict(d.snap if d.snap else {}, total=TOTAL, table={}, full={}, cap={}, later=None,
+              tiers={"slim1": 10}, claimed={"1_1"},
+              node_free={"a": (0, 0, ("slim1",)), "b": (-8, -32768, ("slim1",))},
+              ends={"a": [(now + 1800, 8, 32768)], "b": [(now + 1800, 8, 32768)]})
+slurm.admin_comments = lambda: {"1": "sjp:pin=b;from=slim1;job=8c,32G,4.0G/c;v=3;room=no;eta=0.5h"}
+policy.plugin_lookup = lambda *a: (["slim1"], (0, 0, 0), False)
+try:
+    d.recheck([ajob(1, req_nodes="b")], now)
+finally:
+    slurm.admin_comments, policy.plugin_lookup = real_acs, real_lookup
+acts = [r["action"] for r in map(json.loads, d.log_fh.getvalue().splitlines()) if r["event"] == "action"]
+check("a waiting job stays on its node when another would have room no sooner", acts == [], str(acts))
+
+# Small tasks share a node while it has room for them: by space, not spread for its own sake.
+cfg = config.defaults()
+cfg["general"]["mode"] = "enforce"
+cfg["policy"]["always_place"] = cfg["pin"]["wait_for_room"] = True
+d = daemon.Daemon(cfg); d.log_fh = io.StringIO()
+d.snap = dict(total=TOTAL, table={}, full={}, cap={}, later=None, tiers={"slim1": 10}, claimed=set(),
+              node_free={"a": (0, 0, ("slim1",)), "b": (0, 0, ("slim1",))},
+              ends={"a": [(now + 1800, 24, 98304)], "b": [(now + 3600, 64, 262144)]})
+slurm.admin_comments = lambda: {"1": "sjp:placed=slim1;job=8c,32G,4.0G/c;v=3;room=no"}
+policy.plugin_lookup = lambda *a: (["slim1"], (0, 0, 0), False)
+slurm.apply = lambda argv, timeout=10.0: True
+try:
+    d.recheck([ajob(t, prio=20) for t in range(1, 5)], now)
+finally:
+    slurm.admin_comments, policy.plugin_lookup, slurm.apply = real_acs, real_lookup, real_apply
+pins = {r["jobid"]: r["node"] for r in map(json.loads, d.log_fh.getvalue().splitlines())
+        if r.get("action") == "pin_waiting"}
+check("small tasks wait together on the node with room for them first, as many as it has room "
+      "for; only the next goes elsewhere",
+      pins == {"1_1": "a", "1_2": "a", "1_3": "a", "1_4": "b"}, str(pins))
+
+cfg = config.defaults()
+cfg["limits"]["mode"] = "flex"
+cfg["general"]["state_dir"] = tempfile.mkdtemp()
+d = daemon.Daemon(cfg); d.log_fh = io.StringIO(); d.mode = "enforce"
+ran = []
+real_ac, real_apply = slurm.admin_comment, slurm.apply
+real_uq, real_cn = slurm.user_qos, slurm.cluster_name
+slurm.user_qos = lambda cluster: {}
+slurm.cluster_name = lambda: "c"
+slurm.admin_comment = lambda jid: {"40": "sjp:placed=slim1"}[jid]
+slurm.apply = lambda argv, timeout=10.0: ran.append(argv) or True
+try:
+    d.flex([fj(f"40_{t}", 16, 9, id="40", array="40") for t in (1, 2, 3)],
+           {"a": (40, 512000, ["slim1"])}, 100.0)
+finally:
+    slurm.admin_comment, slurm.apply = real_ac, real_apply
+    slurm.user_qos, slurm.cluster_name = real_uq, real_cn
+check("flex moves an array's capped tasks one by one, as many as fit",
+      [a[2] for a in ran] == ["jobid=40_1", "jobid=40_2"], str(ran))
+
+cfg = config.defaults()
+cfg["general"]["state_dir"] = tempfile.mkdtemp()
+d = daemon.Daemon(cfg); d.log_fh = io.StringIO()
+d.score_once({f"{p}{i}": dict(cpus=c, mem=m, alloc_cpus=0, alloc_mem=0, partitions=[p], up=True)
+              for p, v in TOTAL.items() for i, (c, m) in enumerate(v)},
+             {p: dict(tier=1, state="UP") for p in TOTAL}, time.time())
+aj = dict(user="u", name="x", cpus=4, mem=16384, req_mem=16384, qos="normal", reason="Resources",
+          partition="slim1", timelimit=60, state="PD", array="5", id="5")
+d.seen = set()
+d.shadow([dict(aj, jobid="5_2"), dict(aj, jobid="5_3"), dict(aj, jobid="5_0", id="6", state="R",
+                                                            nodelist="slim10"),
+          dict(aj, jobid="9", id="9", array="")])
+d.shadow([dict(aj, jobid="5_3"), dict(aj, jobid="5_2", id="7", state="R", nodelist="slim11")])
+pl = [r for r in map(json.loads, d.log_fh.getvalue().splitlines()) if r["event"] == "placement"]
+check("an array is shadowed once, as the one submission the plugin saw; it pins none",
+      [r["jobid"] for r in pl] == ["5_2", "9"] and pl[0]["pin_why"].startswith("an array"),
+      str([(r["jobid"], r["pin_why"]) for r in pl]))
 
 check("no test started a process", subprocess.run is _no_processes)
 

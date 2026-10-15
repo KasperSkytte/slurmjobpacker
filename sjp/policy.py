@@ -260,9 +260,9 @@ NOT_STARTABLE = ("DependencyNeverSatisfied", "BeginTime", "JobHeldUser",
 
 def pin_eligible(job) -> str | None:
     """None if a queued job is the kind the plugin would pin; else why not.
-    Mirrors the plugin's pin_eligible as far as squeue can tell."""
-    if "_" in job["jobid"]:
-        return "array job"
+    Mirrors the plugin's pin_eligible as far as squeue can tell. An array task
+    waiting on its own is a job like any other; at submission the plugin pins
+    no array, as it could give all its tasks only one node."""
     if job.get("nnodes", 1) > 1:
         return "multi-node job"
     # The plugin also pins multi-task jobs limited to one node (-N 1), but

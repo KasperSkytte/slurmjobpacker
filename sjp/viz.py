@@ -66,7 +66,7 @@ def build_state(cfg, nodes: dict, parts: dict, jobs: list, now: float, mode="liv
                            why=slurm.blocking(d.get("state", "")), reason=d.get("reason", ""))
     running, pending = [], []
     for j in jobs:
-        note = (notes or {}).get(j["jobid"], "")
+        note = (notes or {}).get(j.get("id", j["jobid"]), "")
         info = dict(id=j["jobid"], user=j["user"], account=j.get("account", ""),
                     name=j["name"], qos=j["qos"],
                     partition=j["partition"], minutes=j["timelimit"],

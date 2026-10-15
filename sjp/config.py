@@ -89,8 +89,8 @@ DEFAULTS: dict = {
         # A job placed in few partitions can wait while another partition would
         # take it. In enforce mode, a job sjp placed, pending for Resources or Priority
         # longer than its class's budget (hours since it became eligible) is
-        # widened to every batch partition that can hold it. Not arrays, GPU jobs,
-        # reservations or pinned jobs.
+        # widened to every batch partition that can hold it; each waiting array
+        # task as a job of its own. Not GPU jobs, reservations or pinned jobs.
         "enabled": True,
         "budget_hours": {"fat": 1.0, "slim": 4.0},
         "fat_ratio_threshold": 6000,  # MB/CPU above which a job counts as "fat"
@@ -99,8 +99,9 @@ DEFAULTS: dict = {
         # Every interval seconds, in enforce mode, sjp's choice for each pending
         # job it placed -- or skipped for want of room ("sjp:skipped=no room") --
         # is made again against the cluster and queue as they are now, and the
-        # job moved if it changed and a node there has room. Not arrays, GPU
-        # jobs or jobs on the user's own --nodelist. 0 = off.
+        # job moved if it changed and a node there has room; each waiting array
+        # task as a job of its own. Not GPU jobs or jobs on the user's own
+        # --nodelist. 0 = off.
         "interval": 60.0,
     },
     "limits": {

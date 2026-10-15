@@ -129,7 +129,9 @@ With the Ansible role, set `sjp_viz_enabled: true`. See
 ## Limitations
 
 Currently, sjp places single-node batch jobs only; jobs asking for several nodes, GPUs, node
-features or a reservation are left to your own rules. See
+features or a reservation are left to your own rules. A job array is placed by the shape of
+one task but not pinned at submission, as Slurm takes one node list for all its tasks; from
+then on, sjpd treats each waiting task as a job of its own. See
 [Limitations](https://github.com/KasperSkytte/slurmjobpacker/wiki/Limitations) for the rest,
 and [Issues](https://github.com/KasperSkytte/slurmjobpacker/issues) for known bugs and
 feature requests, or to report a new one.

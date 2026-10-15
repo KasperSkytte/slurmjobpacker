@@ -170,6 +170,14 @@ check("the slurmctld log line says why", "no room, by shape pin=n4 eta 0.5h" in 
 check("a job with room is marked with the node's free space",
       ";free=" in got["small"][3] and "room=no" not in got["small"][3], got["small"][3])
 
+print("\n4a. an array is placed, but not pinned: its tasks would share one node")
+got = run(write_table("t4a.lua"), [("plain", job(2, 8000), True),
+                                   ("array", job(2, 8000, array_inx="0-3"), True)])
+check("placed where a plain job of one task's shape would be, without its pin",
+      got["plain"][2] != "" and got["array"][0] and got["array"][1] == got["plain"][3].split(
+          "from=")[1].split(";")[0] and got["array"][2] == ""
+      and got["array"][3].startswith("sjp:placed="), str(got))
+
 print("\n4b. [policy] user_nodes = ignore: a job's own nodes are dropped, and it is placed like any other")
 icfg = config.defaults(); icfg["policy"]["user_nodes"] = "ignore"
 got = run(write_table("t4b.lua", cfg=icfg), [("nodelist", job(8, 32000, req_nodes="n3"), True),

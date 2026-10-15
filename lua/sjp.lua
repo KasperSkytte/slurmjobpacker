@@ -22,8 +22,10 @@
   table sjpd keeps in /run/sjp, and marks it in admin_comment ("sjp:..."). A
   job asking for nodes (--nodelist, --exclude) is placed among those nodes, or,
   with [policy] user_nodes = "ignore", the request is dropped and it is placed
-  like any other. It never rejects a job. It does not place (returns false,
-  and marks the job "sjp:skipped=<reason>"):
+  like any other. A job array is placed by the shape of one task, and not
+  pinned: its node list would be all its tasks' one node. sjpd treats each of
+  its tasks that waits as a job of its own. It never rejects a job. It does
+  not place (returns false, and marks the job "sjp:skipped=<reason>"):
     "no room"     no node that could take the job has room for it now
     "no table"    sjpd is not running, or the disable file exists
     "stale"       sjpd has not refreshed the table or free space recently
@@ -336,6 +338,8 @@ local function pin_eligible(job_desc, submit_uid, cpus, tbl, mem_given)
     if not blank(job_desc.req_nodes) then return false, "--nodelist" end
     -- A job with a dependency is treated like any other: if it has not started
     -- by [pin] release_after, sjpd releases the pin.
+    -- One node list for an array is one node for all its tasks; sjpd treats
+    -- each task that waits as a job of its own instead.
     if not blank(job_desc.array_inx) then return false, "array" end
     if not blank(job_desc.admin_comment) then return false, "has an admin comment" end
     if not blank(job_desc.tres_per_node) then return false, "--gres" end

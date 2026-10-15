@@ -31,6 +31,7 @@ class Shared:
         self.pending: list = []
         self.pending_at: float = 0.0
         self.claims_at: float = 0.0       # the queue read the node figures include
+        self.claimed: set = set()         # the jobs they count on the node they wait for
         self.jobs: list = []          # pending and running, from the last queue poll
         self.stop = threading.Event()
         self.errors: dict = {}
@@ -200,7 +201,9 @@ class Daemon:
         """Count pending jobs tied to one node (pinned, or the user's own
         --nodelist) as taken on that node: Slurm will start them there, and
         until it does, the node's own figures don't show them. Without this, a
-        burst of submissions is pinned to the same free space again and again."""
+        burst of submissions is pinned to the same free space again and again.
+        Returns the IDs of the jobs counted."""
+        counted = set()
         for j in jobs:
             if (j["state"] != "PD" or not j.get("req_nodes") or j.get("nnodes", 1) > 1
                     or j.get("reason") not in Daemon.CLAIM_REASONS):
@@ -210,6 +213,8 @@ class Daemon:
                 d = nodes[ns[0]]
                 d["alloc_cpus"] += j["cpus"]
                 d["alloc_mem"] += j.get("req_mem") or j["mem"]
+                counted.add(j.get("jobid"))
+        return counted
 
     @staticmethod
     def reserve(nodes, resvs, jobs, now):
@@ -350,10 +355,10 @@ class Daemon:
                 with self.sh.lock:
                     jobs, queue_at = list(self.sh.jobs), self.sh.pending_at
                 self.reserve(n, r, jobs, time.time())
-                self.claim(n, jobs)
+                claimed = self.claim(n, jobs)
                 with self.sh.lock:
                     self.sh.nodes, self.sh.parts, self.sh.nodes_at = n, p, time.time()
-                    self.sh.claims_at = queue_at
+                    self.sh.claims_at, self.sh.claimed = queue_at, claimed
             except Exception as e:                      # never let a poll kill the loop
                 if self.sh.note_error("nodes", e):   # log each distinct failure once
                     self.log("error", where="nodes", detail=repr(e))
@@ -421,7 +426,7 @@ class Daemon:
                                 for v_ in (",".join(vs),)))
                    + tuple(sorted((k, ",".join(v)) for k, v in (full or {}).items())))
         with self.sh.lock:
-            jobs = list(self.sh.jobs)
+            jobs, claimed = list(self.sh.jobs), set(self.sh.claimed)
         nf = self.node_free(nodes, parts)
         state = dict(nodes=nf,
                      later={n: nodes[n]["later"] for n in nf if nodes[n].get("later")},
@@ -437,7 +442,7 @@ class Daemon:
         self.snap = dict(table=table, full=full, cap=policy.caps(total), total=total,
                          free=free, version=self.version, node_free=state["nodes"],
                          tiers=state["tiers"], room=state["room"], busy=state["busy"],
-                         later=state["later"], ends=state["ends"])
+                         later=state["later"], ends=state["ends"], claimed=claimed)
         # Rewrite when the partition decisions or the free space change, and
         # often enough that the plugin never sees the table or its free space
         # as stale: policy max_age/3, or pin max_age/2.
@@ -501,17 +506,21 @@ class Daemon:
         its partitions, and whether and where it would pin the node. The plugin
         acts at submission, which a dry run cannot intercept, so this is how its
         effect is made visible."""
-        ids = {j["jobid"] for j in jobs}
+        # An array once, when it is first seen: its tasks are one submission,
+        # which the plugin placed as a whole.
+        ids = {j.get("array") or j["jobid"] for j in jobs}
         if self.seen is None:            # placed before we were watching
             self.seen = ids
             return
         if self.snap is None:            # no table yet; try these again next poll
             return
         s = self.snap
-        new = []
+        new, first = [], set()
         for j in jobs:
-            if j["jobid"] in self.seen:
+            key = j.get("array") or j["jobid"]
+            if key in self.seen or key in first:
                 continue
+            first.add(key)
             actual = [p for p in j["partition"].split(",") if p]
             # GPU, --constraint, multi-node, reservation, interactive and other
             # partitions: the plugin leaves them to the site's rules; sjp has no
@@ -586,10 +595,10 @@ class Daemon:
         marks = {}
         if acted:
             if notes is not None:
-                note = notes.get(j["jobid"], "")
+                note = notes.get(j["id"], "")
             elif j.get("req_nodes"):
                 try:
-                    note = slurm.admin_comment(j["jobid"])
+                    note = slurm.admin_comment(j["id"])
                 except slurm.SlurmError:
                     note = ""
             else:
@@ -613,6 +622,9 @@ class Daemon:
             pin_why = "not placed"
         elif not self.cfg["pin"]["enabled"]:
             pin_why = "pinning is off"
+        elif j.get("array") and not sjp_pin:
+            pin_why = ("an array: the plugin could give all its tasks only one node, so it "
+                       "pins none; sjpd treats each waiting task as a job of its own")
         # A job the plugin pinned passed its checks, including the one-node limit
         # squeue cannot show.
         elif (reason := policy.pin_eligible(dict(j, req_nodes="", ntasks=1)
@@ -687,7 +699,7 @@ class Daemon:
                 continue
             self.released.add(jid)
             try:
-                note = slurm.admin_comment(jid)
+                note = slurm.admin_comment(j["id"])
             except slurm.SlurmError as e:
                 self.log("error", where="release", detail=repr(e))
                 continue
@@ -752,7 +764,7 @@ class Daemon:
         for j in jobs:
             jid = j["jobid"]
             if (j["state"] != "PD" or j["reason"] not in self.WIDEN_REASONS
-                    or jid in self.widened or "_" in jid or j.get("gpu")
+                    or jid in self.widened or j.get("gpu")
                     or j.get("nnodes", 1) > 1
                     or j.get("req_nodes") or not j.get("eligible")):
                 continue
@@ -770,7 +782,7 @@ class Daemon:
             # Only jobs sjp placed: a job the site's own rule placed keeps its
             # partitions (the plugin marks its jobs in AdminComment).
             try:
-                marks = slurm.sjp_marks(slurm.admin_comment(jid))
+                marks = slurm.sjp_marks(slurm.admin_comment(j["id"]))
             except slurm.SlurmError:
                 continue
             if not marks.keys() & {"placed", "pin", "released"}:
@@ -812,11 +824,19 @@ class Daemon:
             return
         wait = s.get("ends") is not None
         nf = {n: list(v) for n, v in s["node_free"].items()}
+        if s.get("claimed") is not None:
+            # Jobs pinned since the queue read the node figures include are
+            # counted on their node too, as the figures will count them.
+            late = {n: dict(alloc_cpus=0, alloc_mem=0) for n in nf}
+            self.claim(late, [j for j in jobs if j.get("jobid") not in s["claimed"]])
+            for n, d in late.items():
+                nf[n][0] -= d["alloc_cpus"]
+                nf[n][1] -= d["alloc_mem"]
         notes = None
         for j in sorted(jobs, key=lambda j: -j.get("priority", 0)):
             jid = j["jobid"]
             if (j["state"] != "PD" or j["reason"] not in self.RECHECK_REASONS
-                    or "_" in jid or j.get("gpu") or j.get("features") or j.get("reservation")
+                    or j.get("gpu") or j.get("features") or j.get("reservation")
                     or j.get("nnodes", 1) > 1 or jid in self.widened
                     or self.past_budget(j, now)):
                 continue
@@ -829,7 +849,7 @@ class Daemon:
                 except slurm.SlurmError as e:
                     self.log("error", where="recheck", detail=repr(e))
                     return
-            note = notes.get(jid, "")
+            note = notes.get(j["id"], "")
             marks = slurm.sjp_marks(note)
             ours = bool(marks.keys() & {"placed", "released", "pin"})
             # Jobs the plugin skipped for want of room (or of fresh data) are
@@ -893,6 +913,13 @@ class Daemon:
             if wait and not fits and not policy.pin_eligible(dict(j, req_nodes="")):
                 target, parts, eta = policy.soonest_node(cpus, mem, base, free, s["ends"], now,
                                                          s["tiers"])
+                if target and pinned in free and target != pinned:
+                    # where it waits, unless room is expected sooner elsewhere:
+                    # moving between nodes with room at the same time only churns
+                    stay = policy.soonest_node(cpus, mem, base, {pinned: free[pinned]},
+                                               s["ends"], now, s["tiers"])
+                    if stay[0] and stay[2] <= eta:
+                        target = pinned
             if not target or target == pinned:
                 if pinned in nf:         # stays where it waits
                     nf[pinned][0] -= cpus
@@ -1048,7 +1075,7 @@ class Daemon:
         for j in sorted(pend, key=lambda j: -j["priority"]):
             jid = j["jobid"]
             if (j["reason"] not in slurm.CAP_REASONS or j["qos"] == target
-                    or "[" in jid or j.get("gpu") or j.get("req_nodes")
+                    or j.get("gpu") or j.get("req_nodes")
                     or j.get("nnodes", 1) > 1
                     or now - self.flex_seen.get(jid, float("-inf")) < c["cooldown_seconds"]):
                 continue
@@ -1068,7 +1095,7 @@ class Daemon:
             try:
                 # qos=<own>><flex>: where it came from, so it can go back. The
                 # "flex" key is what older versions wrote.
-                note = slurm.set_mark(slurm.admin_comment(jid), "qos",
+                note = slurm.set_mark(slurm.admin_comment(j["id"]), "qos",
                                       f"{j['qos']}>{target}", drop=("flex",))
             except slurm.SlurmError as e:
                 self.log("error", where="flex", detail=repr(e))
@@ -1120,7 +1147,7 @@ class Daemon:
             if moved is not None and now - moved < c["flex_revert_after"]:
                 continue
             try:
-                marks = slurm.sjp_marks(slurm.admin_comment(jid))
+                marks = slurm.sjp_marks(slurm.admin_comment(j["id"]))
                 orig = marks.get("qos", "").partition(">")[0] or marks.get("flex")
             except slurm.SlurmError as e:
                 self.log("error", where="flex", detail=repr(e))

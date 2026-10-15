@@ -130,24 +130,37 @@ PENDING_FMT = ("JobID:|,UserName:|,Account:|,NumCPUs:|,MinMemory:|,"
                "TimeLimit:|,PriorityLong:|,Reason:|,QOS:|,Partition:|,Name:|")
 # The rest is appended so the indices above stay put. tres-alloc is the
 # *requested* TRES for a job that has not started; its mem is the job's total,
-# which MinMemory is not when the job used --mem-per-cpu.
+# which MinMemory is not when the job used --mem-per-cpu. JobID is the job's
+# own record, which an array's waiting tasks share; JobArrayID names the job
+# or array task ("12", "12_3").
 QUEUE_FMT = PENDING_FMT + (",StateCompact:|,tres-alloc:|,ReqNodes:|,NodeList:|,"
                            "SubmitTime:|,NumTasks:|,EligibleTime:|,Feature:|,EndTime:|,Reservation:|,"
-                           "ExcNodes:|")
+                           "ExcNodes:|,JobArrayID:|")
 
 
 def queue(states: str = "PD,R,CF") -> list[dict]:
-    """Jobs in the given states, with the Reason that is nowhere in the accounting database."""
-    txt = _run(["squeue", "-h", "-t", states, "-O", QUEUE_FMT], timeout=20.0)
+    """Jobs in the given states, with the Reason that is nowhere in the accounting database.
+
+    Each array task is a job of its own (squeue -r), whether or not Slurm has
+    given it a record of its own yet:
+      jobid   what scontrol updates it by: "12", or an array task "12_3" --
+              never an array's own "12", which would change all its tasks
+      id      the job's record, which `scontrol show job` prints as JobId: an
+              array's waiting tasks share one, the array's job ID
+      array   the array's job ID, "" for a job that is not one
+    """
+    txt = _run(["squeue", "-h", "-r", "-t", states, "-O", QUEUE_FMT], timeout=20.0)
     out = []
     for line in txt.splitlines():
         f = [x.strip() for x in line.split("|")]
-        if len(f) < 22:
+        if len(f) < 23:
             continue
         try:
             tres = dict(kv.split("=", 1) for kv in f[12].split(",") if "=" in kv)
             nnodes = max(1, int(tres.get("node", 1) or 1))
-            out.append(dict(jobid=f[0], user=f[1], account=f[2],
+            array, task, _ = f[22].partition("_")
+            out.append(dict(jobid=f[22] or f[0], id=f[0], array=array if task else "",
+                            user=f[1], account=f[2],
                             cpus=int(f[3] or 1), mem=_mem_mb(f[4]),
                             req_mem=_mem_mb(tres.get("mem", "")) // nnodes,
                             timelimit=_mins(f[5]), priority=int(float(f[6] or 0)),
@@ -263,23 +276,24 @@ def rename_mark(comment: str, old: str, new: str, value: str | None = None,
 
 
 def admin_comment(jobid: str) -> str:
-    """A job's AdminComment, which squeue cannot print."""
-    txt = _run(["scontrol", "show", "job", jobid, "--oneliner"])
-    return _kv(txt).get("AdminComment", "") if txt.strip() else ""
+    """A job's AdminComment, which squeue cannot print, by its record's job ID
+    (a queue() job's id). For an array's job ID scontrol lists every task; the
+    comment is the one on that record, which its waiting tasks share."""
+    for line in _run(["scontrol", "show", "job", jobid, "--oneliner"]).splitlines():
+        kv = _kv(line)
+        if kv.get("JobId") == jobid:
+            return kv.get("AdminComment", "")
+    return ""
 
 
 def admin_comments() -> dict:
-    """Every job's AdminComment, by job ID as squeue prints it ("12", "12_3",
-    "12_[4-9]"): one call for the whole queue rather than one per job."""
+    """Every job record's AdminComment, by its job ID (a queue() job's id): one
+    call for the whole queue rather than one per job."""
     out = {}
     for line in _run(["scontrol", "show", "jobs", "--oneliner"], timeout=20.0).splitlines():
         kv = _kv(line)
-        if "JobId" not in kv:
-            continue
-        task = kv.get("ArrayTaskId", "")
-        jid = kv["JobId"] if not task else \
-            f"{kv['ArrayJobId']}_{task if task.isdigit() else '[' + task + ']'}"
-        out[jid] = kv.get("AdminComment", "")
+        if "JobId" in kv:
+            out[kv["JobId"]] = kv.get("AdminComment", "")
     return out
 
 
