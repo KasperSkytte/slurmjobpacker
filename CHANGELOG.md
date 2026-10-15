@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.18.0](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.17.1...v1.18.0) (2026-10-15)
+
+
+### Features
+
+* support job arrays ([00b5e59](https://github.com/KasperSkytte/slurmjobpacker/commit/00b5e5939634f2e2198140e70aec6ee66df6fbf1))
+
 ## [1.17.1](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.17.0...v1.17.1) (2026-10-14)
 
 
