@@ -307,12 +307,12 @@ class Daemon:
                 self.uids[user] = None
         return self.uids[user]
 
-    def qos_cap(self, qos):
-        """The per-user CPU cap a QOS has now: raised during its pulse, else read
-        from Slurm (cached for a minute). None if it has none."""
+    def qos_caps_now(self, qos):
+        """(per-user, per-account) CPU caps a QOS has now: raised during its
+        pulse, else read from Slurm (cached for a minute). None where it has none."""
         lim = self.limiters.get(qos)
         if lim and lim.raised:
-            return lim.cur_u
+            return lim.cur_u, lim.cur_a
         cached = self.qos_caps.get(qos)
         if not cached or time.time() - cached[2] > 60:
             try:
@@ -320,7 +320,11 @@ class Daemon:
             except slurm.SlurmError:
                 u, a = None, None
             cached = self.qos_caps[qos] = (u, a, time.time())
-        return cached[0]
+        return cached[0], cached[1]
+
+    def qos_cap(self, qos):
+        """The per-user CPU cap a QOS has now; None if it has none."""
+        return self.qos_caps_now(qos)[0]
 
     def user_room(self, jobs) -> dict | None:
         """CPUs each user has left under the per-user cap of each QOS they run in,
@@ -1042,7 +1046,9 @@ class Daemon:
             self.unflex(pend, time.time())
             if idle_frac >= self.cfg["limits"]["min_idle_share"]:
                 later = {n: nodes[n]["later"] for n in nf if nodes[n].get("later")}
-                self.flex(pend, nf, time.time(), later)
+                with self.sh.lock:
+                    jobs = list(self.sh.jobs)
+                self.flex(pend, nf, time.time(), later, jobs)
         if self.cfg["limits"]["mode"] == "global":
             for qos in set(held) | set(self.limiters):
                 lim = self.limiter(qos)
@@ -1059,19 +1065,32 @@ class Daemon:
             limits=[lim.state() for lim in self.limiters.values()],
             errors=self.sh.errors), indent=1))
 
-    def flex(self, pend, nf, now, later=None):
+    def flex(self, pend, nf, now, later=None, jobs=()):
         """Flex mode: move jobs held only by the CPU cap of their QOS to the flex
-        QOS, highest priority first, as many as fit in the free space now. Each
-        is counted against a node's free space, so the moves never add up to
-        more than the cluster can start."""
+        QOS, highest priority first, as many as fit in the free space now and
+        under the flex QOS's own caps. Each is counted against a node's free
+        space and against those caps, so the moves never add up to more than
+        the cluster, or the flex QOS, can start: a job the flex QOS has no room
+        for stays where it is, and moves once its caps are raised."""
         c = self.cfg["limits"]
         target = c["flex_qos_name"]
         free = {n: [fc, fm, set(ps)] for n, (fc, fm, ps) in nf.items()}
         # Jobs moved earlier that have not started yet still claim their space.
-        for _, node, cpus, mem in self.flexed.values():
+        for _, node, cpus, mem, *_ in self.flexed.values():
             if node in free:
                 free[node][0] -= cpus
                 free[node][1] -= mem
+        # What each user and account already has in the flex QOS: running, or
+        # moved there and not started yet.
+        cap_u, cap_a = self.qos_caps_now(target)
+        in_u, in_a = collections.Counter(), collections.Counter()
+        for j in jobs:
+            if j["state"] in ("R", "CF") and j["qos"] == target:
+                in_u[j["user"]] += j["cpus"]
+                in_a[j["account"]] += j["cpus"]
+        for _, _, cpus, _, user, account in (v for v in self.flexed.values() if len(v) == 6):
+            in_u[user] += cpus
+            in_a[account] += cpus
         for j in sorted(pend, key=lambda j: -j["priority"]):
             jid = j["jobid"]
             if (j["reason"] not in slurm.CAP_REASONS or j["qos"] == target
@@ -1080,6 +1099,9 @@ class Daemon:
                     or now - self.flex_seen.get(jid, float("-inf")) < c["cooldown_seconds"]):
                 continue
             cpus, mem = max(1, j["cpus"]), j.get("req_mem") or j["mem"]
+            if ((cap_u is not None and in_u[j["user"]] + cpus > cap_u)
+                    or (cap_a is not None and in_a[j["account"]] + cpus > cap_a)):
+                continue                 # the flex QOS is full for them: it would only wait there
             parts = set(j["partition"].split(","))
             # Reservations that start before the job would end count against it.
             soon = policy.reserved_before(later, now, j.get("timelimit"))
@@ -1091,6 +1113,8 @@ class Daemon:
             node = min(fits, key=lambda n: free[n][0])      # the tightest fit
             free[node][0] -= cpus
             free[node][1] -= mem
+            in_u[j["user"]] += cpus
+            in_a[j["account"]] += cpus
             self.flex_seen[jid] = now
             try:
                 # qos=<own>><flex>: where it came from, so it can go back. The
@@ -1107,7 +1131,7 @@ class Daemon:
                         self.blocked(("enforce",)), lambda: self.apply_retrying(argv),
                         jobid=jid, before=j["qos"], after=target, node=node)
             if self.mode == "enforce":
-                self.flexed[jid] = (now, node, cpus, mem)
+                self.flexed[jid] = (now, node, cpus, mem, j["user"], j["account"])
 
     def flex_allowed(self, user, account, target) -> bool:
         """Whether this user may use the flex QOS under this account, read from

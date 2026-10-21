@@ -370,7 +370,9 @@ notes = {"1": "sjp:placed", "2": "", "3": "", "4": "", "5": "sjp:placed;qos=norm
          "6": ""}
 ran = []
 real_ac, real_apply = slurm.admin_comment, slurm.apply
-real_uq, real_cn = slurm.user_qos, slurm.cluster_name
+real_uq, real_cn, real_ql = slurm.user_qos, slurm.cluster_name, slurm.qos_cpu_limits
+flex_caps = {"flex": (None, None)}
+slurm.qos_cpu_limits = lambda qos: flex_caps.get(qos, (None, None))
 assoc = {("u", "a"): {"normal", "flex"}, ("v", "a"): {"normal"}}
 slurm.user_qos = lambda cluster: {k: set(v) for k, v in assoc.items()}
 slurm.cluster_name = lambda: "c"
@@ -416,9 +418,23 @@ try:
     d.flex([fj("8", 4, 9, user="v")], nf10, 1000.0)
     check("a user who may not use the flex QOS: the job is not moved, and the log says so",
           ran == [] and "user v (account a) may not use QOS flex" in d.log_fh.getvalue())
+    # The flex QOS's own caps: a job it has no room for is not moved into it,
+    # where it would only wait and be moved back; once the caps are raised, it is.
+    d = daemon.Daemon(cfg); d.log_fh = io.StringIO(); d.mode = "enforce"
+    flex_caps["flex"] = (40, None)
+    ran.clear()
+    notes.update({"20": "", "21": "", "22": ""})
+    running = [dict(fj("19", 32, 0, qos="flex"), state="R")]
+    d.flex([fj("20", 16, 9), fj("21", 8, 8), fj("22", 4, 7)], nf10, 2000.0, None, running)
+    check("only what the flex QOS's per-user cap still has room for moves",
+          [a[2] for a in ran] == ["jobid=21"], str([a[2] for a in ran]))
+    d.qos_caps.clear(); flex_caps["flex"] = (80, None); ran.clear()
+    d.flex([fj("20", 16, 9), fj("22", 4, 7)], nf10, 2001.0, None, running)
+    check("raise the flex caps and the waiting jobs move, counting the one moved before",
+          [a[2] for a in ran] == ["jobid=20", "jobid=22"], str([a[2] for a in ran]))
 finally:
     slurm.admin_comment, slurm.apply = real_ac, real_apply
-    slurm.user_qos, slurm.cluster_name = real_uq, real_cn
+    slurm.user_qos, slurm.cluster_name, slurm.qos_cpu_limits = real_uq, real_cn, real_ql
 check("the marks the plugin writes parse back",
       slurm.sjp_marks("sjp:placed=a,b;job=4c,16G,4.0G/c;v=20")
       == {"placed": "a,b", "job": "4c,16G,4.0G/c", "v": "20"})
@@ -1000,9 +1016,10 @@ cfg["general"]["state_dir"] = tempfile.mkdtemp()
 d = daemon.Daemon(cfg); d.log_fh = io.StringIO(); d.mode = "enforce"
 ran = []
 real_ac, real_apply = slurm.admin_comment, slurm.apply
-real_uq, real_cn = slurm.user_qos, slurm.cluster_name
+real_uq, real_cn, real_ql = slurm.user_qos, slurm.cluster_name, slurm.qos_cpu_limits
 slurm.user_qos = lambda cluster: {}
 slurm.cluster_name = lambda: "c"
+slurm.qos_cpu_limits = lambda qos: (None, None)
 slurm.admin_comment = lambda jid: {"40": "sjp:placed=slim1"}[jid]
 slurm.apply = lambda argv, timeout=10.0: ran.append(argv) or True
 try:
@@ -1010,7 +1027,7 @@ try:
            {"a": (40, 512000, ["slim1"])}, 100.0)
 finally:
     slurm.admin_comment, slurm.apply = real_ac, real_apply
-    slurm.user_qos, slurm.cluster_name = real_uq, real_cn
+    slurm.user_qos, slurm.cluster_name, slurm.qos_cpu_limits = real_uq, real_cn, real_ql
 check("flex moves an array's capped tasks one by one, as many as fit",
       [a[2] for a in ran] == ["jobid=40_1", "jobid=40_2"], str(ran))
 
