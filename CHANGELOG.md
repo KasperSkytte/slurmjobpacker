@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.18.1](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.18.0...v1.18.1) (2026-10-21)
+
+
+### Bug Fixes
+
+* move jobs to the flex QOS only while its own caps have room for them ([762a358](https://github.com/KasperSkytte/slurmjobpacker/commit/762a3581184d83d64729721ea59171c4ff94bb15))
+
 ## [1.18.0](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.17.1...v1.18.0) (2026-10-15)
 
 
