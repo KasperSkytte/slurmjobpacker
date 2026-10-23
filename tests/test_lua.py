@@ -31,6 +31,7 @@ for f in ("lua/sjp.lua", "lua/job_submit.lua"):
     check(f, r.returncode == 0, r.stderr.strip())
 
 CFG = config.defaults()
+CFG["policy"]["user_nodes"] = "follow"   # the jobs asking for nodes below test following them
 DEMAND = [tuple(x) for x in CFG["policy"]["demand"]]
 NOW = time.time()
 TIERS = {"slim1": 10, "fat1": 8}
@@ -178,8 +179,9 @@ check("placed where a plain job of one task's shape would be, without its pin",
           "from=")[1].split(";")[0] and got["array"][2] == ""
       and got["array"][3].startswith("sjp:placed="), str(got))
 
-print("\n4b. [policy] user_nodes = ignore: a job's own nodes are dropped, and it is placed like any other")
-icfg = config.defaults(); icfg["policy"]["user_nodes"] = "ignore"
+print("\n4b. [policy] user_nodes = ignore (the default): a job's own nodes are dropped, "
+      "and it is placed like any other")
+icfg = config.defaults()
 got = run(write_table("t4b.lua", cfg=icfg), [("nodelist", job(8, 32000, req_nodes="n3"), True),
                                              ("plain", job(8, 32000), True),
                                              ("exclude", job(8, 32000, exc_nodes="n1"), True)])

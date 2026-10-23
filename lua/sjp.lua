@@ -20,9 +20,8 @@
   partition that can hold it has room for it right now. It then sets the job's
   partitions -- and, when the job can start at once, its node -- from the
   table sjpd keeps in /run/sjp, and marks it in admin_comment ("sjp:..."). A
-  job asking for nodes (--nodelist, --exclude) is placed among those nodes, or,
-  with [policy] user_nodes = "ignore", the request is dropped and it is placed
-  like any other. A job array is placed by the shape of one task, and not
+  job's own --nodelist/--exclude is dropped and it is placed like any other,
+  or, with [policy] user_nodes = "follow", it is placed among those nodes. A job array is placed by the shape of one task, and not
   pinned: its node list would be all its tasks' one node. sjpd treats each of
   its tasks that waits as a job of its own. It never rejects a job. It does
   not place (returns false, and marks the job "sjp:skipped=<reason>"):

@@ -823,6 +823,12 @@ class Daemon:
     # The plugin's reasons for skipping a job that sjp places once room opens.
     TAKE_OVER = ("no room", "stale")
 
+    def nodes_ours(self, marks) -> bool:
+        """Whether a pending job's node list is sjp's to change: its own pin, or,
+        with [policy] user_nodes = "ignore", any on a job sjp placed or takes over."""
+        return "pin" in marks or (self.cfg["policy"]["user_nodes"] == "ignore" and bool(
+            marks.keys() & {"placed", "released"} or marks.get("skipped") in self.TAKE_OVER))
+
     def recheck(self, jobs, now):
         """Make sjp's choice again for every pending job it placed: jobs that
         started, ended or were cancelled since have changed what fits where. A
@@ -872,8 +878,8 @@ class Daemon:
             if not ours and marks.get("skipped") not in self.TAKE_OVER:
                 continue
             pinned = j.get("req_nodes") or ""
-            if pinned and "eta" not in marks:
-                continue                 # the user's own --nodelist, or a pin release_pins handles
+            if pinned and "eta" not in marks and ("pin" in marks or not self.nodes_ours(marks)):
+                continue                 # a pin release_pins handles, or the user's own --nodelist
             # sjp's own choice, before any pin narrowed it to one node's partitions
             base = [p for p in marks.get("from", "").split(",") if p] \
                 if pinned or "pin" in marks else current
@@ -1086,7 +1092,8 @@ class Daemon:
         the cluster, or the flex QOS, can start: a job the flex QOS has no room
         for stays where it is, and moves once its caps are raised. A job sjp
         pinned to a node may use any node of sjp's choice before the pin; the
-        pin goes with the move."""
+        pin goes with the move, as does a job's own --nodelist when sjp ignores
+        those ([policy] user_nodes)."""
         c = self.cfg["limits"]
         target = c["flex_qos_name"]
         free = {n: [fc, fm, set(ps)] for n, (fc, fm, ps) in nf.items()}
@@ -1124,10 +1131,10 @@ class Daemon:
                     self.log("error", where="flex", detail=repr(e))
                     continue
                 self.pin_from[(jid, pinned)] = \
-                    (marks.get("from") or j["partition"]) if "pin" in marks else None
+                    (marks.get("from") or j["partition"]) if self.nodes_ours(marks) else None
             base = self.pin_from[(jid, pinned)] if pinned else j["partition"]
             if not base:
-                continue                 # the user's own --nodelist: never touch it
+                continue                 # a node list not sjp's to change
             parts = set(base.split(","))
             # Reservations that start before the job would end count against it.
             soon = policy.reserved_before(later, now, j.get("timelimit"))

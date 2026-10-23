@@ -460,9 +460,19 @@ try:
     reads = []
     slurm.admin_comment = lambda jid: reads.append(jid) or notes[jid]
     d.flex([fj("31", 8, 8, req_nodes="a")], nf30, 3001.0)
-    check("the user's own --nodelist is left alone, and not read again each poll",
+    check("a --nodelist on a job sjp did not place is left alone, and not read again each poll",
           len(ran) == 3 and reads == [], str(reads))
     slurm.admin_comment = lambda jid: notes[jid]
+    # One on a job sjp placed is sjp's to drop ([policy] user_nodes = ignore),
+    # or the user's to keep (follow).
+    notes["32"] = "sjp:placed=slim1;job=8c"
+    for how, want in (("follow", []), ("ignore", [["jobid=32", "reqnodelist="]])):
+        cfg["policy"]["user_nodes"] = how
+        d = daemon.Daemon(cfg); d.log_fh = io.StringIO(); d.mode = "enforce"; ran.clear()
+        d.flex([fj("32", 8, 9, req_nodes="c")], nf30, 4000.0)
+        check(f"user_nodes = {how}: a --nodelist on a job sjp placed is "
+              + ("kept" if how == "follow" else "dropped with the move"),
+              [a[2:] for a in ran][:1] == want, str(ran))
 finally:
     slurm.admin_comment, slurm.apply = real_ac, real_apply
     slurm.user_qos, slurm.cluster_name, slurm.qos_cpu_limits = real_uq, real_cn, real_ql
@@ -834,8 +844,8 @@ check("and its partitions: those holding them, every named node in each",
       policy.restrict(["fat1"], policy.eligible(nfx, want=["b"]), ["b"]) == ["slim1", "slim2"]
       and policy.restrict(["slim1", "fat1"], policy.eligible(nfx, skip=["c"])) == ["slim1"]
       and policy.restrict(["slim1"], {}) == [])
-check("the plugin is told whether to follow a job's own nodes",
-      'user_nodes = "follow",' in policy.render_lua({}, CFG, 0, 1))
+check("the plugin is told whether to follow a job's own nodes; by default it does not",
+      'user_nodes = "ignore",' in policy.render_lua({}, CFG, 0, 1))
 
 print("\n13. stale pins are released, and only sjp's own")
 real_ac, real_apply = slurm.admin_comment, slurm.apply

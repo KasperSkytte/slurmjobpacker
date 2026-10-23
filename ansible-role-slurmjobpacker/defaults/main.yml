@@ -28,7 +28,7 @@ sjp_config:
     min_idle_share: 0.25           # act only while at least this share of the cluster is idle
     count_pending: false           # true: jobs waiting for room count as using the idle share
   policy:
-    user_nodes: follow             # ignore: drop users' --nodelist/--exclude, sjp chooses
+    user_nodes: ignore             # drop users' --nodelist/--exclude; follow: place among them
     always_place: false            # true: place jobs even when no node has room now
   pin:
     time_aware: false              # true: weigh time limits when choosing a node

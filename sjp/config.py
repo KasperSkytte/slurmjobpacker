@@ -47,10 +47,10 @@ DEFAULTS: dict = {
         # false ("no room") and the site's own rule places it. The recheck
         # moves such jobs once room opens elsewhere.
         "always_place": False,
-        # A job's own --nodelist/--exclude: "follow" places it among those nodes
-        # (in partitions holding them); "ignore" drops them and places the job
-        # like any other, for sites where users ask for hardware by features only.
-        "user_nodes": "follow",
+        # A job's own --nodelist/--exclude: "ignore" drops them and places the job
+        # like any other, so users ask for hardware by features (--constraint)
+        # only; "follow" places it among those nodes (in partitions holding them).
+        "user_nodes": "ignore",
         "buckets": {
             "mem_per_cpu": [1024, 2048, 4096, 6144, 8192, 12288, 24576],
             "cpus": [1, 4, 8, 16, 32, 64, 128],
