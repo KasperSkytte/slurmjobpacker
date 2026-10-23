@@ -46,13 +46,15 @@ const sjpUse = (() => {
   }
 
   // Rough verdicts, for users to see whether a job runs as intended; not for
-  // accounting. [text, colour] for CPU (its average) and memory (its peak),
-  // coloured by the share utilized.
+  // accounting. [text, colour] for CPU, its average coloured by the share
+  // utilized; and memory, its peak from red at a quarter of what it asked for
+  // or less to green at 90 % or more.
   function verdict(s) {
     const cpu = s.cpu == null ? ["measuring…", null]
       : [s.cpu < 0.25 ? "mostly idle" : s.cpu < 0.6 ? "partly utilized" : "well utilized", colour(s.cpu)];
     const mem = [s.peak > 0.95 ? "near its limit" : s.peak >= 0.7 ? "fits"
-      : s.peak >= 0.25 ? "less than allocated" : "far less than allocated", colour(s.peak)];
+      : s.peak >= 0.25 ? "less than allocated" : "far less than allocated",
+      colour((s.peak - 0.25) / 0.65)];
     return { cpu, mem };
   }
   const tag = ([text, colour]) => colour
