@@ -27,11 +27,11 @@ const sjpUse = (() => {
   }
 
   // The panel's CPU or memory bar: allocated as before, and within it the part
-  // utilized, coloured on the scale above.
+  // utilized in green, the rest of the allocation, unused, in red.
   function bar(alloc, util, share) {
-    alloc.style.background = share == null ? "" : "rgba(88, 166, 255, 0.3)";
+    alloc.style.background = share == null ? "" : colour(0, true);
     util.style.width = share == null ? "0" : 100 * Math.min(1, share) + "%";
-    if (share != null) util.style.background = colour(share, true);
+    util.style.background = colour(1, true);
   }
 
   // A running job's shares of its allocation: CPUs kept busy on average and
