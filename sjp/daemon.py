@@ -43,6 +43,11 @@ class Shared:
             self.errors[where] = f"{time.time():.0f} {exc}"
             return new
 
+    def clear_error(self, where):
+        """Forget the error recorded here: it worked again."""
+        with self.lock:
+            self.errors.pop(where, None)
+
 
 class Daemon:
     def __init__(self, cfg):
@@ -363,6 +368,7 @@ class Daemon:
                 with self.sh.lock:
                     self.sh.nodes, self.sh.parts, self.sh.nodes_at = n, p, time.time()
                     self.sh.claims_at, self.sh.claimed = queue_at, claimed
+                self.sh.clear_error("nodes")
             except Exception as e:                      # never let a poll kill the loop
                 if self.sh.note_error("nodes", e):   # log each distinct failure once
                     self.log("error", where="nodes", detail=repr(e))
@@ -388,6 +394,7 @@ class Daemon:
                 if iv_re and time.time() - self.recheck_at >= iv_re:
                     self.recheck_at = time.time()
                     self.recheck(q, time.time())
+                self.sh.clear_error("queue")
             except Exception as e:
                 if self.sh.note_error("queue", e):   # log each distinct failure once
                     self.log("error", where="queue", detail=repr(e))
@@ -418,6 +425,7 @@ class Daemon:
             if self.sh.note_error("score", e):
                 self.log("error", where="score", detail=e)
             return
+        self.sh.clear_error("score")
         table = policy.build_table(self.cfg, total, free)
         # [policy] always_place: where jobs go when no node has room, by shape alone
         full = policy.build_table(self.cfg, total, total) \
@@ -1007,6 +1015,7 @@ class Daemon:
             t0 = time.time()
             try:
                 self.act_once()
+                self.sh.clear_error("act")
             except Exception as e:
                 self.sh.note_error("act", e)
                 self.log("error", where="act", detail=repr(e))
@@ -1058,12 +1067,14 @@ class Daemon:
                     change, before = self.follow_admin(qos, lim, change, before)
                 if change:
                     self.set_caps(qos, change, before, idle_frac, held.get(qos, 0))
+        with self.sh.lock:
+            errors = dict(self.sh.errors)
         self._write_atomic(self.status_path, json.dumps(dict(
             ts=time.time(), mode=self.mode, version=self.version,
             idle_fraction=round(idle_frac, 4), total_cpu=total_cpu, waiting_cpus=waiting,
             capped_jobs=len(capped), pending=len(pend),
             limits=[lim.state() for lim in self.limiters.values()],
-            errors=self.sh.errors), indent=1))
+            errors=errors), indent=1))
 
     def flex(self, pend, nf, now, later=None, jobs=()):
         """Flex mode: move jobs held only by the CPU cap of their QOS to the flex

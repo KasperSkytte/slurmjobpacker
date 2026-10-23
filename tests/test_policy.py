@@ -354,6 +354,14 @@ check("a job the plugin skipped for want of room is taken over once room opens, 
       and "admincomment=sjp:placed=fat1;job=8c,32G,4.0G/c;moved=slim1>fat1" in mv["3"]["cmd"],
       str({k: v["cmd"] for k, v in mv.items()}))
 
+print("\n10i. an error is reported until the same read works again")
+sh = daemon.Shared()
+first = sh.note_error("queue", "timed out")
+again = sh.note_error("queue", "timed out")
+sh.clear_error("queue")
+check("each distinct failure is logged once, and cleared once it works",
+      first and not again and sh.errors == {} and sh.note_error("queue", "timed out"))
+
 print("\n10f. a setting's old name keeps working")
 import tomllib as _t
 old = config._merge(config.DEFAULTS, config.upgrade(_t.loads("[limits]\nraise_above = 0.1\n")))
