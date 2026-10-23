@@ -16,6 +16,8 @@ Restart=always
 RestartSec=5
 NoNewPrivileges=yes
 ProtectSystem=strict
+# /var/lib/sjp-viz, where the jobs' usage history outlives a restart
+StateDirectory=sjp-viz
 ProtectHome=yes
 PrivateTmp=yes
 

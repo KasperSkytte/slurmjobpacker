@@ -742,12 +742,36 @@ ul.add(1060.0, {"7": (340.0, 700, 650)}, {"7": 900.0})
 check("the next: CPUs kept busy in between, and the peak seen so far",
       ul.history("7") == [(1060, 4.0, 700)] and ul.summary("7")["peak"] == 650
       and ul.summary("7")["now"] == 4.0, str(ul.history("7")))
-for i in range(viz.USE_POINTS + 5):
+for i in range(2 * viz.USE_POINTS):
     ul.add(1120.0 + 60 * i, {"7": (400.0 + 60 * i, 700, 650)}, {"7": 900.0})
-check("a long job's history is thinned, keeping the newest sample",
-      len(ul.history("7")) <= viz.USE_POINTS and ul.history("7")[-1][0] == 1120 + 60 * (viz.USE_POINTS + 4))
+check("every sample is kept; a long job's graph gets them averaged, up to the newest",
+      len(ul.jobs["7"]["t"]) == 2 * viz.USE_POINTS + 1 and len(ul.history("7")) == viz.USE_POINTS
+      and ul.history("7")[-1][:2] == (1120 + 60 * (2 * viz.USE_POINTS - 1), 1.0))
 ul.add(9e9, {}, {})
 check("a job that ended is forgotten", ul.summary("7") is None)
+# Kept in a file: read back at the start, ended jobs dropped from it.
+upath = os.path.join(tempfile.mkdtemp(), "usage.jsonl")
+ul = viz.UsageLog(upath)
+for t, used in ((1000.0, {"7": (100.0, 512, 600), "8": (5.0, 64, 64)}),
+                (1060.0, {"7": (340.0, 700, 650), "8": (35.0, 64, 64)})):
+    ul.add(t, used, {"7": 900.0, "8": 950.0})
+back = viz.UsageLog(upath)
+check("the history outlives a restart", back.history("7") == ul.history("7") == [(1060, 4.0, 700)]
+      and back.summary("8") == ul.summary("8"), str(back.history("7")))
+back.add(1120.0, {"7": (400.0, 700, 650)}, {"7": 900.0})
+check("jobs that ended are dropped from the file",
+      all(set(json.loads(l)["used"]) == {"7"} for l in open(upath))
+      and viz.UsageLog(upath).history("7") == back.history("7"))
+os.chmod(os.path.dirname(upath), 0o500)
+try:
+    ro = viz.UsageLog(os.path.join(os.path.dirname(upath), "new.jsonl"))
+    import contextlib
+    with contextlib.redirect_stderr(io.StringIO()):
+        ro.add(1000.0, {"7": (100.0, 512, 600)}, {"7": 900.0})
+    check("a file that cannot be written leaves the history in memory",
+          ro.summary("7") is not None and ro.path == "" and "writing" in ro.error)
+finally:
+    os.chmod(os.path.dirname(upath), 0o700)
 dj = next(j for j in ds["running"] if j["use"]["avg"] is not None)
 hist = demo.history(dj["id"])
 check("the demo makes up usage within each job's allocation, the same at every look",

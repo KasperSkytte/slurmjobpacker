@@ -17,7 +17,8 @@ see it from your own machine, use an SSH tunnel:
     ssh -L 8650:localhost:8650 <controller>      # then open http://localhost:8650
 """
 from __future__ import annotations
-import argparse, json, math, os, random, threading, time
+import argparse, json, math, os, random, sys, threading, time
+from array import array
 from urllib.parse import parse_qs, urlparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -29,7 +30,7 @@ USE_JS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "usage.js")
 HORIZON = 14 * 86400          # the depth of a node: two weeks, Slurm's usual MaxTime
 TOP = 50                      # waiting jobs the page shows unless asked for all (A)
 MAX_WAITING = 5000            # waiting jobs sent to the page at most, highest priority first
-USE_POINTS = 240              # usage samples kept per job; when full, every other one goes
+USE_POINTS = 400              # a job's graph gets at most this many points, averaged
 
 
 def queue_order(j):
@@ -132,29 +133,72 @@ def reservations(shown, nodes, resvs, jobs, now):
 class UsageLog:
     """What each running job uses, from samples of its CPU time and memory:
     per job, (time, CPUs busy, memory in use MB) since the last sample, its
-    peak memory, and the CPUs it kept busy on average since it started."""
+    peak memory, and the CPUs it kept busy on average since it started.
 
-    def __init__(self):
+    With a path, every reading is appended to that file as one JSON line, and
+    read back at the start, so the history outlives a restart. Once a day the
+    lines of jobs that ended are dropped. A file that cannot be written leaves
+    the history in memory only."""
+
+    def __init__(self, path: str = ""):
         self.jobs: dict = {}
         self.lock = threading.Lock()
+        self.path, self.error, self.compacted = path, "", None
+        if path and os.path.exists(path):
+            try:
+                with open(path) as f:
+                    for line in f:
+                        r = json.loads(line)
+                        self.add(r["t"], r["used"], r["starts"], save=False)
+            except (OSError, ValueError, KeyError) as e:
+                self.fail(f"reading {path}: {e}")
 
-    def add(self, now: float, used: dict, starts: dict):
+    def fail(self, why: str):
+        self.error, self.path = why, ""
+        print(f"sjp-viz: usage history kept in memory only: {why}", file=sys.stderr, flush=True)
+
+    def add(self, now: float, used: dict, starts: dict, save: bool = True):
         """used: job ID -> (CPU seconds so far, memory MB, peak MB), as
         slurm.usage() reads it; starts: job ID -> start time, for every job
         running. Jobs no longer running are forgotten."""
         with self.lock:
             for jid, (cpu_s, mem, peak) in used.items():
-                r = self.jobs.setdefault(jid, dict(last=None, points=[], peak=0))
+                r = self.jobs.get(jid)
+                if r is None:
+                    r = self.jobs[jid] = dict(last=None, t=array("d"), cpu=array("f"),
+                                              mem=array("q"), peak=0)
                 if r["last"] and now > r["last"][0]:
-                    busy = max(0.0, (cpu_s - r["last"][1]) / (now - r["last"][0]))
-                    r["points"].append((round(now), round(busy, 2), mem))
-                    if len(r["points"]) > USE_POINTS:
-                        r["points"] = r["points"][len(r["points"]) % 2::2]
+                    r["t"].append(now)
+                    r["cpu"].append(max(0.0, (cpu_s - r["last"][1]) / (now - r["last"][0])))
+                    r["mem"].append(int(mem))
                 start = starts.get(jid)
-                r.update(last=(now, cpu_s), mem=mem, peak=max(r["peak"], peak),
+                r.update(last=(now, cpu_s), now_mem=mem, peak=max(r["peak"], peak),
                          avg=round(cpu_s / (now - start), 2) if start and now > start else None)
             for jid in set(self.jobs) - set(starts):
                 del self.jobs[jid]
+            if save and self.path:
+                try:
+                    with open(self.path, "a") as f:
+                        f.write(json.dumps(dict(t=now, used=used, starts=starts)) + "\n")
+                except OSError as e:
+                    self.fail(f"writing {self.path}: {e}")
+            if save and self.path and (self.compacted is None or now - self.compacted > 86400):
+                self.compact(now)                # at the first reading, then daily
+
+    def compact(self, now: float):
+        """Drop from the file the jobs that are no longer running."""
+        self.compacted, keep, tmp = now, set(self.jobs), self.path + ".new"
+        try:
+            with open(self.path) as f, open(tmp, "w") as out:
+                for line in f:
+                    r = json.loads(line)
+                    used = {k: v for k, v in r["used"].items() if k in keep}
+                    if used:
+                        out.write(json.dumps(dict(t=r["t"], used=used, starts={
+                            k: v for k, v in r["starts"].items() if k in keep})) + "\n")
+            os.replace(tmp, self.path)
+        except (OSError, ValueError, KeyError) as e:
+            self.fail(f"compacting {self.path}: {e}")
 
     def summary(self, jid: str):
         """CPUs busy now and on average, memory in use and its peak; None if
@@ -163,12 +207,26 @@ class UsageLog:
             r = self.jobs.get(jid)
             if not r:
                 return None
-            return dict(now=r["points"][-1][1] if r["points"] else None, avg=r["avg"],
-                        mem=r["mem"], peak=r["peak"])
+            return dict(now=round(r["cpu"][-1], 2) if r["cpu"] else None, avg=r["avg"],
+                        mem=r["now_mem"], peak=r["peak"])
 
-    def history(self, jid: str) -> list:
+    def history(self, jid: str, points: int = USE_POINTS) -> list:
+        """The job's samples, (time, CPUs busy, memory MB); averaged into at
+        most `points` of them for a long job."""
         with self.lock:
-            return list(self.jobs.get(jid, {}).get("points", []))
+            r = self.jobs.get(jid)
+            if not r:
+                return []
+            t, c, m = list(r["t"]), list(r["cpu"]), list(r["mem"])
+        n = len(t)
+        if n <= points:
+            return [(round(t[i]), round(c[i], 2), m[i]) for i in range(n)]
+        out = []
+        for k in range(points):
+            a, b = k * n // points, (k + 1) * n // points
+            out.append((round(t[b - 1]), round(sum(c[a:b]) / (b - a), 2),
+                        round(sum(m[a:b]) / (b - a))))
+        return out
 
 
 class Live:
@@ -177,12 +235,12 @@ class Live:
 
     version = __version__        # the version shown; main() asks git for it
 
-    def __init__(self, cfg, interval: float, use_interval: float = 60.0):
+    def __init__(self, cfg, interval: float, use_interval: float = 60.0, use_file: str = ""):
         self.cfg, self.interval, self.use_interval = cfg, interval, use_interval
         self.state = dict(mode="live", now=time.time(), horizon=HORIZON, nodes=[],
                           running=[], pending=[], pending_total=0, error="starting")
         self.lock = threading.Lock()
-        self.use = UsageLog()
+        self.use = UsageLog(use_file if use_interval else "")
         self.use_error = ""
 
     def run(self):
@@ -501,6 +559,9 @@ def main(argv=None):
     ap.add_argument("--usage-interval", type=float, default=60.0,
                     help="seconds between reads of what running jobs use, with sstat "
                          "(default 60; 0: off). Needs job accounting (JobAcctGatherType)")
+    ap.add_argument("--usage-file", default="/var/lib/sjp-viz/usage.jsonl",
+                    help="where the usage history is kept across restarts (default "
+                         "/var/lib/sjp-viz/usage.jsonl; empty: in memory only)")
     ap.add_argument("--demo", action="store_true", help="a simulated cluster instead")
     ap.add_argument("--speed", type=float, default=900.0,
                     help="demo: simulated seconds per real second (default 900)")
@@ -517,7 +578,7 @@ def main(argv=None):
     slurm.set_actuation(False)                  # read-only, whatever happens
     source = (Demo(cfg, a.speed, a.seed, a.load, slim=a.slim, fat=a.fat, pinned=a.pinned)
               if a.demo
-              else Live(cfg, a.interval, a.usage_interval))
+              else Live(cfg, a.interval, a.usage_interval, a.usage_file))
     source.version = describe()          # the release, or where a checkout is
     threading.Thread(target=source.run, daemon=True).start()
     if not a.demo:
