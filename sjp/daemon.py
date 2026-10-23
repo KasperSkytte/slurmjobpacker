@@ -68,6 +68,8 @@ class Daemon:
         self.flexed: dict = {}       # jobid -> (when, node, cpus, mem): moved to the flex
                                      # QOS this run, not seen running yet
         self.flex_seen: dict = {}    # jobid -> when flex mode last moved it either way
+        self.pin_from: dict = {}     # (jobid, pinned node) -> sjp's partitions before
+                                     # its pin, or None for the user's own --nodelist
         self.flex_users = None       # (read at, {(user, account): {qos}}), a cache
         self.flex_warned: set = set()  # (user, account) already named as missing it
         self.cluster = ""
@@ -1082,7 +1084,9 @@ class Daemon:
         under the flex QOS's own caps. Each is counted against a node's free
         space and against those caps, so the moves never add up to more than
         the cluster, or the flex QOS, can start: a job the flex QOS has no room
-        for stays where it is, and moves once its caps are raised."""
+        for stays where it is, and moves once its caps are raised. A job sjp
+        pinned to a node may use any node of sjp's choice before the pin; the
+        pin goes with the move."""
         c = self.cfg["limits"]
         target = c["flex_qos_name"]
         free = {n: [fc, fm, set(ps)] for n, (fc, fm, ps) in nf.items()}
@@ -1105,15 +1109,26 @@ class Daemon:
         for j in sorted(pend, key=lambda j: -j["priority"]):
             jid = j["jobid"]
             if (j["reason"] not in slurm.CAP_REASONS or j["qos"] == target
-                    or j.get("gpu") or j.get("req_nodes")
-                    or j.get("nnodes", 1) > 1
+                    or j.get("gpu") or j.get("nnodes", 1) > 1
                     or now - self.flex_seen.get(jid, float("-inf")) < c["cooldown_seconds"]):
                 continue
             cpus, mem = max(1, j["cpus"]), j.get("req_mem") or j["mem"]
             if ((cap_u is not None and in_u[j["user"]] + cpus > cap_u)
                     or (cap_a is not None and in_a[j["account"]] + cpus > cap_a)):
                 continue                 # the flex QOS is full for them: it would only wait there
-            parts = set(j["partition"].split(","))
+            pinned = j.get("req_nodes") or ""
+            if pinned and (jid, pinned) not in self.pin_from:
+                try:
+                    marks = slurm.sjp_marks(slurm.admin_comment(j["id"]))
+                except slurm.SlurmError as e:
+                    self.log("error", where="flex", detail=repr(e))
+                    continue
+                self.pin_from[(jid, pinned)] = \
+                    (marks.get("from") or j["partition"]) if "pin" in marks else None
+            base = self.pin_from[(jid, pinned)] if pinned else j["partition"]
+            if not base:
+                continue                 # the user's own --nodelist: never touch it
+            parts = set(base.split(","))
             # Reservations that start before the job would end count against it.
             soon = policy.reserved_before(later, now, j.get("timelimit"))
             fits = [n for n, (fc, fm, ps) in free.items()
@@ -1128,18 +1143,24 @@ class Daemon:
             in_a[j["account"]] += cpus
             self.flex_seen[jid] = now
             try:
-                # qos=<own>><flex>: where it came from, so it can go back. The
-                # "flex" key is what older versions wrote.
-                note = slurm.set_mark(slurm.admin_comment(j["id"]), "qos",
-                                      f"{j['qos']}>{target}", drop=("flex",))
+                note = slurm.admin_comment(j["id"])
             except slurm.SlurmError as e:
                 self.log("error", where="flex", detail=repr(e))
                 continue
-            argv = slurm.cmd_set_job_qos(jid, target, note)
-            self.intend("flex_job", slurm.cmdline(argv),
+            argvs = []
+            if pinned:
+                note = slurm.rename_mark(note, "pin", "released", drop=("eta",))
+                argvs = slurm.cmd_release_pin(jid, base, note)
+            # qos=<own>><flex>: where it came from, so it can go back. The
+            # "flex" key is what older versions wrote.
+            note = slurm.set_mark(note, "qos", f"{j['qos']}>{target}", drop=("flex",))
+            argvs.append(slurm.cmd_set_job_qos(jid, target, note))
+            self.intend("flex_job", " && ".join(slurm.cmdline(a) for a in argvs),
                         f"held by the CPU cap of QOS {j['qos']} ({j['reason']}), and "
-                        f"{cpus} CPUs x {mem} MB fit on {node} now",
-                        self.blocked(("enforce",)), lambda: self.apply_retrying(argv),
+                        f"{cpus} CPUs x {mem} MB fit on {node} now"
+                        + (f"; no longer waiting for {pinned}" if pinned else ""),
+                        self.blocked(("enforce",)),
+                        lambda argvs=argvs: all([self.apply_retrying(a) for a in argvs]),
                         jobid=jid, before=j["qos"], after=target, node=node)
             if self.mode == "enforce":
                 self.flexed[jid] = (now, node, cpus, mem, j["user"], j["account"])
@@ -1200,6 +1221,7 @@ class Daemon:
                         jobid=jid, before=j["qos"], after=orig)
         live = {j["jobid"] for j in pend}
         self.flexed = {k: v for k, v in self.flexed.items() if k in live}
+        self.pin_from = {k: v for k, v in self.pin_from.items() if k[0] in live}
         self.flex_seen = {k: v for k, v in self.flex_seen.items()
                           if now - v < c["cooldown_seconds"]}
 

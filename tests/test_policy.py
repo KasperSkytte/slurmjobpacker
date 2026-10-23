@@ -440,6 +440,29 @@ try:
     d.flex([fj("20", 16, 9), fj("22", 4, 7)], nf10, 2001.0, None, running)
     check("raise the flex caps and the waiting jobs move, counting the one moved before",
           [a[2] for a in ran] == ["jobid=20", "jobid=22"], str([a[2] for a in ran]))
+    # Held by the cap while pinned to a full node to wait for room: the job
+    # moves where there is room now, and its pin goes. The user's own
+    # --nodelist stays.
+    d = daemon.Daemon(cfg); d.log_fh = io.StringIO(); d.mode = "enforce"
+    flex_caps["flex"] = (None, None); ran.clear()
+    notes.update({"30": "sjp:pin=c;from=slim1,slim2;eta=236h;job=8c", "31": ""})
+    nf30 = dict(nf10, c=(-8, 0, ["slim2"]))
+    d.flex([fj("30", 8, 9, req_nodes="c", partition="slim2"),
+            fj("31", 8, 8, req_nodes="a")], nf30, 3000.0)
+    check("a job sjp pinned to a full node moves to the flex QOS, without the pin",
+          [a[2:] for a in ran] == [
+              ["jobid=30", "reqnodelist="],
+              ["jobid=30", "partition=slim1,slim2",
+               "admincomment=sjp:released=c;from=slim1,slim2;job=8c"],
+              ["jobid=30", "qos=flex",
+               "admincomment=sjp:released=c;from=slim1,slim2;job=8c;qos=normal>flex"]],
+          str(ran))
+    reads = []
+    slurm.admin_comment = lambda jid: reads.append(jid) or notes[jid]
+    d.flex([fj("31", 8, 8, req_nodes="a")], nf30, 3001.0)
+    check("the user's own --nodelist is left alone, and not read again each poll",
+          len(ran) == 3 and reads == [], str(reads))
+    slurm.admin_comment = lambda jid: notes[jid]
 finally:
     slurm.admin_comment, slurm.apply = real_ac, real_apply
     slurm.user_qos, slurm.cluster_name, slurm.qos_cpu_limits = real_uq, real_cn, real_ql
