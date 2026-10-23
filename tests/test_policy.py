@@ -676,17 +676,26 @@ vjobs = [dict(jobid="7", user="u", name="a", qos="normal", partition="slim", tim
          dict(jobid="9", user="u", name="c", qos="normal", partition="slim", timelimit=60,
               state="PD", nodelist="", cpus=2, mem=4096, req_mem=4096, reason="Priority",
               priority=5.0)]
+vnodes["g1"].update(gpus=4, gpu_type="a10")
+vjobs[1]["gpus"] = 2
 vs = viz.build_state(config.defaults(), vnodes, vparts, vjobs, 500.0)
-check("the view shows the nodes sjp places on, not GPU or interactive ones",
-      [n["name"] for n in vs["nodes"]] == ["s1"])
-check("and their running and waiting jobs",
-      [j["id"] for j in vs["running"]] == ["7"] and [j["id"] for j in vs["pending"]] == ["9"])
+check("the view gets every node, those sjp does not place on (GPU, interactive) marked",
+      {n["name"]: n["managed"] for n in vs["nodes"]} == {"g1": False, "i1": False, "s1": True})
+check("and every running and waiting job, marked the same way",
+      {j["id"]: j["managed"] for j in vs["running"] + vs["pending"]} == {"7": True, "8": False, "9": True})
+check("with a node's GPUs and those a job holds there",
+      next(n for n in vs["nodes"] if n["name"] == "g1")["gpus"] == 4
+      and next(j for j in vs["running"] if j["id"] == "8")["gpus"] == 2)
+check("GPUs counted from CfgTRES, else from Gres, with their type",
+      slurm._gpus("gpu:a10:4(S:0-1)", "cpu=64") == dict(gpus=4, gpu_type="a10")
+      and slurm._gpus("(null)", "cpu=64,gres/gpu=2,gres/gpu:a10=2") == dict(gpus=2, gpu_type="")
+      and slurm._gpus("(null)", "cpu=64") == dict(gpus=0, gpu_type=""))
 pj = [dict(vjobs[2], jobid=str(i), priority=float(i), req_nodes=rn)
       for i, rn in ((20, "s1"), (21, ""), (22, "g1"), (23, "s1,s2"))]
 vs = viz.build_state(config.defaults(), vnodes, vparts, pj, 500.0)
 pin = {j["id"]: j["pinned"] for j in vs["pending"]}
-check("a waiting job tied to one shown node is drawn there; others queue as usual",
-      pin == {"20": "s1", "21": "", "22": "", "23": ""} and vs["queued_total"] == 3, str(pin))
+check("a waiting job tied to one node is drawn there; others queue as usual",
+      pin == {"20": "s1", "21": "", "22": "g1", "23": ""} and vs["queued_total"] == 2, str(pin))
 demo = viz.Demo(config.defaults(), speed=900, seed=2)
 for _ in range(300):
     demo.step(0.1)
@@ -696,6 +705,19 @@ over = [n["name"] for n in ds["nodes"]
         or sum(j["mem"] for j in ds["running"] if j["node"] == n["name"]) > n["mem"]]
 check("the demo keeps its cluster busy without overfilling a node",
       len(ds["running"]) > 20 and not over, f"{len(ds['running'])} running, overfull: {over}")
+demo = viz.Demo(config.defaults(), speed=900, seed=2, interactive=1, gpu=1)
+for _ in range(300):
+    demo.step(0.1)
+ds = demo.get()
+on = lambda n: [j for j in ds["running"] if j["node"] == n["name"]]
+others = [n for n in ds["nodes"] if not n["managed"]]
+check("the demo's interactive and GPU nodes run their own jobs, within their CPUs and GPUs",
+      sorted(n["name"] for n in others) == ["gpu01", "int01"]
+      and all(on(n) and sum(j["cpus"] for j in on(n)) <= n["cpus"]
+              and sum(j["gpus"] for j in on(n)) <= n["gpus"] for n in others)
+      and all(not j["managed"] for n in others for j in on(n))
+      and not any(j["node"] in ("gpu01", "int01") for j in ds["running"] if j["managed"]),
+      str([(n["name"], len(on(n))) for n in others]))
 
 vn = {"a": dict(cpus=64, threads=2), "b": dict(cpus=64, threads=1), "c": dict(cpus=64)}
 shown = {"a": {}, "b": {}}

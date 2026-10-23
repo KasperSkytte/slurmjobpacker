@@ -118,8 +118,13 @@ Click a job for its details, including how much of its CPUs and memory it uses o
 
 <img src="docs/img/sjp-job-details.png" width="290" alt="A running job's details: user, account, CPUs, memory and time, then a graph of its CPU and memory use against what it was given, and its average CPU use and memory peak with a verdict">
 
+Partitions slurmjobpacker does not manage, such as an interactive partition or GPU nodes,
+are shown too, after its own and marked *not managed by slurmjobpacker*; press `O` to
+hide them. A node with GPUs gets a GPU lane next to its CPUs and memory: a bar under memory
+in 2D, and a strip beside the node in 3D where each job's GPUs run as deep as its time limit.
+
 To try it, run `python3 -m sjp.viz` (or `python3 -m sjp.viz --demo` for a simulated
-cluster), and open `http://127.0.0.1:8650`. To keep it running, install it as a service
+cluster, with `--interactive 1 --gpu 1` to add those nodes), and open `http://127.0.0.1:8650`. To keep it running, install it as a service
 next to `sjpd`:
 
 ```sh

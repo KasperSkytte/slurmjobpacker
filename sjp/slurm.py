@@ -66,6 +66,7 @@ def nodes() -> dict:
                 alloc_mem=int(d.get("AllocMem", 0)),
                 partitions=[p for p in d.get("Partitions", "").split(",") if p],
                 gpu=_has_gpu(d.get("Gres", ""), d.get("CfgTRES", "")),
+                **_gpus(d.get("Gres", ""), d.get("CfgTRES", "")),
                 up=_up(state), state=state,
                 # why an admin took it out, without Slurm's "[user@time]"
                 reason=re.sub(r"\s*\[[^]]*\]\s*$", "", d.get("Reason", "")).strip(),
@@ -112,6 +113,29 @@ def _has_gpu(gres: str, cfg_tres: str) -> bool:
     """'gpu:a10:1(S:0)' in Gres, or 'gres/gpu=1' in CfgTRES."""
     return (any(g.split(":")[0].strip().lower() == "gpu" for g in gres.split(","))
             or "gres/gpu" in cfg_tres)
+
+
+def _gpu_tres(tres: dict) -> int:
+    """GPUs in a TRES list as a dict: 'gres/gpu=2', or by type 'gres/gpu:a10=2'
+    (summed) when there is no plain count."""
+    try:
+        if "gres/gpu" in tres:
+            return int(tres["gres/gpu"])
+        return sum(int(v) for k, v in tres.items() if k.startswith("gres/gpu:"))
+    except ValueError:
+        return 0
+
+
+def _gpus(gres: str, cfg_tres: str) -> dict:
+    """A node's GPUs: how many (from CfgTRES, else Gres 'gpu:a10:4(S:0)') and
+    their type ('a10', or '' when not given)."""
+    kinds = [g.split("(")[0].strip().split(":") for g in gres.split(",")]
+    kinds = [k for k in kinds if k[0].lower() == "gpu"]
+    gtype = next((k[1] for k in kinds if len(k) == 3), "")
+    n = _gpu_tres(dict(kv.split("=", 1) for kv in cfg_tres.split(",") if "=" in kv))
+    if not n:
+        n = sum(int(k[-1]) for k in kinds if len(k) > 1 and k[-1].isdigit())
+    return dict(gpus=n, gpu_type=gtype)
 
 
 def partitions() -> dict:
@@ -168,6 +192,7 @@ def queue(states: str = "PD,R,CF") -> list[dict]:
                             reason=f[7], qos=f[8], partition=f[9], name=f[10],
                             state=f[11], nnodes=nnodes,
                             gpu=any(k.startswith("gres/gpu") for k in tres),
+                            gpus=_gpu_tres(tres),
                             req_nodes=f[13], nodelist=f[14], submit=_epoch(f[15]),
                             ntasks=int(f[16] or 1), eligible=_epoch(f[17]),
                             features="" if f[18] == "(null)" else f[18],

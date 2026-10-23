@@ -30,6 +30,8 @@
   .bar i b { display: block; height: 100%; width: 0; transition: width .4s, background .4s; }
   .util { display: none; }
   body.measured .util { display: inline; }
+  .gpurow { display: none; }
+  body.gpus .gpurow { display: revert; }
   #legend { bottom: 16px; left: 16px; font-size: 12px; color: var(--muted); }
   #legend .ramp { width: 220px; height: 10px; border-radius: 5px; margin: 6px 0 2px; }
   #legend .ticks { display: flex; justify-content: space-between; width: 220px; }
@@ -79,6 +81,7 @@
   <div class="stats">
     <span>CPUs</span><div class="bar"><i id="cpubar"><b id="cpuutil"></b></i></div><span id="cpu">–</span>
     <span>Memory</span><div class="bar"><i id="membar"><b id="memutil"></b></i></div><span id="mem">–</span>
+    <span class="gpurow" title="GPUs allocated to jobs; how much they are used is not measured">GPUs</span><div class="bar gpurow"><i id="gpubar"></i></div><span class="gpurow" id="gpu">–</span>
     <span class="util">Utilization</span><span class="util" id="util" style="grid-column: span 2">–</span>
     <span>Jobs</span><span id="jobs" style="grid-column: span 2">–</span>
     <span>Time</span><span id="clock" style="grid-column: span 2">–</span>
@@ -284,7 +287,8 @@ const resvLines = n => [...(n.resv || [])].sort((a, b) => b.active - a.active ||
 // A node's name and size; when it takes no jobs, its state (DOWN, DRAIN, ...);
 // and a whole-node reservation.
 function nodeLabel(n) {
-  const lines = [n.name, `${n.cpus} CPUs · ${gb(n.mem)} · ${gbc(n.mem / n.cpus)}`], colors = [];
+  const lines = [managed(n) ? n.name : `${n.name} · ${n.partitions.join(", ")}`, `${n.cpus} CPUs · ${gb(n.mem)} · ${gbc(n.mem / n.cpus)}`
+    + (n.gpus ? ` · ${n.gpus} GPUs` + (n.gpu_type ? ` (${n.gpu_type.toUpperCase()})` : "") : "")], colors = [];
   if (!n.up) { colors[lines.length] = "#f85149"; lines.push(n.why || n.state || "down"); }
   for (const r of resvLines(n)) { colors[lines.length] = "#a371f7"; lines.push(r); }
   const label = textSprite(lines, { colors });
@@ -315,8 +319,24 @@ function nodeState(nv, n) {
   nv.label = nodeLabel(n); nv.group.add(nv.label);
 }
 
+// A node's GPUs: a lane beside it, a floor GPUs wide and as deep as the node,
+// with a line between GPUs. A job's GPUs run in it as deep as its time limit.
+function gpuParts(g, n, w, h) {
+  const lw = n.gpus * SLOT, x0 = w + LANE_GAP;
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(lw, NODE_D),
+    new THREE.MeshBasicMaterial({ color: 0x14301c, transparent: true, opacity: 0.85, side: THREE.DoubleSide }));
+  floor.rotation.x = -Math.PI / 2; floor.position.set(x0 + lw / 2, -0.01, -NODE_D / 2); g.add(floor);
+  const pts = [];
+  for (let k = 0; k <= n.gpus; k++) pts.push(new THREE.Vector3(x0 + k * SLOT, 0, 0), new THREE.Vector3(x0 + k * SLOT, 0, -NODE_D));
+  pts.push(new THREE.Vector3(x0, 0, 0), new THREE.Vector3(x0 + lw, 0, 0), new THREE.Vector3(x0, 0, -NODE_D), new THREE.Vector3(x0 + lw, 0, -NODE_D));
+  g.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color: 0x6e7681 })));
+  const t = textSprite([`${n.gpus} GPUs`], { size: 40, color: "#8b949e" });
+  t.scale.multiplyScalar(0.6); t.center.set(0.5, 1); t.position.set(x0 + lw / 2, -0.2, 0.05); g.add(t);
+  return { laneX: x0 };
+}
+
 function layoutNodes(nodes) {
-  const key = nodes.map(n => n.name + n.cpus + n.mem).join();
+  const key = nodes.map(n => n.name + n.cpus + n.mem + ":" + (n.gpus || 0)).join();
   if (key === layoutKey) return;
   layoutKey = key;
   for (const v of nodeViews.values()) world.remove(v.group);
@@ -325,11 +345,13 @@ function layoutNodes(nodes) {
   maxMem = Math.max(...nodes.map(n => n.mem), 1);
   // One row per partition group, highest PriorityTier nearest the viewer.
   const rows = new Map();
-  [...nodes].sort((a, b) => b.tier - a.tier || a.name.localeCompare(b.name, undefined, { numeric: true }))
-    .forEach(n => { const k = n.partitions.join(","); if (!rows.has(k)) rows.set(k, []); rows.get(k).push(n); });
+  // sjp's own partitions nearest the viewer; the others behind them
+  [...nodes].sort((a, b) => managed(b) - managed(a) || b.tier - a.tier || a.name.localeCompare(b.name, undefined, { numeric: true }))
+    .forEach(n => { const k = managed(n) ? n.partitions.join(",") : OTHERS; if (!rows.has(k)) rows.set(k, []); rows.get(k).push(n); });
   let r = 0, widest = 0;
+  const laneW = n => n.gpus ? LANE_GAP + n.gpus * SLOT : 0;   // the GPU lane beside the node
   rowEnds = [];
-  const rowWidths = [...rows.values()].map(ns => ns.reduce((w, n) => w + sx(n.cpus) + GAP_X, -GAP_X));
+  const rowWidths = [...rows.values()].map(ns => ns.reduce((w, n) => w + sx(n.cpus) + laneW(n) + GAP_X, -GAP_X));
   widest = Math.max(...rowWidths);
   for (const [part, ns] of rows) {
     let x = -rowWidths[r] / 2;
@@ -338,10 +360,15 @@ function layoutNodes(nodes) {
     for (const n of ns) {
       const w = sx(n.cpus), h = sy(n.mem), g = new THREE.Group();
       g.position.set(x, 0, z);
+      // dashed: a node sjp does not place on
       const frame = new THREE.LineSegments(
         new THREE.EdgesGeometry(new THREE.BoxGeometry(w, h, NODE_D)),
-        new THREE.LineBasicMaterial({ color: n.up ? 0x6e7681 : 0xf85149, transparent: true, opacity: 0.9 }));
+        managed(n) ? new THREE.LineBasicMaterial({ color: n.up ? 0x6e7681 : 0xf85149, transparent: true, opacity: 0.9 })
+                   : new THREE.LineDashedMaterial({ color: n.up ? 0x6e7681 : 0xf85149, transparent: true, opacity: 0.9,
+                                                    dashSize: 0.35, gapSize: 0.25 }));
+      if (!managed(n)) frame.computeLineDistances();
       frame.position.set(w / 2, h / 2, -NODE_D / 2); g.add(frame);
+      const gpu = n.gpus ? gpuParts(g, n, w, h) : {};      // its GPU lane
       const floor = new THREE.Mesh(new THREE.PlaneGeometry(w, NODE_D),
         new THREE.MeshBasicMaterial({ color: 0x161b22, transparent: true, opacity: 0.85, side: THREE.DoubleSide }));
       floor.rotation.x = -Math.PI / 2; floor.position.set(w / 2, -0.01, -NODE_D / 2); g.add(floor);
@@ -397,10 +424,10 @@ function layoutNodes(nodes) {
       holder.add(g);
       nodeViews.set(n.name, { group: g, w, h, node: n, free, freeEdge, freeLabel, freeKey: "", taken,
                               frame, label, state: null,
-                              used: [0, 0], idle, floor });
-      x += w + GAP_X;
+                              used: [0, 0], idle, floor, ...gpu });
+      x += w + laneW(n) + GAP_X;
     }
-    const rowLabel = textSprite([part], { size: 64, color: "#8b949e" });
+    const rowLabel = textSprite(part === OTHERS ? ["other partitions", "not managed by slurmjobpacker"] : [part], { size: 64, color: "#8b949e" });
     rowLabel.center.set(0, 0.5); rowLabel.position.set(x - GAP_X + 1.6, 0.3, z - NODE_D / 2);
     holder.add(rowLabel);
     rowEnds.push([x - GAP_X, z]);
@@ -514,6 +541,15 @@ const remember = (key, v) => { try { localStorage.setItem("sjp-" + key, v ? "1" 
 let busyMode = remembered("busy", "busy", "1", true);
 let allWaiting = remembered("all", "waiting", "all", false);
 document.body.classList.toggle("busy", busyMode);
+// O: also the partitions slurmjobpacker does not manage (an interactive one, GPU
+// nodes), behind its own and set apart as such; on unless turned off (?others=0).
+let showOthers = remembered("others", "others", "1", true);
+function toggleOthers() { showOthers = !showOthers; remember("others", showOthers); renderOptions(); if (state) apply(state); }
+const managed = x => x.managed !== false;
+const shownNodes = s => s.nodes.filter(n => showOthers || managed(n));
+const shownPending = s => s.pending.filter(j => showOthers || managed(j));
+const SLOT = 0.62, LANE_GAP = 1.6;     // a GPU's width in its lane, and how far the lane is from its node
+const OTHERS = "\u0000others";          // the one row of nodes slurmjobpacker does not manage
 function toggleBusy() {
   busyMode = !busyMode; remember("busy", busyMode);
   document.body.classList.toggle("busy", busyMode); renderOptions();
@@ -523,6 +559,7 @@ function toggleAll() { allWaiting = !allWaiting; remember("all", allWaiting); re
 addEventListener("keydown", e => {
   if (e.key === "b" || e.key === "B") toggleBusy();
   if (e.key === "a" || e.key === "A") toggleAll();
+  if (e.key === "o" || e.key === "O") toggleOthers();
 });
 // Busyness: blue when idle, yellow at half, red with every CPU allocated. A
 // node that takes no jobs is red too, with its reason in the middle.
@@ -535,12 +572,12 @@ const byQueue = (a, b) => (b.priority || 0) - (a.priority || 0)
   || (parseInt(a.id) || 0) - (parseInt(b.id) || 0) || String(a.id).localeCompare(String(b.id));
 
 // "Waiting", or which part of a longer queue is shown.
-const queued = s => s.pending.filter(j => !(pinAtNode && j.pinned) && matches(j)).sort(byQueue);
+const queued = s => shownPending(s).filter(j => !(pinAtNode && j.pinned) && matches(j)).sort(byQueue);
 // The top 50 (s.top) of the queue and the top 10 waiting at each node, or all (a).
 const cap = s => allWaiting ? Infinity : (s.top || 50);
 const PER_NODE = 10;
 const waitingTitle = s => {
-  const total = filtering() ? queued(s).length
+  const total = filtering() || (!showOthers && s.pending.some(j => !managed(j))) ? queued(s).length
               : pinAtNode ? s.queued_total ?? s.pending_total : s.pending_total;
   const shown = Math.min(queued(s).length, cap(s));
   return total > shown ? `Waiting (top ${shown} by priority)` : allWaiting ? `Waiting (all ${total})` : "Waiting";
@@ -549,7 +586,7 @@ function apply(s) {
   state = s; horizon = s.horizon || horizon;
   fillFilters(s);
   for (const n of s.nodes) nodeMpc[n.name] = n.mem / n.cpus;
-  layoutNodes(s.nodes);
+  layoutNodes(shownNodes(s));
   const seen = new Set();
   // Running jobs: per node, stacked corner to corner in the order they
   // started, so the stack ends where the node's free space begins.
@@ -559,7 +596,7 @@ function apply(s) {
   for (const [name, nv] of nodeViews) {
     if (fresh.has(name)) nodeState(nv, fresh.get(name));
     const js = (byNode.get(name) || []).sort((a, b) => (+a.id || 0) - (+b.id || 0) || String(a.id).localeCompare(String(b.id)));
-    let cx = 0, cy = 0;
+    let cx = 0, cy = 0, cg = 0;
     for (const j of js) {
       const key = "r:" + j.id + "@" + name;
       seen.add(key);
@@ -577,12 +614,18 @@ function apply(s) {
       if (v.opacity === 0) v.ran = v.tran;           // new: no fill animation
       const o = nv.group.getWorldPosition(new THREE.Vector3());
       place(v, o.x + sx(cx), o.y + sy(cy), o.z - d, w, h, d);
-      cx += j.cpus; cy += j.mem;
+      // In the lane: its GPUs, flat, as deep as its time limit.
+      v.gpuAt = null;
+      if (j.gpus && nv.laneX != null) {
+        const gw = SLOT * j.gpus;
+        v.gpuAt = [o.x + nv.laneX + SLOT * cg + gw / 2, o.y + 0.22, o.z - d / 2, gw - 0.08, 0.44, d];
+      }
+      cx += j.cpus; cy += j.mem; cg += j.gpus || 0;
     }
-    nv.used = [cx, cy];
+    nv.used = [cx, cy, cg];
     // B: the frame by how busy the node is, unless it is down (red) or reserved (purple)
-    if (busyMode && nv.node.up && !nv.held) {
-      nv.frame.material.color.setStyle(busyColor(cx / nv.node.cpus));   // red when full
+    if (busyMode && nv.node.up && !nv.held) {      // a GPU node: the scarcer of CPUs and GPUs
+      nv.frame.material.color.setStyle(busyColor(Math.max(cx / nv.node.cpus, nv.node.gpus ? cg / nv.node.gpus : 0)));
     } else nv.frame.material.color.set(!nv.node.up ? 0xf85149 : nv.held ? RESV : 0x6e7681);
     const tw = sx(cx), th = sy(cy);
     nv.taken.visible = tw > 0.05 && th > 0.05;
@@ -618,7 +661,7 @@ function apply(s) {
   const atNode = new Map();            // node -> where its next pinned job goes
   let nq = 0;
   const perNode = new Map();
-  for (const j of [...s.pending].sort(byQueue)) {
+  for (const j of shownPending(s).sort(byQueue)) {
     if (!matches(j)) continue;                       // filtered out: not shown
     const here = pinAtNode && j.pinned && nodeViews.has(j.pinned);
     if (here) {
@@ -660,11 +703,17 @@ function apply(s) {
   updatePanel(s);
 }
 
+// The totals are of the whole cluster, whatever is shown: every node, every job.
 function updatePanel(s) {
   if (s.version) document.getElementById("version").textContent = "v" + s.version;
-  const cap = s.nodes.reduce((a, n) => [a[0] + n.cpus, a[1] + n.mem], [0, 0]);
-  const use = s.running.reduce((a, j) => [a[0] + j.cpus, a[1] + j.mem], [0, 0]);
+  const cap = s.nodes.reduce((a, n) => [a[0] + n.cpus, a[1] + n.mem, a[2] + (n.gpus || 0)], [0, 0, 0]);
+  const use = s.running.reduce((a, j) => [a[0] + j.cpus, a[1] + j.mem, a[2] + (j.gpus || 0)], [0, 0, 0]);
   const pc = 100 * use[0] / Math.max(cap[0], 1), pm = 100 * use[1] / Math.max(cap[1], 1);
+  // GPUs allocated, when the cluster has some (what they are used for is not measured)
+  document.body.classList.toggle("gpus", cap[2] > 0);
+  const pg = 100 * use[2] / Math.max(cap[2], 1);
+  document.getElementById("gpubar").style.width = pg + "%";
+  document.getElementById("gpu").textContent = `${Math.round(use[2])} / ${cap[2]} (${pg.toFixed(0)}%)`;
   document.getElementById("cpubar").style.width = pc + "%";
   document.getElementById("membar").style.width = pm + "%";
   document.getElementById("cpu").textContent = `${Math.round(use[0])} / ${cap[0]} (${pc.toFixed(0)}%)`;
@@ -706,7 +755,9 @@ renderer.domElement.addEventListener("pointerup", e => {
   if (!downAt || Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) > 5) return;
   mouse.set(e.clientX / innerWidth * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
   ray.setFromCamera(mouse, camera);
-  const hit = ray.intersectObjects([...views.values()].filter(v => !v.dying).map(v => v.mesh), false)[0];
+  const live = [...views.values()].filter(v => !v.dying);
+  const targets = [...live.map(v => v.mesh), ...live.filter(v => v.gmesh && v.gmesh.visible).map(v => v.gmesh)];
+  const hit = ray.intersectObjects(targets, false)[0];
   select(hit ? hit.object.userData.view : null);
 });
 document.getElementById("close").onclick = () => select(null);
@@ -725,6 +776,7 @@ function select(v) {
     ["State", running ? `running on ${j.node}` + (j.nodes > 1 ? ` (+${j.nodes - 1} nodes)` : "")
                      : j.pinned ? `waiting for ${j.pinned} (${j.reason})` : `waiting (${j.reason})`],
     ["CPUs", (+j.cpus).toFixed(j.cpus % 1 ? 1 : 0)], ["Memory", gb(j.mem)], ["Memory / CPU", gbc(mpc)],
+    ...(j.gpus ? [["GPUs", (+j.gpus).toFixed(j.gpus % 1 ? 1 : 0)]] : []),
     running ? ["Time", `${dur(state.now - j.end + j.minutes * 60)} of ${dur(j.minutes * 60)}, ${dur(j.end - state.now)} left`]
             : ["Time limit", dur(j.minutes * 60)],
     ...(running ? [] : [["Priority", j.priority == null ? "–" : Math.round(j.priority)]]),
@@ -799,6 +851,7 @@ function optionRows() {
     { key: "e", text: "colour jobs by CPU efficiency", get: () => colorMode === "cpu", toggle: toggleEff },
     { key: "p", text: "jobs waiting for one node at that node", get: () => pinAtNode, toggle: togglePinned },
     { key: "a", text: "all waiting jobs (else top 50, 10 per node)", get: () => allWaiting, toggle: toggleAll },
+    { key: "o", text: "partitions not managed by slurmjobpacker", get: () => showOthers, toggle: toggleOthers },
     { key: "l", text: "job labels", get: () => showLabels, toggle: () => { showLabels = !showLabels; } },
     { key: "r", text: "rotate", get: () => controls.autoRotate, toggle: () => { controls.autoRotate = !controls.autoRotate; } },
     { key: "drag", text: "turn" }, { key: "right-drag", text: "move (or Ctrl+drag)" },
@@ -836,6 +889,7 @@ function step(dt) {
       if (v.opacity <= 0) {
         world.remove(v.mesh); world.remove(v.label);
         v.mesh.material.dispose(); v.fill.material.dispose(); v.line.material.dispose(); v.label.material.map.dispose(); v.label.material.dispose();
+        if (v.gmesh) { world.remove(v.gmesh); v.gmesh.material.dispose(); }
         if (selected === v) select(null);
         views.delete(key); continue;
       }
@@ -865,6 +919,27 @@ function step(dt) {
     }
     v.label.visible = showLabels && Math.max(front, top) > 0.55 && v.opacity > 0.5;
     v.label.material.opacity = v.opacity * dim;
+    gpuView(v, k, dim);
+  }
+}
+// A running job's GPUs: a box in its node's GPU lane, as deep as its time limit.
+function gpuView(v, k, dim) {
+  const j = v.job, on = v.key.startsWith("r:") && j.gpus > 0;
+  if (on && v.gpuAt && !v.dying) {
+    if (!v.gmesh) {
+      v.gmesh = new THREE.Mesh(unit, new THREE.MeshStandardMaterial({ color: jobColor(j), roughness: 0.55, transparent: true }));
+      v.gmesh.add(new THREE.LineSegments(new THREE.EdgesGeometry(unit), new THREE.LineBasicMaterial({ color: 0x0d1117 })));
+      v.gmesh.userData.view = v; world.add(v.gmesh);
+      v.gpos = new THREE.Vector3(...v.gpuAt.slice(0, 3)); v.gscale = new THREE.Vector3(...v.gpuAt.slice(3));
+    }
+    v.gpos.lerp(new THREE.Vector3(...v.gpuAt.slice(0, 3)), k); v.gscale.lerp(new THREE.Vector3(...v.gpuAt.slice(3)), k);
+    v.gmesh.position.copy(v.gpos); v.gmesh.scale.copy(v.gscale);
+    v.gmesh.material.color.copy(jobColor(j)); v.gmesh.material.opacity = 0.94 * v.opacity * dim;
+    v.gmesh.children[0].material.color.set(selected === v ? 0xffffff : 0x0d1117);
+    v.gmesh.visible = true;
+  } else if (v.gmesh) {
+    v.gmesh.visible = false;
+    if (v.dying && v.opacity <= 0.05) { world.remove(v.gmesh); v.gmesh.material.dispose(); v.gmesh = null; }
   }
 }
 function frame(now) {
@@ -876,7 +951,7 @@ function frame(now) {
 // ?manual=1: no polling and no clock; a recorder feeds states and steps frames.
 const manual = params.get("manual") === "1";
 if (!manual) { poll(); requestAnimationFrame(frame); }
-window.sjpViz = { views, get state() { return state; }, camera, controls, apply,
+window.sjpViz = { views, nodeViews, get state() { return state; }, camera, controls, apply,
   frame(dt, orbit = 0) {                 // one recorded frame: dt seconds, orbit radians
     step(dt);
     if (orbit) {

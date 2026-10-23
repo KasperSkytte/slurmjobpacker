@@ -57,22 +57,32 @@ def shown_partitions(cfg, parts: dict, nodes: dict) -> list[str]:
 def build_state(cfg, nodes: dict, parts: dict, jobs: list, now: float, mode="live",
                 resvs=(), notes=None, version=__version__) -> dict:
     """What the page draws, from what Slurm reports. notes: job ID -> AdminComment,
-    of which the page shows sjp's marks."""
+    of which the page shows sjp's marks.
+
+    Every node is sent; managed says whether sjp places jobs on it (its
+    partitions by the [topology] rules), and the page shows the others, such as
+    an interactive or a GPU partition, only when asked. A managed node is
+    grouped by the partitions sjp uses, any other by all of its own."""
     keep = shown_partitions(cfg, parts, nodes)
     shown = {}
     for name, d in sorted(nodes.items()):
         ps = [p for p in d["partitions"] if p in keep]
-        if not ps or (cfg["topology"]["exclude_gpu_nodes"] and d.get("gpu")):
+        managed = bool(ps) and not (cfg["topology"]["exclude_gpu_nodes"] and d.get("gpu"))
+        ps = ps if managed else [p for p in d["partitions"] if p in parts] or d["partitions"]
+        if not ps:
             continue
         shown[name] = dict(name=name, cpus=d["cpus"], mem=d["mem"], partitions=ps,
                            tier=max(parts.get(p, {}).get("tier", 1) for p in ps),
+                           managed=managed, gpus=d.get("gpus", 0), gpu_type=d.get("gpu_type", ""),
                            up=d["up"], state=d.get("state", ""),
                            why=slurm.blocking(d.get("state", "")), reason=d.get("reason", ""))
     running, pending = [], []
     for j in jobs:
         note = (notes or {}).get(j.get("id", j["jobid"]), "")
+        asked = [p for p in (j["partition"] or "").split(",") if p]
         info = dict(id=j["jobid"], user=j["user"], account=j.get("account", ""),
                     name=j["name"], qos=j["qos"],
+                    managed=not asked or any(p in keep for p in asked),
                     partition=j["partition"], minutes=j["timelimit"],
                     reservation=j.get("reservation") or "", features=j.get("features") or "",
                     sjp=note[note.find("sjp:"):] if "sjp:" in note else "")
@@ -85,11 +95,12 @@ def build_state(cfg, nodes: dict, parts: dict, jobs: list, now: float, mode="liv
             end = j.get("end") or now + j["timelimit"] * 60
             for n in on:
                 running.append(dict(info, node=n, cpus=j["cpus"] / nn, mem=mem,
-                                    end=end, nodes=nn))
+                                    gpus=j.get("gpus", 0) / nn, end=end, nodes=nn))
         elif j["state"] == "PD":
             # pinned: waiting for one node (sjp's pin, or the user's --nodelist)
             req = slurm.expand_hostlist(j.get("req_nodes") or "")
             pending.append(dict(info, cpus=j["cpus"], mem=j.get("req_mem") or j["mem"],
+                                gpus=j.get("gpus", 0) / max(j.get("nnodes", 1), 1),
                                 reason=j["reason"], priority=j["priority"],
                                 pinned=req[0] if len(req) == 1 and req[0] in shown else ""))
     pending.sort(key=queue_order)
@@ -302,6 +313,21 @@ def demo_nodes(slim: int = 3, fat: int = 3) -> list:
     (name, CPUs, memory MB, partition, PriorityTier)."""
     return ([("slim%02d" % i, 96, 384 * 1024, "slim", 10) for i in range(1, slim + 1)]
             + [("fat%02d" % i, 96, 1536 * 1024, "fat", 9) for i in range(1, fat + 1)])
+
+
+def demo_other_nodes(interactive: int = 0, gpu: int = 0) -> list:
+    """Nodes of the demo cluster that sjp does not place jobs on: an interactive
+    partition, and GPU nodes. (name, CPUs, memory MB, partition, GPUs, GPU type)."""
+    return ([("int%02d" % i, 64, 512 * 1024, "interactive", 0, "") for i in range(1, interactive + 1)]
+            + [("gpu%02d" % i, 64, 512 * 1024, "gpu", 4, "a10") for i in range(1, gpu + 1)])
+# Jobs in those partitions: CPUs, GB per CPU and time limits (minutes) to pick
+# from, and GPUs per job; how busy each partition is kept.
+DEMO_OTHER = {
+    "interactive": dict(cpus=[(1, 3), (2, 3), (4, 3), (8, 1)], gbc=(2, 8), limits=[(60, 2), (240, 3), (480, 2)],
+                        gpus=[(0, 1)], load=0.55, names=["rstudio", "jupyter", "bash", "vscode"]),
+    "gpu": dict(cpus=[(4, 2), (8, 3), (16, 2)], gbc=(4, 12), limits=[(240, 2), (720, 2), (1440, 2), (2880, 1)],
+                gpus=[(1, 4), (2, 2), (4, 1)], load=1.3, names=["dorado", "alphafold", "train", "basecall"]),
+}
 DEMO_USERS = ["anna", "bo", "carlos", "dina", "erik", "fatima", "gustav", "hiro"]
 DEMO_ACCOUNTS = {"anna": "genomics", "bo": "genomics", "carlos": "ecology", "dina": "ecology",
                  "erik": "microbio", "fatima": "microbio", "gustav": "teaching", "hiro": "genomics"}
@@ -349,15 +375,30 @@ class Demo:
     version = __version__        # the version shown; main() asks git for it
 
     def __init__(self, cfg, speed: float = 900.0, seed: int = 1, load: float = 1.4,
-                 time_aware: bool = True, slim: int = 3, fat: int = 3, pinned: float = 0.5):
+                 time_aware: bool = True, slim: int = 3, fat: int = 3, pinned: float = 0.5,
+                 interactive: int = 0, gpu: int = 0):
         self.cfg, self.speed, self.time_aware = cfg, speed, time_aware
         self.pinned = pinned        # share of jobs that wait pinned to a node ([pin] wait_for_room)
         self.rng = random.Random(seed)
         self.demand = [tuple(x) for x in cfg["policy"]["demand"]]
         self.now = 1_800_000_000.0
         nodes = demo_nodes(slim, fat)
-        self.nodes = {n: dict(name=n, cpus=c, mem=m, partitions=[p], tier=t, up=True)
+        self.nodes = {n: dict(name=n, cpus=c, mem=m, partitions=[p], tier=t, up=True, managed=True,
+                              gpus=0, gpu_type="")
                       for n, c, m, p, t in nodes}
+        for n, c, m, p, ng, gt in demo_other_nodes(interactive, gpu):
+            self.nodes[n] = dict(name=n, cpus=c, mem=m, partitions=[p], tier=1, up=True,
+                                 managed=False, gpus=ng, gpu_type=gt)
+        # Arrivals per simulated second in each of those partitions.
+        self.other_rate = {}
+        for p, d in DEMO_OTHER.items():
+            ns = [x for x in self.nodes.values() if p in x["partitions"]]
+            if not ns:
+                continue
+            mean = lambda t: sum(v * w for v, w in t) / sum(w for _, w in t)
+            busy = (sum(x["gpus"] for x in ns) / max(mean(d["gpus"]), 1e-9) if mean(d["gpus"])
+                    else sum(x["cpus"] for x in ns) / mean(d["cpus"]))
+            self.other_rate[p] = d["load"] * busy / (mean(d["limits"]) * 60 * 0.6)
         self.running: list[dict] = []
         self.pending: list[dict] = []
         self.next_id = 4211
@@ -367,6 +408,9 @@ class Demo:
         self.lock = threading.Lock()
         for _ in range(int(cap / 14)):              # start part-full, not empty
             self.pending.append(self._job())
+        for p, rate in self.other_rate.items():
+            for _ in range(max(2, int(rate * 3 * 3600))):
+                self.pending.append(self._other_job(p))
         self._place()
 
     def _mean_cpus(self):
@@ -401,25 +445,52 @@ class Demo:
                     cpus=cpus, mem=int(cpus * mpc // 1024 * 1024) or 1024,
                     minutes=minutes, submitted=self.now, reason="Resources",
                     runtime=minutes * 60 * self.rng.uniform(0.3, 0.95),
-                    waits=self.rng.random() < self.pinned)
+                    waits=self.rng.random() < self.pinned, gpus=0, target="", managed=True)
 
-    def _free(self):
-        used = {n: [0, 0] for n in self.nodes}
+    def _other_job(self, part: str) -> dict:
+        """A job for a partition sjp does not place in: it goes there by itself."""
+        d = DEMO_OTHER[part]
+        j = self._job()
+        cpus = self._pick(d["cpus"])
+        minutes = self._pick(d["limits"])
+        return dict(j, cpus=cpus, mem=int(cpus * self.rng.uniform(*d["gbc"])) * 1024,
+                    minutes=minutes, runtime=minutes * 60 * self.rng.uniform(0.3, 0.95),
+                    name=self.rng.choice(d["names"]), gpus=self._pick(d["gpus"]),
+                    target=part, partition=part, managed=False, waits=False,
+                    qos="interactive" if part == "interactive" else "normal")
+
+    def _free(self, managed: bool = True):
+        """Free CPUs, memory and partitions of the nodes sjp places on (or, with
+        managed=False, of the others, with their free GPUs too)."""
+        used = {n: [0, 0, 0] for n in self.nodes}
         for j in self.running:
             used[j["node"]][0] += j["cpus"]
             used[j["node"]][1] += j["mem"]
+            used[j["node"]][2] += j.get("gpus", 0)
+        if not managed:
+            return {n: (d["cpus"] - used[n][0], d["mem"] - used[n][1], d["partitions"],
+                        d["gpus"] - used[n][2]) for n, d in self.nodes.items() if not d["managed"]}
         return {n: (d["cpus"] - used[n][0], d["mem"] - used[n][1], d["partitions"])
-                for n, d in self.nodes.items()}
+                for n, d in self.nodes.items() if d["managed"]}
 
     def _place(self):
         """Start every waiting job that fits now, oldest first: partitions as
         sjp's placement table would choose them, then the node within them."""
-        tiers = {p: d["tier"] for d in self.nodes.values() for p in d["partitions"]}
+        tiers = {p: d["tier"] for d in self.nodes.values() for p in d["partitions"] if d["managed"]}
         total = {}
         for d in self.nodes.values():
             for p in d["partitions"]:
-                total.setdefault(p, []).append((d["cpus"], d["mem"]))
-        for j in list(self.pending):
+                if d["managed"]:
+                    total.setdefault(p, []).append((d["cpus"], d["mem"]))
+        for j in [j for j in self.pending if j.get("target")]:     # first fit, as Slurm would
+            free = self._free(managed=False)
+            node = next((n for n, (fc, fm, ps, fg) in sorted(free.items())
+                         if j["target"] in ps and fc >= j["cpus"] and fm >= j["mem"] and fg >= j["gpus"]), None)
+            if node:
+                self.pending.remove(j)
+                self.running.append(dict(j, node=node, nodes=1, end=self.now + j["minutes"] * 60,
+                                         done=self.now + j["runtime"], pinned=""))
+        for j in [j for j in self.pending if not j.get("target")]:
             free = self._free()
             by_part = {p: [(free[n][0], free[n][1]) for n, d in self.nodes.items()
                            if p in d["partitions"]] for p in total}
@@ -461,7 +532,7 @@ class Demo:
             e.sort()
         for j in sorted(self.pending, key=queue_order):
             j["pinned"] = ""
-            if not j.get("waits") or not j.get("allowed"):
+            if not j.get("waits") or not j.get("allowed") or j.get("target"):
                 continue
             node, _, _ = policy.soonest_node(j["cpus"], j["mem"], j["allowed"], free, ends,
                                              self.now, tiers)
@@ -477,6 +548,9 @@ class Demo:
             self.running = [j for j in self.running if j["done"] > self.now]
             for _ in range(self._poisson(self.rate * dt)):
                 self.pending.append(self._job())
+            for p, rate in self.other_rate.items():
+                for _ in range(self._poisson(rate * dt)):
+                    self.pending.append(self._other_job(p))
             self._place()
 
     def _poisson(self, lam: float) -> int:
@@ -500,7 +574,7 @@ class Demo:
 
     def get(self) -> dict:
         with self.lock:
-            hide = ("runtime", "done", "submitted", "waits", "allowed")
+            hide = ("runtime", "done", "submitted", "waits", "allowed", "target")
             pending = sorted(self.pending, key=queue_order)
             queued = [j for j in pending if not j.get("pinned")]
             return dict(mode="demo", version=self.version, now=self.now, horizon=HORIZON,
@@ -568,6 +642,10 @@ def main(argv=None):
     ap.add_argument("--seed", type=int, default=1, help="demo: random seed")
     ap.add_argument("--slim", type=int, default=3, help="demo: slim nodes (default 3)")
     ap.add_argument("--fat", type=int, default=3, help="demo: fat nodes (default 3)")
+    ap.add_argument("--interactive", type=int, default=0,
+                    help="demo: nodes in an interactive partition sjp does not place in (default 0)")
+    ap.add_argument("--gpu", type=int, default=0,
+                    help="demo: GPU nodes, with 4 GPUs each, which sjp does not place on (default 0)")
     ap.add_argument("--pinned", type=float, default=0.5,
                     help="demo: share of jobs that wait pinned to a node, as with "
                          "[pin] wait_for_room (default 0.5)")
@@ -576,7 +654,8 @@ def main(argv=None):
     a = ap.parse_args(argv)
     cfg = config.load(a.config)
     slurm.set_actuation(False)                  # read-only, whatever happens
-    source = (Demo(cfg, a.speed, a.seed, a.load, slim=a.slim, fat=a.fat, pinned=a.pinned)
+    source = (Demo(cfg, a.speed, a.seed, a.load, slim=a.slim, fat=a.fat, pinned=a.pinned,
+                   interactive=a.interactive, gpu=a.gpu)
               if a.demo
               else Live(cfg, a.interval, a.usage_interval, a.usage_file))
     source.version = describe()          # the release, or where a checkout is

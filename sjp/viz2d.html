@@ -31,6 +31,8 @@
   .bar i b { display: block; height: 100%; width: 0; transition: width .4s, background .4s; }
   .util { display: none; }
   body.measured .util { display: inline; }
+  .gpurow { display: none; }
+  body.gpus .gpurow { display: revert; }
   #legend { position: fixed; bottom: 16px; left: 16px; font-size: 12px; color: var(--muted); }
   #legend .ramp { width: 220px; height: 10px; border-radius: 5px; margin: 6px 0 2px; }
   #legend .ticks { display: flex; justify-content: space-between; width: 220px; }
@@ -77,6 +79,7 @@
   <div class="stats">
     <span>CPUs</span><div class="bar"><i id="cpubar"><b id="cpuutil"></b></i></div><span id="cpu">–</span>
     <span>Memory</span><div class="bar"><i id="membar"><b id="memutil"></b></i></div><span id="mem">–</span>
+    <span class="gpurow" title="GPUs allocated to jobs; how much they are used is not measured">GPUs</span><div class="bar gpurow"><i id="gpubar"></i></div><span class="gpurow" id="gpu">–</span>
     <span class="util">Utilization</span><span class="util" id="util" style="grid-column: span 2">–</span>
     <span>Jobs</span><span id="jobs" style="grid-column: span 2">–</span>
     <span>Time</span><span id="clock" style="grid-column: span 2">–</span>
@@ -188,12 +191,21 @@ const remembered = (key, param, on, dflt) => {
 const remember = (key, v) => { try { localStorage.setItem("sjp-" + key, v ? "1" : "0"); } catch (e) { /* fine */ } };
 let busyMode = remembered("busy", "busy", "1", true);
 let allWaiting = remembered("all", "waiting", "all", false);
+// O: also the partitions slurmjobpacker does not manage (an interactive one, GPU
+// nodes), set apart as such; on unless turned off (?others=0).
+let showOthers = remembered("others", "others", "1", true);
+function toggleOthers() { showOthers = !showOthers; remember("others", showOthers); renderOptions(); layoutKey = ""; if (state) apply(state); }
+// What is shown: the nodes sjp places on, or all; and the jobs on them.
+const managed = x => x.managed !== false;
+const shownNodes = s => s.nodes.filter(n => showOthers || managed(n));
+const shownPending = s => s.pending.filter(j => showOthers || managed(j));
 document.body.classList.toggle("busy", busyMode);
 function toggleBusy() { busyMode = !busyMode; remember("busy", busyMode); document.body.classList.toggle("busy", busyMode); renderOptions(); }
 function toggleAll() { allWaiting = !allWaiting; remember("all", allWaiting); renderOptions(); if (state) apply(state); }
 addEventListener("keydown", e => {
   if (e.key === "b" || e.key === "B") toggleBusy();
   if (e.key === "a" || e.key === "A") toggleAll();
+  if (e.key === "o" || e.key === "O") toggleOthers();
 });
 // Busyness: blue when idle, yellow at half, red with every CPU allocated. A
 // node that takes no jobs is red too, with its reason in the middle.
@@ -239,10 +251,12 @@ const panelBox = id => {          // in page coordinates, whatever the scroll
 let CH = 0;                       // the canvas height: the page scrolls when it is taller
 
 function layout(nodes) {
-  const key = W + "x" + H + ":" + pinAtNode + ":" + nodes.map(n => n.name).join();
+  // The queue goes under the panel, so a panel that grows (a row more) moves it.
+  const head = panelBox("head");
+  const key = W + "x" + H + ":" + pinAtNode + ":" + Math.round(head.bottom) + ":" + nodes.map(n => n.name).join();
   if (key === layoutKey) return;
   layoutKey = key;
-  const tall = W / H < 0.9, head = panelBox("head");
+  const tall = W / H < 0.9;
   const k = Math.max(1, ui * 0.8), pad = 20 * k, font = 13 * Math.max(1, ui * 0.75);
   const groupH = font * 2.6;
   // Each node is a card: name on top, then its CPU bar, the bands, its memory bar.
@@ -250,7 +264,8 @@ function layout(nodes) {
   const label = font * 1.7, cardH = cardPad + barH + bandH + barH + cardPad;   // name above the card
   // Nodes grouped by partition, highest PriorityTier first; every row the same height.
   const groups = new Map();
-  [...nodes].sort((a, b) => b.tier - a.tier || a.name.localeCompare(b.name, undefined, { numeric: true }))
+  // sjp's own partitions first; the others after them
+  [...nodes].sort((a, b) => managed(b) - managed(a) || b.tier - a.tier || a.name.localeCompare(b.name, undefined, { numeric: true }))
     .forEach(n => { const g = n.partitions.join(","); if (!groups.has(g)) groups.set(g, []); groups.get(g).push(n); });
   let queue, x, y, w;
   if (tall) {
@@ -270,14 +285,17 @@ function layout(nodes) {
   const pinW = tall || !pinAtNode ? 0 : Math.min(190 * k, w * 0.2), pinGap = pinW ? 10 * k : 0, cw = w - pinW - pinGap;
   const rows = new Map(), heads = [];
   for (const [part, ns] of groups) {
-    heads.push({ text: part, x, y: y + groupH * 0.55 }); y += groupH;
+    heads.push({ text: part, x, y: y + groupH * 0.55, other: !managed(ns[0]) }); y += groupH;
     for (const n of ns) {
       const cy = y + label, top = cy + cardPad, bx = x + cardPad + freeW;
+      // A node with GPUs has a third bar, its GPU lane, under memory.
+      const lane = n.gpus > 0, h = cardH + (lane ? bandH + barH : 0);
       rows.set(n.name, { node: n, x: bx, w: cw - freeW - usedW - 2 * cardPad, label: y,
         cpuY: top, gapY: top + barH, memY: top + barH + bandH, barH,
-        card: { x, y: cy, w: cw, h: cardH },
-        pin: pinW ? { x: x + cw + pinGap, y: cy, w: pinW, h: cardH } : null });
-      y += label + cardH + cardGap;
+        gpuY: lane ? top + 2 * barH + 2 * bandH : null,
+        card: { x, y: cy, w: cw, h },
+        pin: pinW ? { x: x + cw + pinGap, y: cy, w: pinW, h } : null });
+      y += label + h + cardGap;
     }
   }
   CH = Math.max(H, y + pad + (tall ? 110 * ui : 0));
@@ -293,7 +311,11 @@ function layout(nodes) {
 const views = new Map();
 function lerp(a, b, k) { return a + (b - a) * k; }
 
-function target(v, t) { v.t = t; if (!v.c) v.c = { ...t }; }
+function target(v, t) {
+  t.gx = t.gx ?? t.cx; t.gw = t.gw ?? 0; t.gy = t.gy ?? t.cy;   // a chip has no GPU segment
+  v.t = t; if (!v.c) v.c = { ...t };
+  for (const k of ["gx", "gw", "gy"]) if (v.c[k] === undefined) v.c[k] = t[k];
+}
 
 let state = null;
 function apply(s) {
@@ -301,7 +323,8 @@ function apply(s) {
   fillFilters(s);
   for (const n of s.nodes) nodeMpc[n.name] = n.mem / n.cpus;
   if (!W) resize();
-  layout(s.nodes);
+  updatePanel(s);                      // first: the panel's height places the queue
+  layout(shownNodes(s));
   const seen = new Set();
   const byNode = new Map();
   for (const j of s.running) { if (!byNode.has(j.node)) byNode.set(j.node, []); byNode.get(j.node).push(j); }
@@ -315,7 +338,7 @@ function apply(s) {
     const group = j => j.reservation ? 1 + Math.max(held.indexOf(j.reservation), 0) : 0;
     const js = (byNode.get(name) || []).sort((a, b) => group(a) - group(b)
       || (+a.id || 0) - (+b.id || 0) || String(a.id).localeCompare(String(b.id)));
-    let cx = 0, cm = 0;
+    let cx = 0, cm = 0, cg = 0;
     const block = {};                  // reservation -> [first CPU of its jobs, their CPUs]
     for (const j of js) {
       if (j.reservation) {
@@ -326,7 +349,8 @@ function apply(s) {
       let v = views.get(key);
       const t = { cx: r.x + r.w * cx / n.cpus, cw: r.w * j.cpus / n.cpus,
                   mx: r.x + r.w * cm / n.mem, mw: r.w * j.mem / n.mem,
-                  cy: r.cpuY, my: r.memY, h: r.barH, a: 1 };
+                  gx: n.gpus ? r.x + r.w * cg / n.gpus : 0, gw: n.gpus ? r.w * (j.gpus || 0) / n.gpus : 0,
+                  gy: r.gpuY || 0, cy: r.cpuY, my: r.memY, h: r.barH, a: 1 };
       if (!v) {
         v = { key, job: j, a: 0 };
         const q = views.get("q:" + j.id);
@@ -337,14 +361,14 @@ function apply(s) {
         views.set(key, v);
       }
       v.job = j; v.dying = false; target(v, t);
-      cx += j.cpus; cm += j.mem;
+      cx += j.cpus; cm += j.mem; cg += j.gpus || 0;
     }
-    r.used = [cx, cm];
+    r.used = [cx, cm, cg];
     r.blocks = block;
   }
   // The queue: chips as wide as their CPUs (on the scale of the biggest node),
   // highest priority first, flowing in rows.
-  const maxCpus = Math.max(...s.nodes.map(n => n.cpus), 1), Q = L.queue;
+  const maxCpus = Math.max(...shownNodes(s).map(n => n.cpus), 1), Q = L.queue;
   const unit = Math.min(Q.w / maxCpus * 1.6, 9 * Math.max(1, ui * 0.8));
   const chipH = L.font * 2.3, gap = 6;
   const chip = (j, t) => {
@@ -356,7 +380,7 @@ function apply(s) {
   // Jobs waiting for one node: in that node's column, as wide as their share of
   // its CPUs, two rows; the column's heading counts all that wait there.
   // The top 50 of these and of the queue, or all (A).
-  const at = new Map(), order = [...s.pending].sort(byQueue);
+  const at = new Map(), order = shownPending(s).sort(byQueue);
   for (const r of L.rows.values()) r.pinTotal = r.pinCount = 0;
   for (const j of order) {
     const r = j.pinned && L.rows.get(j.pinned);
@@ -390,14 +414,20 @@ function apply(s) {
     cv.height = CH * dpr; cv.style.height = CH + "px";
   }
   for (const [k, v] of views) if (!seen.has(k)) v.dead = true;
-  updatePanel(s);
 }
 
+// The jobs on the nodes shown, and how many wait among those shown.
+// The totals are of the whole cluster, whatever is shown: every node, every job.
 function updatePanel(s) {
   if (s.version) document.getElementById("version").textContent = "v" + s.version;
-  const cap = s.nodes.reduce((a, n) => [a[0] + n.cpus, a[1] + n.mem], [0, 0]);
-  const use = s.running.reduce((a, j) => [a[0] + j.cpus, a[1] + j.mem], [0, 0]);
+  const cap = s.nodes.reduce((a, n) => [a[0] + n.cpus, a[1] + n.mem, a[2] + (n.gpus || 0)], [0, 0, 0]);
+  const use = s.running.reduce((a, j) => [a[0] + j.cpus, a[1] + j.mem, a[2] + (j.gpus || 0)], [0, 0, 0]);
   const pc = 100 * use[0] / Math.max(cap[0], 1), pm = 100 * use[1] / Math.max(cap[1], 1);
+  // GPUs allocated, when the cluster has some (what they are used for is not measured)
+  document.body.classList.toggle("gpus", cap[2] > 0);
+  const pg = 100 * use[2] / Math.max(cap[2], 1);
+  document.getElementById("gpubar").style.width = pg + "%";
+  document.getElementById("gpu").textContent = `${Math.round(use[2])} / ${cap[2]} (${pg.toFixed(0)}%)`;
   document.getElementById("cpubar").style.width = pc + "%";
   document.getElementById("membar").style.width = pm + "%";
   document.getElementById("cpu").textContent = `${Math.round(use[0])} / ${cap[0]} (${pc.toFixed(0)}%)`;
@@ -474,12 +504,23 @@ function draw() {
   // The queue's heading.
   // The queue: jobs not waiting for one node; those are at their node.
   const atNode = j => j.pinned && L.rows.has(j.pinned) && L.rows.get(j.pinned).pin;
-  const queueTotal = filtering() ? state.pending.filter(j => !atNode(j) && matches(j)).length
+  const queueTotal = filtering() || (!showOthers && state.pending.some(j => !managed(j)))
+    ? shownPending(state).filter(j => !atNode(j) && matches(j)).length
     : state.pending.some(atNode) ? (state.queued_total ?? state.pending_total) : state.pending_total;
   if (L.queued) text(allWaiting && L.queued >= queueTotal ? `Waiting (all ${queueTotal})`
       : queueTotal > L.queued ? `Waiting (top ${L.queued} by priority)` : "Waiting",
     L.queue.x, L.queue.y - f * 0.9, f * 1.05, 650);
-  for (const h of L.heads) text(h.text, h.x, h.y, f * 1.25, 650, "#8b949e");
+  for (const h of L.heads) {
+    text(h.text, h.x, h.y, f * 1.25, 650, "#8b949e");
+    if (h.other) {                    // a partition slurmjobpacker leaves alone: say so
+      g.font = `650 ${f * 1.25}px system-ui`;
+      const x = h.x + g.measureText(h.text).width + 10, t = "not managed by slurmjobpacker";
+      g.font = `600 ${f * 0.8}px system-ui`;
+      const w = g.measureText(t).width + 12;
+      g.fillStyle = "#21262d"; roundRect(x, h.y - f * 0.62, w, f * 1.24, f * 0.62); g.fill();
+      text(t, x + 6, h.y, f * 0.8, 600, "#8b949e");
+    }
+  }
   // Each node's column of jobs waiting for it, when it has any.
   for (const r of L.rows.values()) {
     if (!r.pin || !r.pinTotal) continue;
@@ -492,16 +533,20 @@ function draw() {
   // amounts on the left, used / total on the right.
   for (const r of L.rows.values()) {
     const n = r.node, c = r.card;
-    g.fillStyle = "#11161d"; roundRect(c.x, c.y, c.w, c.h, 8); g.fill();
-    // red: takes no jobs; B: by how busy it is (gold: every CPU allocated)
-    const busy = busyMode && n.up ? busyColor((r.used || [0])[0] / n.cpus) : null;
+    g.fillStyle = managed(n) ? "#11161d" : "#0f1318"; roundRect(c.x, c.y, c.w, c.h, 8); g.fill();
+    // red: takes no jobs; B: by how busy it is (gold: every CPU allocated); dashed: not sjp's
+    // a GPU node is as busy as the scarcer of its CPUs and its GPUs
+    const busy = busyMode && n.up ? busyColor(Math.max((r.used || [0])[0] / n.cpus,
+                                                       n.gpus ? ((r.used || [])[2] || 0) / n.gpus : 0)) : null;
+    if (!managed(n)) g.setLineDash([6, 5]);
     g.strokeStyle = !n.up ? "#f85149" : busy || "#30363d"; g.lineWidth = !n.up || busy ? 2 : 1; g.stroke();
+    g.setLineDash([]);
     text(n.name, c.x + 2, r.label + f * 0.7, f * 1.05, 650);
     g.font = `650 ${f * 1.05}px system-ui`; const nw = g.measureText(n.name).width;
     // After the name: its size; why it takes no jobs (DOWN, DRAIN, ...); its reservations.
     let hx = c.x + 2 + nw + 10;
     for (const [t, colour, weight] of [
-      [`${n.cpus} CPUs · ${gb(n.mem)} · ${gbc(n.mem / n.cpus)}`, "#8b949e", 400],
+      [`${n.cpus} CPUs · ${gb(n.mem)} · ${gbc(n.mem / n.cpus)}` + (n.gpus ? ` · ${n.gpus} GPUs` + (n.gpu_type ? ` (${n.gpu_type.toUpperCase()})` : "") : ""), "#8b949e", 400],
       [n.up ? "" : (n.why || n.state || "down"), "#f85149", 650],
       [resvText(n), RESV, 600]]) {
       if (!t) continue;
@@ -511,7 +556,7 @@ function draw() {
       text(fit, hx, r.label + f * 0.7, f * 0.9, weight, colour);
       hx += g.measureText(fit).width + 12;
     }
-    const used = r.used || [0, 0];
+    const used = r.used || [0, 0, 0];
     const fc = Math.max(0, n.cpus - used[0]), fm = Math.max(0, n.mem - used[1]);
     for (const [y, free, use] of [[r.cpuY, `${Math.round(fc)} free`, `${Math.round(used[0])} / ${n.cpus}`],
                                   [r.memY, `${gb(fm)} free`, `${gb(used[1])} / ${gb(n.mem)}`]]) {
@@ -522,6 +567,19 @@ function draw() {
       const frac = y === r.cpuY ? used[0] / n.cpus : used[1] / n.mem;
       text(use, r.x + r.w + 10, y + r.barH / 2, f * 0.95, n.up ? 600 : 400,
            n.up ? busyText(frac) : "#8b949e");
+    }
+    if (r.gpuY != null) {               // the GPU lane: one more bar, under memory
+      const gu = used[2] || 0, y = r.gpuY;
+      g.fillStyle = "#161b22"; roundRect(r.x, y, r.w, r.barH, 4); g.fill();
+      g.strokeStyle = "#30363d"; g.lineWidth = 1; g.stroke();
+      for (let k = 1; k < n.gpus; k++) {   // one cell per GPU
+        const x = r.x + r.w * k / n.gpus; g.beginPath(); g.moveTo(x, y + 2); g.lineTo(x, y + r.barH - 2); g.stroke();
+      }
+      if (n.up) text(`${n.gpus - gu} GPU${n.gpus - gu === 1 ? "" : "s"} free`, r.x - 10, y + r.barH / 2, f * 0.95, 500, "#3fb950", "right");
+      text(`${gu} / ${n.gpus} GPUs`, r.x + r.w + 10, y + r.barH / 2, f * 0.95, 600, busyText(gu / n.gpus));
+      if (n.up && gu < n.gpus) {
+        g.fillStyle = "rgba(63,185,80,0.16)"; const gx = r.x + r.w * gu / n.gpus; g.fillRect(gx, y, r.x + r.w - gx, r.barH);
+      }
     }
     const fx = r.x + r.w * used[0] / n.cpus, fmx = r.x + r.w * used[1] / n.mem;
     if (!n.up) {                     // takes no jobs: why, in the middle; no room to show
@@ -561,13 +619,19 @@ function draw() {
     g.fillStyle = color(v.job, 0.28 * c.a * (matches(v.job) ? 1 : 0.15));
     g.beginPath(); g.moveTo(c.cx, c.cy + c.h); g.lineTo(c.cx + c.cw, c.cy + c.h);
     g.lineTo(c.mx + c.mw, c.my); g.lineTo(c.mx, c.my); g.closePath(); g.fill();
+    if (v.job.gpus && c.gw > 0.5) {      // and from memory to its GPUs
+      g.beginPath(); g.moveTo(c.mx, c.my + c.h); g.lineTo(c.mx + c.mw, c.my + c.h);
+      g.lineTo(c.gx + c.gw, c.gy); g.lineTo(c.gx, c.gy); g.closePath(); g.fill();
+    }
   }
   for (const v of live) {
     const c = v.c, j = v.job, mpc = j.mem / Math.max(j.cpus, 1e-9);
     if (c.a <= 0.01) continue;
     g.globalAlpha = c.a * (matches(j) ? 1 : 0.15);   // another user's job, while filtering
     const sel = selected === v;
-    for (const [x, w, y] of v.key.startsWith("r:") ? [[c.cx, c.cw, c.cy], [c.mx, c.mw, c.my]] : [[c.cx, c.cw, c.cy]]) {
+    const segs = v.key.startsWith("r:") ? [[c.cx, c.cw, c.cy], [c.mx, c.mw, c.my]] : [[c.cx, c.cw, c.cy]];
+    if (v.key.startsWith("r:") && j.gpus && c.gw > 0.5) segs.push([c.gx, c.gw, c.gy]);
+    for (const [x, w, y] of segs) {
       g.fillStyle = color(j); roundRect(x + 0.5, y, Math.max(w - 1, 0.8), c.h, 3); g.fill();
       g.strokeStyle = sel ? "#ffffff" : "rgba(13,17,23,0.7)"; g.lineWidth = sel ? 2 : 1; g.stroke();
     }
@@ -575,12 +639,13 @@ function draw() {
     if (showLabels) {
       const both = `${j.id} · ${gbc(mpc)}`;
       g.font = `600 ${f * 0.9}px system-ui`;
-      if (g.measureText(both).width + 8 < c.cw) text(both, c.cx + c.cw / 2, c.cy + c.h / 2, f * 0.9, 600, "rgba(255,255,255,0.95)", "center");
-      else if (g.measureText(j.id).width + 6 < c.cw) {
+      const cw = c.cw;
+      if (g.measureText(both).width + 8 < cw) text(both, c.cx + cw / 2, c.cy + c.h / 2, f * 0.9, 600, "rgba(255,255,255,0.95)", "center");
+      else if (g.measureText(j.id).width + 6 < cw) {
         g.font = `500 ${f * 0.75}px system-ui`;
-        const two = c.h > f * 2 && g.measureText(gbc(mpc)).width + 6 < c.cw;   // room for GB/C below
-        text(j.id, c.cx + c.cw / 2, c.cy + c.h / 2 - (two ? f * 0.45 : 0), f * 0.85, 650, "rgba(255,255,255,0.95)", "center");
-        if (two) text(`${gbc(mpc)}`, c.cx + c.cw / 2, c.cy + c.h / 2 + f * 0.5, f * 0.75, 500, "rgba(255,255,255,0.8)", "center");
+        const two = c.h > f * 2 && g.measureText(gbc(mpc)).width + 6 < cw;   // room for GB/C below
+        text(j.id, c.cx + cw / 2, c.cy + c.h / 2 - (two ? f * 0.45 : 0), f * 0.85, 650, "rgba(255,255,255,0.95)", "center");
+        if (two) text(`${gbc(mpc)}`, c.cx + cw / 2, c.cy + c.h / 2 + f * 0.5, f * 0.75, 500, "rgba(255,255,255,0.8)", "center");
       }
     }
     g.globalAlpha = 1;
@@ -606,7 +671,7 @@ function step(dt) {
       v.c.a -= v.instant ? 1 : dt * 2.5;
       if (v.c.a <= 0) { if (selected === v) select(null); views.delete(key); continue; }
     } else v.t.a = 1;
-    for (const p of ["cx", "cw", "mx", "mw", "cy", "my", "h"]) v.c[p] = lerp(v.c[p], v.t[p], k);
+    for (const p of ["cx", "cw", "mx", "mw", "gx", "gw", "gy", "cy", "my", "h"]) v.c[p] = lerp(v.c[p], v.t[p], k);
     if (!v.dead) v.c.a = Math.min(1, v.c.a + dt * 3);
   }
 }
@@ -630,7 +695,8 @@ cv.addEventListener("click", e => {
   for (const v of views.values()) {
     if (v.dead) continue;
     const c = v.c, inBox = (bx, bw, by) => x >= bx && x <= bx + bw && y >= by && y <= by + c.h;
-    if (inBox(c.cx, c.cw, c.cy) || (v.key.startsWith("r:") && inBox(c.mx, c.mw, c.my))) hit = v;
+    if (inBox(c.cx, c.cw, c.cy) || (v.key.startsWith("r:") && (inBox(c.mx, c.mw, c.my)
+        || (v.job.gpus && inBox(c.gx, c.gw, c.gy))))) hit = v;
   }
   // Not a job: a reservation's unused cores?
   if (!hit) for (const r of L.rows.values()) {
@@ -684,6 +750,7 @@ function select(v) {
     ["State", running ? `running on ${j.node}` + (j.nodes > 1 ? ` (+${j.nodes - 1} nodes)` : "")
                      : j.pinned ? `waiting for ${j.pinned} (${j.reason})` : `waiting (${j.reason})`],
     ["CPUs", (+j.cpus).toFixed(j.cpus % 1 ? 1 : 0)], ["Memory", gb(j.mem)], ["Memory / CPU", gbc(mpc)],
+    ...(j.gpus ? [["GPUs", (+j.gpus).toFixed(j.gpus % 1 ? 1 : 0)]] : []),
     running ? ["Time", `${dur(state.now - j.end + j.minutes * 60)} of ${dur(j.minutes * 60)}, ${dur(j.end - state.now)} left`]
             : ["Time limit", dur(j.minutes * 60)],
     ...(running ? [] : [["Priority", j.priority == null ? "–" : Math.round(j.priority)]]),
@@ -756,6 +823,7 @@ function optionRows() {
     { key: "e", text: "colour jobs by CPU efficiency", get: () => colorMode === "cpu", toggle: toggleEff },
     { key: "p", text: "jobs waiting for one node at that node", get: () => pinAtNode, toggle: togglePinned },
     { key: "a", text: "all waiting jobs (else top 50, 10 per node)", get: () => allWaiting, toggle: toggleAll },
+    { key: "o", text: "partitions not managed by slurmjobpacker", get: () => showOthers, toggle: toggleOthers },
     { key: "l", text: "job labels", get: () => showLabels, toggle: () => { showLabels = !showLabels; } },
     { key: "click", text: "a job's or a reservation's details" },
     { key: "h", text: "hide the panels" }, { key: "?", text: "open or close these options" }];
