@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.19.0](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.18.1...v1.19.0) (2026-10-23)
+
+
+### Features
+
+* ignore users' --nodelist and --exclude by default ([172b78d](https://github.com/KasperSkytte/slurmjobpacker/commit/172b78db4974314c23a4e0897260f625501f54b4))
+* show a running job's CPU and memory utilization in its details ([0b413c4](https://github.com/KasperSkytte/slurmjobpacker/commit/0b413c4330bfd5ab3e72d56211e0529d19eaf18b))
+
+
+### Bug Fixes
+
+* clear an error from status.json once the same read works again ([2066e4e](https://github.com/KasperSkytte/slurmjobpacker/commit/2066e4ec2b033638f0de0e0cf825d512185bd3ff))
+* let flex mode move jobs sjp pinned to a node, dropping the pin ([9ed8589](https://github.com/KasperSkytte/slurmjobpacker/commit/9ed8589acf0979962ec1a259e0ff2d961e4a10d1))
+
 ## [1.18.1](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.18.0...v1.18.1) (2026-10-21)
 
 
