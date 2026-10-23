@@ -26,7 +26,7 @@ const sjpUse = (() => {
       : s.cpu < 0.25 ? ["mostly idle", BAD]
       : s.cpu < 0.6 ? ["partly used", SO] : ["well used", GOOD];
     const mem = s.peak > 0.95 ? ["near its limit", BAD]
-      : s.peak < 0.25 ? ["far more than used", SO] : ["fits", GOOD];
+      : s.peak < 0.25 ? ["far less than allocated", SO] : ["fits", GOOD];
     return { cpu, mem };
   }
   const tag = ([text, colour]) => colour
