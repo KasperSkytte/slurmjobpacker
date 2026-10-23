@@ -115,5 +115,12 @@ const sjpUse = (() => {
     }, 15000);
   }
 
-  return { panel, totals, bar, pct, colour };
+  // The share of its CPUs a running job keeps busy, on average (now, until
+  // there is an average); null if not measured.
+  function efficiency(j) {
+    const s = shares(j);
+    return !s ? null : s.cpu != null ? s.cpu : s.now;
+  }
+
+  return { panel, totals, bar, pct, colour, efficiency };
 })();
