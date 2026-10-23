@@ -6,11 +6,11 @@
 const sjpUse = (() => {
   const pct = x => x == null ? "–" : Math.round(100 * x) + "%";
   const gb = mb => (mb >= 10240 ? (mb / 1024).toFixed(0) : (mb / 1024).toFixed(1)) + " GB";
-  // The node utilization scale: blue when little is used, yellow at half, red
-  // at all of it (the readable shade, for text on the dark panel).
-  const hue = f => f < 0.5 ? 215 - 165 * f / 0.5 : 50 - 50 * (f - 0.5) / 0.5;
+  // How little is wasted: red when little of the allocation is utilized,
+  // yellow at half, green when nearly all of it is (the lighter shade, for
+  // text on the dark panel).
   const colour = (f, bar) =>
-    `hsl(${hue(Math.min(1, Math.max(0, f)))}, ${bar ? "80%, 55%" : "85%, 66%"})`;
+    `hsl(${120 * Math.min(1, Math.max(0, f))}, ${bar ? "70%, 48%" : "75%, 60%"})`;
 
   // The share of their allocation that running jobs utilize together, CPUs
   // now and memory in use, over the jobs measured so far; null before any is.
@@ -47,7 +47,7 @@ const sjpUse = (() => {
 
   // Rough verdicts, for users to see whether a job runs as intended; not for
   // accounting. [text, colour] for CPU (its average) and memory (its peak),
-  // coloured by the share used.
+  // coloured by the share utilized.
   function verdict(s) {
     const cpu = s.cpu == null ? ["measuring…", null]
       : [s.cpu < 0.25 ? "mostly idle" : s.cpu < 0.6 ? "partly utilized" : "well utilized", colour(s.cpu)];
