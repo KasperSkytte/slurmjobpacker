@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.19.1](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.19.0...v1.19.1) (2026-10-23)
+
+
+### Bug Fixes
+
+* place a job where there is room when the partitions chosen for its shape have none ([2d66b16](https://github.com/KasperSkytte/slurmjobpacker/commit/2d66b169e208b3b4fcddbd46c9e6898cbfd5d626))
+
 ## [1.19.0](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.18.1...v1.19.0) (2026-10-23)
 
 
