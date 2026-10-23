@@ -269,7 +269,8 @@ def demo_use(j: dict, now: float, points: int = 0):
         wig = 0.6 * math.sin(t / 2900 + seed) + 0.4 * math.sin(t / 830 + 3 * seed)
         warm = min(1.0, 0.15 + x / 0.1)        # the first tenth: reading its input
         busy = (1.0 if cpu_share is None else j["cpus"] * cpu_share) * warm * (1 + 0.15 * wig)
-        mem = j["mem"] * mem_share * min(1.0, 0.3 + 2.5 * x) * (1 + 0.04 * wig)
+        swing = 0.12 * math.sin(t / 1700 + 2 * seed) + 0.06 * math.sin(t / 470 + seed)
+        mem = j["mem"] * mem_share * min(1.0, 0.3 + 2.5 * x) * (1 + swing)
         return min(busy, j["cpus"]), int(min(mem, j["mem"]))
     if points:
         step = max(60.0, (now - start) / points)

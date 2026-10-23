@@ -6,7 +6,10 @@
 const sjpUse = (() => {
   const pct = x => x == null ? "–" : Math.round(100 * x) + "%";
   const gb = mb => (mb >= 10240 ? (mb / 1024).toFixed(0) : (mb / 1024).toFixed(1)) + " GB";
-  const GOOD = "#3fb950", SO = "#d29922", BAD = "#f85149";
+  // The node utilization scale: blue when little is used, yellow at half, red
+  // at all of it (the readable shade, for text on the dark panel).
+  const hue = f => f < 0.5 ? 215 - 165 * f / 0.5 : 50 - 50 * (f - 0.5) / 0.5;
+  const colour = f => `hsl(${hue(Math.min(1, Math.max(0, f)))}, 85%, 66%)`;
 
   // A running job's shares of its allocation: CPUs kept busy on average and
   // now, memory in use and at its peak. null until it has been sampled.
@@ -20,13 +23,13 @@ const sjpUse = (() => {
   }
 
   // Rough verdicts, for users to see whether a job runs as intended; not for
-  // accounting. [text, colour] for CPU and for memory.
+  // accounting. [text, colour] for CPU (its average) and memory (its peak),
+  // coloured by the share used.
   function verdict(s) {
     const cpu = s.cpu == null ? ["measuring…", null]
-      : s.cpu < 0.25 ? ["mostly idle", BAD]
-      : s.cpu < 0.6 ? ["partly used", SO] : ["well used", GOOD];
-    const mem = s.peak > 0.95 ? ["near its limit", BAD]
-      : s.peak < 0.25 ? ["far less than allocated", SO] : ["fits", GOOD];
+      : [s.cpu < 0.25 ? "mostly idle" : s.cpu < 0.6 ? "partly utilized" : "well utilized", colour(s.cpu)];
+    const mem = [s.peak > 0.95 ? "near its limit" : s.peak >= 0.7 ? "fits"
+      : s.peak >= 0.25 ? "less than allocated" : "far less than allocated", colour(s.peak)];
     return { cpu, mem };
   }
   const tag = ([text, colour]) => colour
