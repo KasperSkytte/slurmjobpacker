@@ -70,7 +70,7 @@
 <canvas id="c"></canvas>
 <div id="head" class="panel">
   <h1><a id="title" href="https://github.com/KasperSkytte/slurmjobpacker" target="_blank" rel="noopener">slurmjobpacker</a><span id="version"></span></h1>
-  <div class="sub" id="subtitle">Memory per CPU of every job, live. A slanted band: the job's memory per CPU differs significantly from its node's.</div>
+  <div class="sub" id="subtitle">Memory per CPU of every job, live. A slanted band: the job's memory per CPU differs significantly from its node's. Click a job for details and live utilization.</div>
   <div class="stats">
     <span>CPUs</span><div class="bar"><i id="cpubar"></i></div><span id="cpu">–</span>
     <span>Memory</span><div class="bar"><i id="membar"></i></div><span id="mem">–</span>
@@ -91,9 +91,10 @@
   </div>
 </div>
 <div id="help" class="panel"><div id="opt-head" title="Click, or press ?, to open or close">options</div><table id="keys"></table></div>
-<div id="info" class="panel"><span class="close" id="close">✕</span><h2 id="info-title"></h2><table id="info-body"></table></div>
+<div id="info" class="panel"><span class="close" id="close">✕</span><h2 id="info-title"></h2><table><tbody id="info-body"></tbody><tbody id="info-use"></tbody></table></div>
 <div id="err" class="panel"></div>
 
+<script src="usage.js"></script>
 <script>
 const params = new URLSearchParams(location.search);
 if (params.get("clean") === "1") document.body.classList.add("clean");
@@ -644,7 +645,8 @@ function showResv(v, node) {
 
 function select(v) {
   selected = v;
-  const box = document.getElementById("info");
+  const box = document.getElementById("info"), use = document.getElementById("info-use");
+  use.innerHTML = ""; use.dataset.job = "";
   if (!v) { box.style.display = "none"; return; }
   if (v.resv) { showResv(v.resv, v.node); return; }
   const j = v.job, mpc = j.mem / Math.max(j.cpus, 1e-9), running = v.key.startsWith("r:");
@@ -665,6 +667,8 @@ function select(v) {
     ...(j.sjp ? [["sjp", j.sjp.replace(/^sjp:/, "").split(";").join("\n")]] : []),
   ];
   show(`Job ${j.id}`, rows);
+  // what it uses of what it was given, while sjp-viz measures it
+  if (running && state.usage) sjpUse.panel(use, j, () => state.running.find(r => r.id === j.id));
 }
 addEventListener("keydown", e => {
   if (e.key === "l" || e.key === "L") showLabels = !showLabels;

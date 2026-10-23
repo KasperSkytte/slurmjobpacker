@@ -718,6 +718,46 @@ check("waiting jobs are listed as squeue lists them: priority, then job ID",
 check("the 2D page is shipped too, and can be driven frame by frame",
       os.path.exists(viz.HTML_2D) and "window.sjpViz" in open(viz.HTML_2D).read())
 
+print("\n12g. what running jobs use: sstat, read and kept as a history")
+real_run = slurm._run
+sstat_out = ("7.extern|energy=0|energy=0\n"
+             "7.batch|cpu=00:01:40,energy=0,mem=1073741824,pages=0|cpu=00:01:40,mem=2147483648\n"
+             "7.0|cpu=1-00:00:00,mem=1073741824|cpu=1-00:00:00,mem=1610612736\n"
+             "12_3.batch|cpu=02:03.5,mem=524288000|cpu=02:03.5,mem=524288000\n")
+asked = []
+slurm._run = lambda args, timeout=10.0: asked.append(args) or sstat_out
+try:
+    use = slurm.usage(["7", "12_3", "99"])
+finally:
+    slurm._run = real_run
+check("sstat: CPU time and memory summed over a job's steps, the peak its largest step's",
+      use == {"7": (86500.0, 2048, 2048), "12_3": (123.5, 500, 500)}
+      and asked[0][:2] == ["sstat", "-a"] and "7,12_3,99" in asked[0], str(use))
+check("sstat is a read-only command, allowed in a dry run", slurm._read_only(["sstat", "-j", "1"]))
+ul = viz.UsageLog()
+ul.add(1000.0, {"7": (100.0, 512, 600)}, {"7": 900.0})
+check("one sample: the average since the start, no history yet",
+      ul.summary("7") == dict(now=None, avg=1.0, mem=512, peak=600) and ul.history("7") == [])
+ul.add(1060.0, {"7": (340.0, 700, 650)}, {"7": 900.0})
+check("the next: CPUs kept busy in between, and the peak seen so far",
+      ul.history("7") == [(1060, 4.0, 700)] and ul.summary("7")["peak"] == 650
+      and ul.summary("7")["now"] == 4.0, str(ul.history("7")))
+for i in range(viz.USE_POINTS + 5):
+    ul.add(1120.0 + 60 * i, {"7": (400.0 + 60 * i, 700, 650)}, {"7": 900.0})
+check("a long job's history is thinned, keeping the newest sample",
+      len(ul.history("7")) <= viz.USE_POINTS and ul.history("7")[-1][0] == 1120 + 60 * (viz.USE_POINTS + 4))
+ul.add(9e9, {}, {})
+check("a job that ended is forgotten", ul.summary("7") is None)
+dj = next(j for j in ds["running"] if j["use"]["avg"] is not None)
+hist = demo.history(dj["id"])
+check("the demo makes up usage within each job's allocation, the same at every look",
+      0 <= dj["use"]["avg"] <= dj["cpus"] and dj["use"]["peak"] <= dj["mem"]
+      and len(hist) > 1 and all(0 <= c <= dj["cpus"] and m <= dj["mem"] for _, c, m in hist)
+      and demo.history(dj["id"]) == hist)
+check("the page's usage panel is shipped and loaded by both views",
+      os.path.exists(viz.USE_JS) and all('src="usage.js"' in open(p).read()
+                                          for p in (viz.HTML, viz.HTML_2D)))
+
 print("\n12d. a burst of pins: pending jobs tied to a node count as taken there")
 cn = {"a": rnode(96, 384000), "b": rnode(96, 384000)}
 daemon.Daemon.claim(cn, [

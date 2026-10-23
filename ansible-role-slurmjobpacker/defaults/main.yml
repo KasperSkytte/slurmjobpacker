@@ -75,3 +75,6 @@ sjp_reconfigure_slurm: "{{ sjp_job_submit_install }}"
 sjp_viz_enabled: false
 sjp_viz_bind: 127.0.0.1
 sjp_viz_port: 8650
+# Seconds between reads of what running jobs use (sstat), for the utilization
+# in a job's details; 0 turns it off. Needs job accounting (JobAcctGatherType).
+sjp_viz_usage_interval: 60

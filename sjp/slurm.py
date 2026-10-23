@@ -16,7 +16,8 @@ class SlurmError(RuntimeError):
 # The only commands that may run while actuation is off. Every process sjp
 # starts goes through _run, so this is the last line of defence for a dry run
 # under an account that Slurm would otherwise let change anything.
-_READ_ONLY = {("scontrol", "show"), ("squeue",), ("sacctmgr", "-nP", "show"), ("sacct",)}
+_READ_ONLY = {("scontrol", "show"), ("squeue",), ("sacctmgr", "-nP", "show"), ("sacct",),
+              ("sstat",)}
 
 
 def _read_only(args) -> bool:
@@ -360,6 +361,37 @@ def accounts() -> list[str]:
     """Every account in the Slurm database, sorted."""
     txt = _run(["sacctmgr", "-nP", "show", "account", "format=Account"])
     return sorted({a.strip() for a in txt.splitlines() if a.strip()})
+
+
+def _seconds(s: str) -> float:
+    """'1-02:03:04', '02:03:04' or '03:04.5' -> seconds."""
+    days, _, rest = s.rpartition("-")
+    secs = 0.0
+    for part in rest.split(":"):
+        secs = secs * 60 + float(part)
+    return secs + (int(days) * 86400 if days else 0)
+
+
+def usage(jobids: list[str], chunk: int = 200) -> dict:
+    """job ID -> (CPU seconds used so far, memory in use MB, peak memory MB),
+    over its running steps (the peak is its largest step's), from sstat. Needs
+    JobAcctGatherType other than none; jobs without a running step are missing."""
+    out = {}
+    for i in range(0, len(jobids), chunk):
+        txt = _run(["sstat", "-a", "-n", "-P", "--noconvert", "-j", ",".join(jobids[i:i + chunk]),
+                    "-o", "JobID,TRESUsageInTot,TRESUsageInMax"], timeout=30.0)
+        for line in txt.splitlines():
+            step, _, rest = line.partition("|")
+            tot, _, top = rest.partition("|")
+            t = dict(kv.split("=", 1) for kv in tot.split(",") if "=" in kv)
+            if "cpu" not in t:
+                continue                 # the extern step: nothing measured
+            m = dict(kv.split("=", 1) for kv in top.split(",") if "=" in kv)
+            jid = step.rpartition(".")[0] or step
+            cpu, mem, peak = out.get(jid, (0.0, 0, 0))
+            out[jid] = (cpu + _seconds(t["cpu"]), mem + int(t.get("mem", 0)) // 2**20,
+                        max(peak, int(m.get("mem", 0)) // 2**20))
+    return out
 
 
 def qos_cpu_limits(qos: str) -> tuple[int | None, int | None]:

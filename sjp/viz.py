@@ -10,23 +10,26 @@ Waiting jobs stand in a queue in front.
     python3 -m sjp.viz                      # the live cluster, on 127.0.0.1:8650
     python3 -m sjp.viz --demo               # a simulated cluster, sped up
 
-It only reads from Slurm (scontrol show, squeue), like a dry run of sjpd, and
+It only reads from Slurm (scontrol show, squeue, sstat), like a dry run of sjpd, and
 by default answers only on localhost: the page shows users and job names. To
 see it from your own machine, use an SSH tunnel:
 
     ssh -L 8650:localhost:8650 <controller>      # then open http://localhost:8650
 """
 from __future__ import annotations
-import argparse, json, os, random, threading, time
+import argparse, json, math, os, random, threading, time
+from urllib.parse import parse_qs, urlparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import __version__, config, describe, policy, slurm
 
 HTML = os.path.join(os.path.dirname(os.path.abspath(__file__)), "viz.html")
 HTML_2D = os.path.join(os.path.dirname(os.path.abspath(__file__)), "viz2d.html")
+USE_JS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "usage.js")
 HORIZON = 14 * 86400          # the depth of a node: two weeks, Slurm's usual MaxTime
 TOP = 50                      # waiting jobs the page shows unless asked for all (A)
 MAX_WAITING = 5000            # waiting jobs sent to the page at most, highest priority first
+USE_POINTS = 240              # usage samples kept per job; when full, every other one goes
 
 
 def queue_order(j):
@@ -126,16 +129,61 @@ def reservations(shown, nodes, resvs, jobs, now):
                 **{k: r.get(k, "") for k in ("users", "accounts", "flags", "partition")}))
 
 
+class UsageLog:
+    """What each running job uses, from samples of its CPU time and memory:
+    per job, (time, CPUs busy, memory in use MB) since the last sample, its
+    peak memory, and the CPUs it kept busy on average since it started."""
+
+    def __init__(self):
+        self.jobs: dict = {}
+        self.lock = threading.Lock()
+
+    def add(self, now: float, used: dict, starts: dict):
+        """used: job ID -> (CPU seconds so far, memory MB, peak MB), as
+        slurm.usage() reads it; starts: job ID -> start time, for every job
+        running. Jobs no longer running are forgotten."""
+        with self.lock:
+            for jid, (cpu_s, mem, peak) in used.items():
+                r = self.jobs.setdefault(jid, dict(last=None, points=[], peak=0))
+                if r["last"] and now > r["last"][0]:
+                    busy = max(0.0, (cpu_s - r["last"][1]) / (now - r["last"][0]))
+                    r["points"].append((round(now), round(busy, 2), mem))
+                    if len(r["points"]) > USE_POINTS:
+                        r["points"] = r["points"][len(r["points"]) % 2::2]
+                start = starts.get(jid)
+                r.update(last=(now, cpu_s), mem=mem, peak=max(r["peak"], peak),
+                         avg=round(cpu_s / (now - start), 2) if start and now > start else None)
+            for jid in set(self.jobs) - set(starts):
+                del self.jobs[jid]
+
+    def summary(self, jid: str):
+        """CPUs busy now and on average, memory in use and its peak; None if
+        not sampled yet."""
+        with self.lock:
+            r = self.jobs.get(jid)
+            if not r:
+                return None
+            return dict(now=r["points"][-1][1] if r["points"] else None, avg=r["avg"],
+                        mem=r["mem"], peak=r["peak"])
+
+    def history(self, jid: str) -> list:
+        with self.lock:
+            return list(self.jobs.get(jid, {}).get("points", []))
+
+
 class Live:
-    """Reads the cluster every few seconds; the page gets the latest read."""
+    """Reads the cluster every few seconds; the page gets the latest read. With
+    use_interval, also what running jobs use, from sstat, that often."""
 
     version = __version__        # the version shown; main() asks git for it
 
-    def __init__(self, cfg, interval: float):
-        self.cfg, self.interval = cfg, interval
+    def __init__(self, cfg, interval: float, use_interval: float = 60.0):
+        self.cfg, self.interval, self.use_interval = cfg, interval, use_interval
         self.state = dict(mode="live", now=time.time(), horizon=HORIZON, nodes=[],
                           running=[], pending=[], pending_total=0, error="starting")
         self.lock = threading.Lock()
+        self.use = UsageLog()
+        self.use_error = ""
 
     def run(self):
         accounts, accounts_at = [], 0.0
@@ -155,6 +203,10 @@ class Live:
                                 notes=notes, version=self.version)
                 s["poll_ms"] = int(self.interval * 1000)
                 s["accounts"] = accounts
+                if self.use_interval:
+                    for r in s["running"]:
+                        r["use"] = self.use.summary(r["id"])
+                    s["usage"] = dict(interval=self.use_interval, error=self.use_error)
             except slurm.SlurmError as e:
                 with self.lock:
                     self.state = dict(self.state, error=str(e))
@@ -167,6 +219,25 @@ class Live:
         with self.lock:
             return self.state
 
+    def sample_usage(self):
+        """Every use_interval, what each running job uses (one sstat call for
+        all of them). sstat asks the nodes, so this is kept apart from the
+        cluster reads, and less often."""
+        while self.use_interval:
+            with self.lock:
+                running = self.state.get("running", [])
+            starts = {r["id"]: r["end"] - r["minutes"] * 60 for r in running}
+            try:
+                if starts:
+                    self.use.add(time.time(), slurm.usage(sorted(starts)), starts)
+                self.use_error = ""
+            except slurm.SlurmError as e:
+                self.use_error = str(e)
+            time.sleep(self.use_interval)
+
+    def history(self, jid: str) -> list:
+        return self.use.history(jid)
+
 
 def demo_nodes(slim: int = 3, fat: int = 3) -> list:
     """A demo cluster of slim and fat nodes, like many shared clusters:
@@ -178,6 +249,38 @@ DEMO_ACCOUNTS = {"anna": "genomics", "bo": "genomics", "carlos": "ecology", "din
                  "erik": "microbio", "fatima": "microbio", "gustav": "teaching", "hiro": "genomics"}
 DEMO_NAMES = ["assembly", "align", "polish", "binning", "blast", "phylo", "kraken",
               "mapping", "qc", "annotate"]
+# How demo jobs use what they were given: (share of their CPUs kept busy, share
+# of their memory in use at the end), and how often each kind comes.
+DEMO_USE = [((0.85, 0.98), (0.5, 0.9), 6),      # as intended
+            ((0.4, 0.7), (0.3, 0.7), 2),        # partly parallel
+            ((0.02, 0.15), (0.05, 0.3), 1),     # mostly idle, or waiting on I/O
+            (None, (0.1, 0.4), 2),              # one thread on many CPUs
+            ((0.85, 0.98), (0.02, 0.12), 2)]    # far more memory than it needs
+
+
+def demo_use(j: dict, now: float, points: int = 0):
+    """A demo job's usage: its summary, or with points that many samples from
+    its start to now, (time, CPUs busy, memory MB). Smooth wiggles from its
+    seed, so every look at it agrees."""
+    cpu_share, mem_share, seed = j["use"]
+    start = j["end"] - j["minutes"] * 60
+    def at(t):
+        x = (t - start) / max(j.get("runtime", j["minutes"] * 60), 1)
+        wig = 0.6 * math.sin(t / 2900 + seed) + 0.4 * math.sin(t / 830 + 3 * seed)
+        warm = min(1.0, 0.15 + x / 0.1)        # the first tenth: reading its input
+        busy = (1.0 if cpu_share is None else j["cpus"] * cpu_share) * warm * (1 + 0.15 * wig)
+        mem = j["mem"] * mem_share * min(1.0, 0.3 + 2.5 * x) * (1 + 0.04 * wig)
+        return min(busy, j["cpus"]), int(min(mem, j["mem"]))
+    if points:
+        step = max(60.0, (now - start) / points)
+        ts = [start + step * (i + 1) for i in range(int((now - start) / step))]
+        return [(round(t), round(at(t)[0], 2), at(t)[1]) for t in ts]
+    busy, mem = at(now)
+    if now < start + 60:
+        return dict(now=None, avg=None, mem=mem, peak=mem)
+    ts = [start + (now - start) * (i + 0.5) / 60 for i in range(60)]
+    return dict(now=round(busy, 2), avg=round(sum(at(t)[0] for t in ts) / 60, 2), mem=mem,
+                peak=max(at(t)[1] for t in ts + [now]))
 
 
 class Demo:
@@ -231,7 +334,10 @@ class Demo:
         minutes = self._pick(self.LIMITS)
         self.next_id += 1
         user = self.rng.choice(DEMO_USERS)
-        return dict(id=str(self.next_id), user=user, account=DEMO_ACCOUNTS[user],
+        cpu_r, mem_r, _ = self._pick([(u, u[2]) for u in DEMO_USE])
+        use = (self.rng.uniform(*cpu_r) if cpu_r else None, self.rng.uniform(*mem_r),
+               self.rng.uniform(0, 6.3))
+        return dict(use=use, id=str(self.next_id), user=user, account=DEMO_ACCOUNTS[user],
                     name=self.rng.choice(DEMO_NAMES), qos="normal", partition="",
                     cpus=cpus, mem=int(cpus * mpc // 1024 * 1024) or 1024,
                     minutes=minutes, submitted=self.now, reason="Resources",
@@ -328,6 +434,11 @@ class Demo:
             time.sleep(tick)
             self.step(time.time() - t0)
 
+    def history(self, jid: str) -> list:
+        with self.lock:
+            j = next((j for j in self.running if j["id"] == jid), None)
+            return demo_use(j, self.now, points=120) if j else []
+
     def get(self) -> dict:
         with self.lock:
             hide = ("runtime", "done", "submitted", "waits", "allowed")
@@ -336,10 +447,11 @@ class Demo:
             return dict(mode="demo", version=self.version, now=self.now, horizon=HORIZON,
                         speed=self.speed,
                         poll_ms=250, nodes=list(self.nodes.values()),
-                        running=[{k: v for k, v in j.items() if k not in hide}
-                                 for j in self.running],
-                        pending=[{k: v for k, v in j.items() if k not in hide}
+                        running=[dict({k: v for k, v in j.items() if k not in hide + ("use",)},
+                                      use=demo_use(j, self.now)) for j in self.running],
+                        pending=[{k: v for k, v in j.items() if k not in hide + ("use",)}
                                  for j in pending[:MAX_WAITING]],
+                        usage=dict(interval=60, error=""),
                         pending_total=len(pending), queued_total=len(queued), top=TOP,
                         accounts=sorted(set(DEMO_ACCOUNTS.values())))
 
@@ -347,12 +459,18 @@ class Demo:
 def serve(source, bind: str, port: int):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
-            if self.path.split("?")[0] == "/state.json":
+            url = urlparse(self.path)
+            pages = {"/": HTML, "/index.html": HTML, "/2d": HTML_2D}
+            if url.path == "/state.json":
                 body, kind = json.dumps(source.get()).encode(), "application/json"
-            elif self.path.split("?")[0] in ("/", "/index.html", "/2d"):
-                page = HTML_2D if self.path.split("?")[0] == "/2d" else HTML
+            elif url.path == "/usage.json":      # one running job's samples
+                jid = parse_qs(url.query).get("job", [""])[0]
+                body, kind = json.dumps(source.history(jid)).encode(), "application/json"
+            elif url.path in pages or url.path == "/usage.js":
+                page = USE_JS if url.path == "/usage.js" else pages[url.path]
                 with open(page, "rb") as f:
-                    body, kind = f.read(), "text/html; charset=utf-8"
+                    body = f.read()
+                kind = ("text/javascript" if page == USE_JS else "text/html") + "; charset=utf-8"
             else:
                 self.send_error(404)
                 return
@@ -379,6 +497,9 @@ def main(argv=None):
     ap.add_argument("--port", type=int, default=8650)
     ap.add_argument("--interval", type=float, default=5.0,
                     help="seconds between reads of the cluster (default 5)")
+    ap.add_argument("--usage-interval", type=float, default=60.0,
+                    help="seconds between reads of what running jobs use, with sstat "
+                         "(default 60; 0: off). Needs job accounting (JobAcctGatherType)")
     ap.add_argument("--demo", action="store_true", help="a simulated cluster instead")
     ap.add_argument("--speed", type=float, default=900.0,
                     help="demo: simulated seconds per real second (default 900)")
@@ -395,9 +516,11 @@ def main(argv=None):
     slurm.set_actuation(False)                  # read-only, whatever happens
     source = (Demo(cfg, a.speed, a.seed, a.load, slim=a.slim, fat=a.fat, pinned=a.pinned)
               if a.demo
-              else Live(cfg, a.interval))
+              else Live(cfg, a.interval, a.usage_interval))
     source.version = describe()          # the release, or where a checkout is
     threading.Thread(target=source.run, daemon=True).start()
+    if not a.demo:
+        threading.Thread(target=source.sample_usage, daemon=True).start()
     serve(source, a.bind, a.port)
 
 

@@ -14,7 +14,8 @@ An example role that installs slurmjobpacker (sjp) on your Slurm controllers:
   batch job to sjp, and a fixed memory-per-CPU fallback rule when sjp does not place it
   (`sjp_verbose_log: true` adds each job's shape and node to the `slurmctld` log);
 - optionally (`sjp_viz_enabled: true`) runs the live 3D view, `sjp-viz`, on
-  `sjp_viz_bind:sjp_viz_port` (default `127.0.0.1:8650`);
+  `sjp_viz_bind:sjp_viz_port` (default `127.0.0.1:8650`), reading what running jobs use
+  every `sjp_viz_usage_interval` seconds (60; 0: off);
 - after an upgrade, restarts `sjpd` and, if `sjp_reconfigure_slurm` is true, runs
   `scontrol reconfigure` so `slurmctld` loads the new `sjp.lua`.
 

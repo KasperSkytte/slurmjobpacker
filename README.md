@@ -113,6 +113,10 @@ To switch it off, `sudo touch /etc/sjp/disable`: from the next submission
 ## Live cluster view in 2D and 3D
 
 `sjp-viz` shows the cluster live in a web browser to easily see how jobs are packed together.
+Click a job for its details, including how much of its CPUs and memory it uses over time
+(read with `sstat`; needs job accounting, `JobAcctGatherType`):
+
+<img src="docs/img/sjp-job-details.png" width="290" alt="A running job's details: user, account, CPUs, memory and time, then a graph of its CPU and memory use against what it was given, and its average CPU use and memory peak with a verdict">
 
 To try it, run `python3 -m sjp.viz` (or `python3 -m sjp.viz --demo` for a simulated
 cluster), and open `http://127.0.0.1:8650`. To keep it running, install it as a service
