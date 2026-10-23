@@ -409,6 +409,23 @@ local function has_room(tbl, parts, cpus, mem, minutes)
     return false
 end
 
+-- The partitions that can hold the job and have room for it now, or nil. The
+-- table chose for its bucket's typical shape, which can be far from the job's
+-- own (the top buckets span 64-128 CPUs and 12-24 GB per CPU), so it can miss
+-- partitions this job fits in. Mirrors sjp.policy.room_elsewhere.
+local function room_elsewhere(tbl, cpus, mem, minutes)
+    if type(tbl.cap) ~= "table" then return nil end
+    local out = {}
+    for p, c in pairs(tbl.cap) do
+        if cpus <= c[1] and mem <= c[2] and has_room(tbl, p, cpus, mem, minutes) then
+            out[#out + 1] = p
+        end
+    end
+    if #out == 0 then return nil end
+    table.sort(out)
+    return table.concat(out, ",")
+end
+
 -- MB as GB, rounded; one decimal below 10 GB, so 512 MB is 0.5G, not 0G.
 local function gb(mb)
     local g = mb / 1024
@@ -539,6 +556,15 @@ local function place(job_desc, submit_uid)
     local room = has_room(tbl, parts, cpus, mem, has_limit and minutes or nil)
     if room == nil then return false, "stale", detail, shape end
     local by_shape = false
+    if not room then
+        -- none where the table chose: anywhere that can hold it and has room now
+        local other = room_elsewhere(tbl, cpus, mem, has_limit and minutes or nil)
+        if other then
+            if narrowed then other = restrict(other, own, want, named) or other end
+            detail = detail .. "; no room there, so where there is: " .. other
+            parts, room, why = other, true, why .. " room elsewhere"
+        end
+    end
     if not room then
         if not tbl.always or type(tbl.tf) ~= "table" or type(tbl.tf[key]) ~= "string" then
             return false, "no room", detail .. "; no node there has the CPUs and memory free", shape

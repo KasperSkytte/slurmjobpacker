@@ -127,7 +127,11 @@ def expect(j, full, ends):
     if free != FREE:
         parts = policy.restrict(parts, free, want)
     by_shape = False
-    if not policy.has_room(cpus, mem, parts, free):
+    elsewhere = [] if policy.has_room(cpus, mem, parts, free) else \
+        policy.room_elsewhere(cpus, mem, CAP, free)
+    if elsewhere:
+        parts = policy.restrict(elsewhere, free, want) if free != FREE else elsewhere
+    elif not policy.has_room(cpus, mem, parts, free):
         if full is None:
             return False, "", ""
         parts, by_shape = policy.plugin_lookup(full, CAP, CFG, cpus, mem, minutes)[0], True
@@ -188,6 +192,19 @@ got = run(write_table("t4b.lua", cfg=icfg), [("nodelist", job(8, 32000, req_node
 check("placed as if it had asked for no node: the same partitions and pin as a plain job",
       got["nodelist"][:3] == got["plain"][:3] == got["exclude"][:3]
       and got["nodelist"][2] != "n3", str(got))
+
+print("\n4c. the table chose for a bigger shape than the job's: where there is room comes first")
+# 33 CPUs x 250 GB falls in the bucket of 48 CPUs x 7 GB per CPU, 336 GB, which
+# only the fat nodes hold; they are full, but an idle slim node holds the job.
+rfree = {"n1": (64, 256000, ["slim1"]), "n2": (8, 200000, ["slim1"]),
+         "n3": (0, 0, ["fat1"]), "n4": (0, 0, ["fat1"])}
+rtab = policy.build_table(CFG, TOTAL, {"slim1": [(64, 256000), (8, 200000)], "fat1": [(0, 0)] * 2})
+key = policy.plugin_lookup(rtab, CAP, CFG, 33, 250000, 60)
+got = run(write_table("t4c.lua", FULL, ENDS, free=rfree), [("r", job(33, 250000), True)])
+check("the table offers only the full fat partition", key[0] == ["fat1"], str(key))
+check("so the job goes to the slim partition, where a node has room (the only one: Slurm picks it)",
+      got["r"][:3] == (True, "slim1", "") and "room elsewhere" in got["r"][4]
+      and "room=no" not in got["r"][3], str(got["r"]))
 
 print("\n5. a burst: pins the plugin made count until sjpd has seen them")
 # Room for one 16-CPU job on n1 (a match by memory per CPU) and one on n2.

@@ -284,6 +284,15 @@ def has_room(cpus, mem_mb, parts, node_free) -> bool:
                for fc, fm, ps in node_free.values())
 
 
+def room_elsewhere(cpus, mem_mb, cap, node_free) -> list[str]:
+    """The partitions that can hold the job (by their largest node) and have
+    room for it now, for when those the table chose have none: the table chose
+    for its bucket's typical shape, which can be far from the job's own. Mirrors
+    the plugin's room_elsewhere."""
+    return sorted(p for p, (c, m) in cap.items()
+                  if cpus <= c and mem_mb <= m and has_room(cpus, mem_mb, [p], node_free))
+
+
 # ---------------------------------------------------------------- bucket table
 def bucket_index(value, edges) -> int:
     i = 0

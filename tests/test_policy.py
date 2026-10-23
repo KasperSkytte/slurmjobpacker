@@ -844,6 +844,19 @@ try:
           len(mv) == 1 and mv[0]["after"] == "fat1" and applied[0][-1] == "reqnodelist="
           and applied[1][-1] == "admincomment=sjp:released=b;from=slim1;job=8c,32G,4.0G/c;v=3;room=no;moved=slim1>fat1",
           str(applied))
+    # The table still chooses slim1 (for its bucket's typical shape), where no
+    # node has room; fat1 holds the job and has room now.
+    d.log_fh = io.StringIO(); applied.clear()
+    d.snap["cap"] = {"slim1": (64, 256000), "fat1": (64, 1024000)}
+    cur["would"] = ["slim1"]
+    d.recheck([wjob("2", "a", 20)], now)
+    recs = [json.loads(l) for l in d.log_fh.getvalue().splitlines()]
+    mv = [r for r in recs if r.get("action") == "move_partitions"]
+    check("a job waiting where the table chose moves to any partition with room for it now",
+          len(mv) == 1 and mv[0]["after"] == "fat1" and mv[0]["node"] == "f", str(recs))
+    check("and none can hold it: it keeps waiting",
+          policy.room_elsewhere(8, 32768, {"slim1": (64, 256000), "fat1": (4, 1024000)},
+                                d.snap["node_free"]) == [])
 finally:
     slurm.admin_comments, policy.plugin_lookup, slurm.apply = real_acs, real_lookup, real_apply
 

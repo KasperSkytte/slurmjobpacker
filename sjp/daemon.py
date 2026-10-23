@@ -587,6 +587,10 @@ class Daemon:
         # The plugin places a job only if some node in those partitions has room
         # for it now; with [policy] always_place, otherwise by its shape alone.
         room = policy.has_room(cpus, mem, would, nf)
+        elsewhere = [] if room else policy.room_elsewhere(cpus, mem, s["cap"], nf)
+        if elsewhere:            # none there, but where the job fits and there is room now
+            would, room = (policy.restrict(elsewhere, nf, want) or elsewhere
+                           if want or exc else elsewhere), True
         by_shape = not room and s.get("full") is not None
         if by_shape:
             would, key, refit = policy.plugin_lookup(s["full"], s["cap"], self.cfg, cpus, mem,
@@ -600,6 +604,8 @@ class Daemon:
         cost = policy.score_partitions(cpus, mem, s["total"], s["free"], self.demand)
         why = (f"{cpus}c x {mem // cpus} MB/CPU, {j['timelimit']} min -> bucket "
                f"{key[0]},{key[1]},{key[2]} of table v{s['version']}: {table_parts}")
+        if elsewhere:
+            why += f"; no node there has room now, so where there is: {','.join(would)}"
         if by_shape:
             why += f"; no node there has room now, so by shape (always_place): {','.join(would)}"
         if refit:
@@ -905,6 +911,12 @@ class Daemon:
             free = policy.free_for(mine, s.get("later"), now, j["timelimit"])
             fits = [n for n, (fc, fm, ps) in free.items()
                     if fc >= cpus and fm >= mem and set(ps) & set(would)]
+            other = [] if fits else policy.room_elsewhere(cpus, mem, s["cap"], free)
+            if other:
+                # none where the table chose: anywhere that can hold it and has room now
+                would = policy.restrict(other, mine) or other
+                fits = [n for n, (fc, fm, ps) in free.items()
+                        if fc >= cpus and fm >= mem and set(ps) & set(would)]
             waited = now - (j.get("eligible") or now)
             if fits and (pinned or set(would) != set(current)):
                 node = min(fits, key=lambda n: free[n][0])      # the tightest fit
