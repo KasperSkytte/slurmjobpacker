@@ -52,7 +52,7 @@ const sjpUse = (() => {
   function verdict(s) {
     const cpu = s.cpu == null ? ["measuring…", null]
       : [s.cpu < 0.25 ? "mostly idle" : s.cpu < 0.6 ? "partly utilized" : "well utilized", colour(s.cpu)];
-    const mem = [s.peak > 0.95 ? "near its limit" : s.peak >= 0.7 ? "fits"
+    const mem = [s.peak > 0.95 ? "near its limit" : s.peak >= 0.7 ? "fits well"
       : s.peak >= 0.25 ? "less than allocated" : "far less than allocated",
       colour((s.peak - 0.25) / 0.65)];
     return { cpu, mem };
