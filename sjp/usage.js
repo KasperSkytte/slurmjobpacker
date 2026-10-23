@@ -9,7 +9,30 @@ const sjpUse = (() => {
   // The node utilization scale: blue when little is used, yellow at half, red
   // at all of it (the readable shade, for text on the dark panel).
   const hue = f => f < 0.5 ? 215 - 165 * f / 0.5 : 50 - 50 * (f - 0.5) / 0.5;
-  const colour = f => `hsl(${hue(Math.min(1, Math.max(0, f)))}, 85%, 66%)`;
+  const colour = (f, bar) =>
+    `hsl(${hue(Math.min(1, Math.max(0, f)))}, ${bar ? "80%, 55%" : "85%, 66%"})`;
+
+  // The share of their allocation that running jobs utilize together, CPUs
+  // now and memory in use, over the jobs measured so far; null before any is.
+  function totals(running) {
+    const jobs = new Map();
+    for (const r of running) if (r.use && !jobs.has(r.id)) jobs.set(r.id, r);
+    let cpus = 0, busy = 0, mem = 0, used = 0;
+    for (const j of jobs.values()) {
+      const n = j.nodes || 1, b = j.use.now != null ? j.use.now : j.use.avg;
+      if (b == null) continue;
+      cpus += j.cpus * n; busy += b; mem += j.mem * n; used += j.use.mem;
+    }
+    return cpus ? { cpu: busy / cpus, mem: used / mem } : null;
+  }
+
+  // The panel's CPU or memory bar: allocated as before, and within it the part
+  // utilized, coloured on the scale above.
+  function bar(alloc, util, share) {
+    alloc.style.background = share == null ? "" : "rgba(88, 166, 255, 0.3)";
+    util.style.width = share == null ? "0" : 100 * Math.min(1, share) + "%";
+    if (share != null) util.style.background = colour(share, true);
+  }
 
   // A running job's shares of its allocation: CPUs kept busy on average and
   // now, memory in use and at its peak. null until it has been sampled.
@@ -90,5 +113,5 @@ const sjpUse = (() => {
     }, 15000);
   }
 
-  return { panel };
+  return { panel, totals, bar, pct, colour };
 })();

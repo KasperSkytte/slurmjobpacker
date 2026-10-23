@@ -28,6 +28,9 @@
     border-radius: 6px; padding: 1px 4px; font: inherit; font-size: 12px; max-width: 160px; }
   .bar { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; }
   .bar i { display: block; height: 100%; background: var(--accent); width: 0; transition: width .4s; }
+  .bar i b { display: block; height: 100%; width: 0; transition: width .4s, background .4s; }
+  .util { display: none; }
+  body.measured .util { display: inline; }
   #legend { position: fixed; bottom: 16px; left: 16px; font-size: 12px; color: var(--muted); }
   #legend .ramp { width: 220px; height: 10px; border-radius: 5px; margin: 6px 0 2px; }
   #legend .ticks { display: flex; justify-content: space-between; width: 220px; }
@@ -72,8 +75,9 @@
   <h1><a id="title" href="https://github.com/KasperSkytte/slurmjobpacker" target="_blank" rel="noopener">slurmjobpacker</a><span id="version"></span></h1>
   <div class="sub" id="subtitle">Memory per CPU of every job, live. A slanted band: the job's memory per CPU differs significantly from its node's. Click a job for details and live utilization.</div>
   <div class="stats">
-    <span>CPUs</span><div class="bar"><i id="cpubar"></i></div><span id="cpu">–</span>
-    <span>Memory</span><div class="bar"><i id="membar"></i></div><span id="mem">–</span>
+    <span>CPUs</span><div class="bar"><i id="cpubar"><b id="cpuutil"></b></i></div><span id="cpu">–</span>
+    <span>Memory</span><div class="bar"><i id="membar"><b id="memutil"></b></i></div><span id="mem">–</span>
+    <span class="util">Utilization</span><span class="util" id="util" style="grid-column: span 2">–</span>
     <span>Jobs</span><span id="jobs" style="grid-column: span 2">–</span>
     <span>Time</span><span id="clock" style="grid-column: span 2">–</span>
     <span>Show</span><span class="filters" style="grid-column: span 2"><select id="f-user" title="Only this user's jobs"><option value="">all users</option></select><select id="f-account" title="Only this account's jobs"><option value="">all accounts</option></select></span>
@@ -381,6 +385,14 @@ function updatePanel(s) {
   document.getElementById("membar").style.width = pm + "%";
   document.getElementById("cpu").textContent = `${Math.round(use[0])} / ${cap[0]} (${pc.toFixed(0)}%)`;
   document.getElementById("mem").textContent = `${gb(use[1])} / ${gb(cap[1])} (${pm.toFixed(0)}%)`;
+  // how much of what is allocated the jobs utilize, while sjp-viz measures it
+  const ut = s.usage ? sjpUse.totals(s.running) : null;
+  document.body.classList.toggle("measured", !!ut);
+  sjpUse.bar(document.getElementById("cpubar"), document.getElementById("cpuutil"), ut && ut.cpu);
+  sjpUse.bar(document.getElementById("membar"), document.getElementById("memutil"), ut && ut.mem);
+  if (ut) document.getElementById("util").innerHTML =
+    `<span style="color:${sjpUse.colour(ut.cpu)}">${sjpUse.pct(ut.cpu)}</span> of allocated CPUs, ` +
+    `<span style="color:${sjpUse.colour(ut.mem)}">${sjpUse.pct(ut.mem)}</span> of memory`;
   document.getElementById("jobs").textContent =
     `${new Set(s.running.map(j => j.id)).size} running · ${s.pending_total} waiting` + filterCount(s);
   const d = new Date(s.now * 1000);
