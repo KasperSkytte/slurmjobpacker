@@ -103,6 +103,11 @@ DEFAULTS: dict = {
         # task as a job of its own. Not GPU jobs or jobs on the user's own
         # --nodelist. 0 = off.
         "interval": 60.0,
+        # After sjpd changes a job (its partitions, pin or QOS), it leaves the
+        # job alone until Slurm's scheduler has looked at it again
+        # (LastSchedEval), so a change is never undone or redone before Slurm
+        # could act on it; at most this many seconds.
+        "settle_max": 600.0,
     },
     "limits": {
         # What to do, in enforce mode, when jobs are held only by the per-user or

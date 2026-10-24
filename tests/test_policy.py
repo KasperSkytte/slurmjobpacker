@@ -436,7 +436,14 @@ try:
           [a[2:] for a in ran] == [["jobid=5", "qos=normal"]], str(ran))
     ran.clear()
     d.unflex(pend2[:1], 100.0 + cfg["limits"]["flex_revert_after"] + 1)
+    check("not before Slurm has tried it in flex, however long that takes", ran == [])
+    d.unflex([dict(pend2[0], last_eval=time.time() + 1)], 100.0 + cfg["limits"]["flex_revert_after"] + 1)
     check("then it goes back to its own QOS", [a[2:] for a in ran] == [["jobid=1", "qos=normal"]])
+    ran.clear()
+    d.flex([fj("1", 48, 9)], nf10, 100.0 + cfg["limits"]["flex_revert_after"]
+           + cfg["limits"]["flex_retry_after"] + 2)
+    check("and is not tried in flex again before Slurm has seen it back in its own QOS",
+          ran == [] and "left alone until Slurm has looked at it" in d.log_fh.getvalue())
     ran.clear()
     notes["7"] = ""
     d.unflex([fj("7", 8, 9, qos="flex")], 500.0)
@@ -959,7 +966,11 @@ try:
     # the pin goes and the job is back in its partitions.
     d.snap["cap"] = {}
     d.log_fh = io.StringIO(); applied.clear()
-    d.recheck([dict(wjob("2", "a", 20), reason="QOSMaxCpuPerUserLimit")], now)
+    held2 = dict(wjob("2", "a", 20), reason="QOSMaxCpuPerUserLimit")
+    d.recheck([held2], now)
+    check("a job sjp just changed is left alone until Slurm has looked at it",
+          applied == [] and "left alone until Slurm has looked at it" in d.log_fh.getvalue())
+    d.recheck([dict(held2, last_eval=time.time() + 1)], now)
     check("a job held by a QOS cap loses the pin it waited for room on",
           [a[2:] for a in applied] == [
               ["jobid=2", "reqnodelist="],
@@ -969,7 +980,7 @@ try:
     # Every pending job sjp leaves as it is is accounted for in the log, once.
     d.log_fh = io.StringIO(); applied.clear()
     for _ in range(3):                    # job 1 takes b, so job 2 stays waiting for a
-        d.recheck([wjob("1", "", 30), wjob("2", "a", 20)], now)
+        d.recheck([wjob("1", "", 30), dict(wjob("2", "a", 20), last_eval=time.time() + 1)], now)
     said = [json.loads(l) for l in d.log_fh.getvalue().splitlines()
             if '"waiting"' in l and '"jobid":"2"' in l]
     check("why a job keeps waiting is logged when it changes, not every recheck",
@@ -1139,6 +1150,15 @@ check("squeue lists each array task (-r), named as scontrol updates it, with the
       "-r" in asked[0] and [(j["jobid"], j["id"], j["array"]) for j in q] ==
       [("30", "30", ""), ("1_0", "32", "1"), ("1_17", "1", "1"), ("1_18", "1", "1"),
        ("1_16", "18", "1")], str([(j["jobid"], j["id"], j["array"]) for j in q]))
+check("when Slurm last looked at a job is read from squeue; never yet is None",
+      slurm.queue.__doc__ and "LastSchedEval" in slurm.QUEUE_FMT
+      and [j["last_eval"] for j in q][:1] == [None])
+slurm._run = lambda args, timeout=10.0: qrow("30", "30") + "2026-10-14T10:05:00|"
+try:
+    seen_at = slurm.queue()[0]["last_eval"]
+finally:
+    slurm._run = real_run
+check("and parsed as a time", seen_at == slurm._epoch("2026-10-14T10:05:00"), str(seen_at))
 check("a record's AdminComment is its own, though scontrol lists the whole array",
       note1 == "sjp:placed=slim1" and notes["18"] == "sjp:pin=n3" and sorted(notes) == ["1", "18", "32"])
 

@@ -70,6 +70,7 @@ class Daemon:
                                      # QOS this run, not seen running yet
         self.flex_seen: dict = {}    # jobid -> when flex mode last moved it either way
         self.explained: dict = {}    # jobid -> why sjp leaves it as it is, last logged
+        self.touched: dict = {}      # jobid -> when sjpd last changed it
         self.explain_lock = threading.Lock()   # the queue and act threads both explain
         self.pin_from: dict = {}     # (jobid, pinned node) -> sjp's partitions before
                                      # its pin, or None for the user's own --nodelist
@@ -159,7 +160,24 @@ class Daemon:
         if not (quiet and "error" not in extra):
             self.log("action", action=action, executed=executed, **extra,
                      why=why, cmd=cmd, **kw)
+        if (executed or "error" in extra) and kw.get("jobid"):
+            self.touched[kw["jobid"]] = time.time()     # see settled()
         return None if "error" in extra else executed
+
+    def settled(self, j, now) -> bool:
+        """Whether Slurm's scheduler has looked at a job since sjpd last changed
+        it (or [recheck] settle_max has passed). Until then sjpd leaves it alone:
+        changing it again, or undoing the change, before Slurm could start it
+        would keep it from ever starting."""
+        t = self.touched.get(j["jobid"])
+        if t is None:
+            return True
+        ev = j.get("last_eval")
+        return (ev is not None and ev >= t) or now - t >= self.cfg["recheck"]["settle_max"]
+
+    def unsettled_why(self, j) -> str:
+        return (f"left alone until Slurm has looked at it since sjp changed it at "
+                f"{time.strftime('%H:%M:%S', time.localtime(self.touched[j['jobid']]))}")
 
     def batch_partitions(self, parts: dict, nodes: dict | None = None) -> list[str]:
         return self.partition_filter(parts, nodes)[0]
@@ -884,6 +902,7 @@ class Daemon:
         live = {j["jobid"] for j in jobs if j["state"] == "PD"}
         with self.explain_lock:
             self.explained = {k: v for k, v in self.explained.items() if k in live}
+        self.touched = {k: v for k, v in self.touched.items() if k in live}
         wait = s.get("ends") is not None
         nf = {n: list(v) for n, v in s["node_free"].items()}
         if s.get("claimed") is not None:
@@ -905,6 +924,9 @@ class Daemon:
                 continue
             current = [p for p in j["partition"].split(",") if p]
             if not current or not set(current) <= set(s["total"]):
+                continue
+            if not self.settled(j, now):
+                self.explain(j, self.unsettled_why(j))
                 continue
             if notes is None:            # every job's marks, read once
                 try:
@@ -1199,6 +1221,9 @@ class Daemon:
                     or j.get("gpu") or j.get("nnodes", 1) > 1
                     or now - self.flex_seen.get(jid, float("-inf")) < c["flex_retry_after"]):
                 continue
+            if not self.settled(j, now):     # e.g. just moved back: Slurm sees it there first
+                self.explain(j, self.unsettled_why(j))
+                continue
             cpus, mem = max(1, j["cpus"]), j.get("req_mem") or j["mem"]
             if ((cap_u is not None and in_u[j["user"]] + cpus > cap_u)
                     or (cap_a is not None and in_a[j["account"]] + cpus > cap_a)):
@@ -1299,6 +1324,8 @@ class Daemon:
             moved = self.flexed.get(jid, (None,))[0]
             if moved is not None and now - moved < c["flex_revert_after"]:
                 continue
+            if moved is not None and not self.settled(j, now):
+                continue                 # Slurm has not tried it in flex yet
             try:
                 marks = slurm.sjp_marks(slurm.admin_comment(j["id"]))
                 orig = marks.get("qos", "").partition(">")[0] or marks.get("flex")
@@ -1312,7 +1339,8 @@ class Daemon:
             argv = slurm.cmd_set_job_qos(jid, orig)
             self.intend("unflex_job", slurm.cmdline(argv),
                         f"moved to QOS {j['qos']} but still pending ({j['reason']})"
-                        + (f" after {now - moved:.0f} s" if moved else " when sjpd started"),
+                        + (f" after {now - moved:.0f} s, though Slurm has tried it there"
+                           if moved else " when sjpd started"),
                         None if self.mode == "enforce" else f"mode={self.mode}",
                         lambda: self.apply_retrying(argv),
                         jobid=jid, before=j["qos"], after=orig)

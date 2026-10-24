@@ -59,6 +59,7 @@ fat_ratio_threshold = 6000
 
 [recheck]
 interval = 60.0
+settle_max = 600.0
 
 [limits]
 mode = "off"
