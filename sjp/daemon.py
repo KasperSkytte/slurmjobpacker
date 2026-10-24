@@ -262,6 +262,7 @@ class Daemon:
                     used[(j["reservation"], n)] += j["cpus"] / max(len(ns), 1)
         for d in nodes.values():
             d["later"] = []
+            d["resv_later"] = []         # (start, name): for saying which one blocks a job
         for r in resvs:
             if r["end"] <= now:
                 continue
@@ -277,6 +278,7 @@ class Daemon:
                     d["alloc_mem"] += int(left * per_cpu)
                 else:
                     d["later"].append((r["start"], cpus, int(cpus * per_cpu)))
+                    d["resv_later"].append((r["start"], r["name"]))
 
     def pin_active(self) -> bool:
         """Pins need sjpd to release the ones that do not start, which is an
@@ -479,7 +481,8 @@ class Daemon:
         self.snap = dict(table=table, full=full, cap=policy.caps(total), total=total,
                          free=free, version=self.version, node_free=state["nodes"],
                          tiers=state["tiers"], room=state["room"], busy=state["busy"],
-                         later=state["later"], ends=state["ends"], claimed=claimed)
+                         later=state["later"], ends=state["ends"], claimed=claimed,
+                         resv={n: nodes[n]["resv_later"] for n in nf if nodes[n].get("resv_later")})
         # Rewrite when the partition decisions or the free space change, and
         # often enough that the plugin never sees the table or its free space
         # as stale: policy max_age/3, or pin max_age/2.
@@ -881,6 +884,24 @@ class Daemon:
             self.explained[j["jobid"]] = why
         self.log("waiting", jobid=j["jobid"], reason=j.get("reason", ""), why=why)
 
+    @staticmethod
+    def resv_note(cpus, mem, parts, raw, names, now, minutes) -> str:
+        """Which reservations keep a job off nodes that have room for it now:
+        those starting there before the job would end. raw: node free space
+        before reservations count; names: node -> [(start, reservation)]."""
+        end = now + minutes * 60 if minutes else float("inf")
+        hits = []
+        for n, (fc, fm, ps) in sorted(raw.items()):
+            if fc < cpus or fm < mem or not set(ps) & set(parts):
+                continue
+            rs = [r for r in (names or {}).get(n, []) if r[0] < end]
+            if rs:
+                start, name = min(rs)
+                hits.append(f"{n} has room now, but reservation {name} starts there "
+                            f"{time.strftime('%b %d %H:%M', time.localtime(start))}, "
+                            f"before the job would end")
+        return "".join("; " + h for h in hits[:3])
+
     def recheck(self, jobs, now):
         """Make sjp's choice again for every pending job it placed: jobs that
         started, ended or were cancelled since have changed what fits where. A
@@ -1031,16 +1052,20 @@ class Daemon:
                 if fits:
                     self.explain(j, f"left in {','.join(current)}: it fits there, on "
                                     f"{', '.join(sorted(fits)[:3])}, when its turn comes")
-                elif target:
-                    self.explain(j, f"still waiting for {pinned}: no node in {','.join(base)} "
-                                    f"has room for {cpus} CPUs x {mem} MB now, and none is "
-                                    f"expected to have room sooner")
                 else:
-                    self.explain(j, f"no node in {','.join(base)} has room for {cpus} CPUs x "
-                                    f"{mem} MB now" + ("" if wait else "; it waits in its partitions"))
+                    note = self.resv_note(cpus, mem, base, mine, s.get("resv"), now, j["timelimit"])
+                    if target:
+                        self.explain(j, f"still waiting for {pinned}: no node in {','.join(base)} "
+                                        f"has room for {cpus} CPUs x {mem} MB now, and none is "
+                                        f"expected to have room sooner" + note)
+                    else:
+                        self.explain(j, f"no node in {','.join(base)} has room for {cpus} CPUs x "
+                                        f"{mem} MB now" + note
+                                        + ("" if wait else "; it waits in its partitions"))
                 continue
             nf[target][0] -= cpus
             nf[target][1] -= mem
+            why_more = self.resv_note(cpus, mem, base, mine, s.get("resv"), now, j["timelimit"])
             # placed=a,b -> pin=node;from=a,b, where the mark was
             if "pin" in marks:
                 note2 = slurm.rename_mark(note, "pin", "pin", target)
@@ -1056,7 +1081,7 @@ class Daemon:
                         f"pending {waited / 60:.0f} min ({j['reason']}); no node in "
                         f"{','.join(base)} has room for {cpus} CPUs x {mem} MB now; {target} "
                         f"is expected to have room first, in {eta / 3600:.1f} h"
-                        + (f" (was {pinned})" if pinned else ""),
+                        + (f" (was {pinned})" if pinned else "") + why_more,
                         self.blocked(("enforce",)),
                         lambda argvs=argvs: all([self.apply_retrying(a) for a in argvs]),
                         jobid=jid, before=pinned, node=target, parts=",".join(parts))
@@ -1158,9 +1183,10 @@ class Daemon:
         if self.cfg["limits"]["mode"] == "flex":
             if idle_frac >= self.cfg["limits"]["min_idle_share"]:
                 later = {n: nodes[n]["later"] for n in nf if nodes[n].get("later")}
+                names = {n: nodes[n]["resv_later"] for n in nf if nodes[n].get("resv_later")}
                 with self.sh.lock:
                     jobs = list(self.sh.jobs)
-                self.flex(pend, nf, time.time(), later, jobs)
+                self.flex(pend, nf, time.time(), later, jobs, names)
             else:
                 for j in pend:
                     if j["reason"] in slurm.CAP_REASONS:
@@ -1186,7 +1212,7 @@ class Daemon:
             limits=[lim.state() for lim in self.limiters.values()],
             errors=errors), indent=1))
 
-    def flex(self, pend, nf, now, later=None, jobs=()):
+    def flex(self, pend, nf, now, later=None, jobs=(), names=None):
         """Flex mode: move jobs held only by the CPU cap of their QOS to the flex
         QOS, highest priority first, as many as fit in the free space now and
         under the flex QOS's own caps. Each is counted against a node's free
@@ -1253,8 +1279,11 @@ class Daemon:
                     if fc - soon.get(n, (0, 0))[0] >= cpus
                     and fm - soon.get(n, (0, 0))[1] >= mem and ps & parts]
             if not fits:
+                note = self.resv_note(cpus, mem, parts, {n: (v[0], v[1], v[2]) for n, v in free.items()},
+                                      names, now, j.get("timelimit"))
                 self.explain(j, f"held by {j['reason']}; not moved to QOS {target}: no node in "
-                                f"{','.join(sorted(parts))} has room for {cpus} CPUs x {mem} MB now")
+                                f"{','.join(sorted(parts))} has room for {cpus} CPUs x {mem} MB now"
+                                + note)
                 continue
             if not self.flex_allowed(j["user"], j["account"], target):
                 continue                 # logged once per user by flex_allowed

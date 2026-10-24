@@ -517,6 +517,14 @@ try:
     d.flex([fj("40", 8, 9)], nf10, 5000.0)
     check("a flex move that failed claims nothing, and is tried again later",
           d.flexed == {} and "Invalid qos" in d.log_fh.getvalue())
+    # No room because of a reservation: the log names it.
+    d = daemon.Daemon(cfg); d.log_fh = io.StringIO(); d.mode = "enforce"
+    notes["50"] = ""
+    d.flex([fj("50", 32, 9, timelimit=8 * 1440)], nf10, 5000.0,
+           {"a": [(5000.0 + 3 * 86400, 64, 512000)]}, (), {"a": [(5000.0 + 3 * 86400, "genbio")]})
+    check("a job kept off a node with room by a reservation: the log names the reservation",
+          "a has room now, but reservation genbio starts there" in d.log_fh.getvalue()
+          and "before the job would end" in d.log_fh.getvalue(), d.log_fh.getvalue()[-400:])
     # Who is at their cap goes to the plugin in every limits mode, so it pins no
     # job that would not start on any node.
     flex_caps["normal"] = (864, None)
