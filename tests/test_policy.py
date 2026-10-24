@@ -683,6 +683,14 @@ check("the view gets every node, those sjp does not place on (GPU, interactive) 
       {n["name"]: n["managed"] for n in vs["nodes"]} == {"g1": False, "i1": False, "s1": True})
 check("and every running and waiting job, marked the same way",
       {j["id"]: j["managed"] for j in vs["running"] + vs["pending"]} == {"7": True, "8": False, "9": True})
+vn2 = {n: dict(d, partitions=d["partitions"] + ["all"]) for n, d in vnodes.items()}
+cfg2 = config.defaults()
+cfg2["topology"]["exclude_partitions"] = ["all"]
+vs2 = viz.build_state(cfg2, vn2, dict(vparts, all=dict(tier=1)), [], 500.0)
+check("a partition over the whole cluster does not group the nodes sjp does not manage",
+      {n["name"]: n["partitions"] for n in vs2["nodes"]}
+      == {"g1": ["gpu"], "i1": ["interactive"], "s1": ["slim"]},
+      str({n["name"]: n["partitions"] for n in vs2["nodes"]}))
 check("with a node's GPUs and those a job holds there",
       next(n for n in vs["nodes"] if n["name"] == "g1")["gpus"] == 4
       and next(j for j in vs["running"] if j["id"] == "8")["gpus"] == 2)

@@ -60,15 +60,24 @@ def build_state(cfg, nodes: dict, parts: dict, jobs: list, now: float, mode="liv
     of which the page shows sjp's marks.
 
     Every node is sent; managed says whether sjp places jobs on it (its
-    partitions by the [topology] rules), and the page shows the others, such as
-    an interactive or a GPU partition, only when asked. A managed node is
-    grouped by the partitions sjp uses, any other by all of its own."""
+    partitions by the [topology] rules), and the page shows the others too,
+    such as an interactive or a GPU partition. A managed node is grouped by the
+    partitions sjp uses; any other by its own partitions, leaving out those
+    that also hold managed nodes (an "all" partition over the whole cluster),
+    unless it has no others."""
     keep = shown_partitions(cfg, parts, nodes)
+    is_managed = {name: any(p in keep for p in d["partitions"])
+                  and not (cfg["topology"]["exclude_gpu_nodes"] and d.get("gpu"))
+                  for name, d in nodes.items()}
+    spans = {p for name, d in nodes.items() if is_managed[name] for p in d["partitions"]}
     shown = {}
     for name, d in sorted(nodes.items()):
-        ps = [p for p in d["partitions"] if p in keep]
-        managed = bool(ps) and not (cfg["topology"]["exclude_gpu_nodes"] and d.get("gpu"))
-        ps = ps if managed else [p for p in d["partitions"] if p in parts] or d["partitions"]
+        managed = is_managed[name]
+        if managed:
+            ps = [p for p in d["partitions"] if p in keep]
+        else:
+            own = [p for p in d["partitions"] if p in parts] or d["partitions"]
+            ps = [p for p in own if p not in spans] or own
         if not ps:
             continue
         shown[name] = dict(name=name, cpus=d["cpus"], mem=d["mem"], partitions=ps,

@@ -285,7 +285,8 @@ function layout(nodes) {
   const pinW = tall || !pinAtNode ? 0 : Math.min(190 * k, w * 0.2), pinGap = pinW ? 10 * k : 0, cw = w - pinW - pinGap;
   const rows = new Map(), heads = [];
   for (const [part, ns] of groups) {
-    heads.push({ text: part, x, y: y + groupH * 0.55, other: !managed(ns[0]) }); y += groupH;
+    // the partition's name a little left of its cards, so the groups stand apart
+    heads.push({ text: part, x: x - Math.min(16 * k, x - 6), y: y + groupH * 0.55, other: !managed(ns[0]) }); y += groupH;
     for (const n of ns) {
       const cy = y + label, top = cy + cardPad, bx = x + cardPad + freeW;
       // A node with GPUs has a third bar, its GPU lane, under memory.
