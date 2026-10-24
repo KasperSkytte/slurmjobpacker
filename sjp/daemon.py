@@ -63,12 +63,14 @@ class Daemon:
         self.limiters: dict = {}     # QOS -> LimitPulse, for each QOS that has held jobs
         self.qos_caps: dict = {}     # QOS -> (per_user, per_account, read at), a cache
         self.pulse_record: dict = {} # QOS -> base caps while a pulse is on (state_file)
-        self.widened: set = set()    # jobs the starvation guard already widened
+        self.widened: dict = {}      # jobid -> when the starvation guard looks at it
+                                     # again (inf: widened, or not sjp's to widen)
         self.recheck_at = 0.0        # when pending jobs' partitions were last rechecked
         self.flexed: dict = {}       # jobid -> (when, node, cpus, mem): moved to the flex
                                      # QOS this run, not seen running yet
         self.flex_seen: dict = {}    # jobid -> when flex mode last moved it either way
         self.explained: dict = {}    # jobid -> why sjp leaves it as it is, last logged
+        self.explain_lock = threading.Lock()   # the queue and act threads both explain
         self.pin_from: dict = {}     # (jobid, pinned node) -> sjp's partitions before
                                      # its pin, or None for the user's own --nodelist
         self.flex_users = None       # (read at, {(user, account): {qos}}), a cache
@@ -84,7 +86,8 @@ class Daemon:
         self.last_shape = None    # (i, j) -> partitions, for logging what changed
         self.last_pin_sig = None
         self.snap = None          # latest decision surface, for shadowing (a dict)
-        self.released: set = set()   # pinned jobs already released or not ours
+        self.released: dict = {}     # jobid -> the node list it had when sjpd released
+                                     # its pin or found it not sjp's; a new pin is new
         self.waiting: set = set()    # jobs pinned to wait for room (wait_for_room)
         self.uids: dict = {}
         self.seen = None          # job ids already shadowed; None until the first poll
@@ -140,7 +143,8 @@ class Daemon:
         """Log an intended change, and carry it out only if nothing blocks it.
 
         Every change sjpd would make goes through here, so the decision log is
-        also a complete list of what a dry run would have done.
+        also a complete list of what a dry run would have done. Returns True if
+        the change was made, False if something blocked it, None if it failed.
         """
         executed, extra = False, {}
         if blocked is None:
@@ -152,10 +156,10 @@ class Daemon:
                 extra["error"] = repr(e)
         if blocked:
             extra["blocked"] = blocked
-        if quiet and "error" not in extra:
-            return
-        self.log("action", action=action, executed=executed, **extra,
-                 why=why, cmd=cmd, **kw)
+        if not (quiet and "error" not in extra):
+            self.log("action", action=action, executed=executed, **extra,
+                     why=why, cmd=cmd, **kw)
+        return None if "error" in extra else executed
 
     def batch_partitions(self, parts: dict, nodes: dict | None = None) -> list[str]:
         return self.partition_filter(parts, nodes)[0]
@@ -336,9 +340,9 @@ class Daemon:
 
     def user_room(self, jobs) -> dict | None:
         """CPUs each user has left under the per-user cap of each QOS they run in,
-        and the QOS most of their running CPUs are in (for jobs that name none)."""
-        if self.cfg["limits"]["mode"] != "global":
-            return None
+        and the QOS most of their running CPUs are in (for jobs that name none).
+        The plugin pins no job of a user at the cap, in any [limits] mode: such a
+        job does not start whichever node it gets."""
         used = collections.defaultdict(collections.Counter)      # qos -> user -> CPUs
         for j in jobs:
             if j["state"] in ("R", "CF") and j["qos"] not in ("", "(null)"):
@@ -416,8 +420,8 @@ class Daemon:
                 if nodes and age < self.cfg["cadence"]["policy_max_age"]:
                     self.score_once(nodes, parts, t0)
             except Exception as e:
-                self.sh.note_error("score", e)
-                self.log("error", where="score", detail=repr(e))
+                if self.sh.note_error("score", e):   # log each distinct failure once
+                    self.log("error", where="score", detail=repr(e))
             if self.sh.stop.wait(max(0.0, iv - (time.time() - t0))):
                 return
 
@@ -714,14 +718,20 @@ class Daemon:
         after = self.cfg["pin"]["release_after"]
         for j in jobs:
             jid = j["jobid"]
-            if (j["state"] != "PD" or not j.get("req_nodes") or jid in self.released
+            if j["state"] == "PD" and not j.get("req_nodes"):
+                # not pinned (any more): a pin it gets later is a new one
+                self.released.pop(jid, None)
+                self.waiting.discard(jid)
+                continue
+            if (j["state"] != "PD" or self.released.get(jid) == j["req_nodes"]
                     or not j.get("submit") or now - j["submit"] < after
                     or (jid in self.waiting and not self.past_budget(j, now))):
                 continue
-            self.released.add(jid)
+            self.released[jid] = j["req_nodes"]
             try:
                 note = slurm.admin_comment(j["id"])
             except slurm.SlurmError as e:
+                self.released.pop(jid, None)       # read again at the next poll
                 self.log("error", where="release", detail=repr(e))
                 continue
             marks = slurm.sjp_marks(note)
@@ -730,7 +740,7 @@ class Daemon:
             if "eta" in marks and not self.past_budget(j, now):
                 # waiting for room (wait_for_room): the recheck moves it; it is
                 # released only once the job is past its starvation budget
-                self.released.discard(jid)
+                self.released.pop(jid, None)
                 self.waiting.add(jid)
                 continue
             node, parts = marks["pin"], marks.get("from", "")
@@ -741,10 +751,10 @@ class Daemon:
                 try:
                     done = all([self.apply_retrying(a) for a in argvs])
                 except slurm.SlurmError:
-                    self.released.discard(jid)
+                    self.released.pop(jid, None)
                     raise
                 if not done:
-                    self.released.discard(jid)
+                    self.released.pop(jid, None)
                 return done
             self.intend("release_pin", " && ".join(slurm.cmdline(a) for a in argvs),
                         (f"waiting for room on {node} past its starvation budget "
@@ -754,7 +764,7 @@ class Daemon:
                         None if self.mode == "enforce" else f"mode={self.mode}",
                         release, jobid=jid, node=node, parts=parts)
         live = {j["jobid"] for j in jobs}
-        self.released &= live
+        self.released = {k: v for k, v in self.released.items() if k in live}
         self.waiting &= live
 
     def past_budget(self, j, now) -> bool:
@@ -785,7 +795,7 @@ class Daemon:
         for j in jobs:
             jid = j["jobid"]
             if (j["state"] != "PD" or j["reason"] not in self.WIDEN_REASONS
-                    or jid in self.widened or j.get("gpu")
+                    or now < self.widened.get(jid, 0) or j.get("gpu")
                     or j.get("nnodes", 1) > 1
                     or j.get("req_nodes") or not j.get("eligible")):
                 continue
@@ -796,16 +806,20 @@ class Daemon:
             waited = now - j["eligible"]
             if waited < budget:
                 continue
-            self.widened.add(jid)
+            done = float("inf")
             current = [p for p in j["partition"].split(",") if p]
             if not current or not set(current) <= set(total):
+                self.widened[jid] = done
                 continue                 # interactive, GPU or other: not sjp's to widen
             # Only jobs sjp placed: a job the site's own rule placed keeps its
             # partitions (the plugin marks its jobs in AdminComment).
             try:
                 marks = slurm.sjp_marks(slurm.admin_comment(j["id"]))
-            except slurm.SlurmError:
+            except slurm.SlurmError as e:
+                self.widened[jid] = now + 60       # read again in a minute
+                self.log("error", where="widen", detail=repr(e))
                 continue
+            self.widened[jid] = done
             if not marks.keys() & {"placed", "pin", "released"}:
                 continue
             wide = sorted(policy.feasible(cpus, mem, total))
@@ -817,13 +831,16 @@ class Daemon:
             if not wide or set(wide) <= set(current):
                 continue                 # already everywhere it can go
             argv = slurm.cmd_set_job_partitions(jid, wide)
-            self.intend("widen_partitions", slurm.cmdline(argv),
+            ok = self.intend("widen_partitions", slurm.cmdline(argv),
                         f"pending {waited / 3600:.1f} h ({j['reason']}), over the "
                         f"{budget / 3600:g} h budget for {kind} jobs; widened to every "
                         "partition that can hold it",
                         self.blocked(("enforce",)), lambda: self.apply_retrying(argv),
                         jobid=jid, before=",".join(current), after=",".join(wide))
-        self.widened &= {j["jobid"] for j in jobs}
+            if ok is None:
+                self.widened[jid] = now + 60       # it failed: try again in a minute
+        live = {j["jobid"] for j in jobs}
+        self.widened = {k: v for k, v in self.widened.items() if k in live}
 
     # Pending reasons a recheck can help with: the job could start somewhere.
     RECHECK_REASONS = ("None", "Resources", "Priority", BUSY_NODE)
@@ -840,9 +857,11 @@ class Daemon:
         """Log why sjp leaves a pending job as it is, when that changes: every
         pending job sjp looks at is accounted for, without a line per job each
         minute."""
-        if self.explained.get(j["jobid"]) != why:
+        with self.explain_lock:
+            if self.explained.get(j["jobid"]) == why:
+                return
             self.explained[j["jobid"]] = why
-            self.log("waiting", jobid=j["jobid"], reason=j.get("reason", ""), why=why)
+        self.log("waiting", jobid=j["jobid"], reason=j.get("reason", ""), why=why)
 
     def recheck(self, jobs, now):
         """Make sjp's choice again for every pending job it placed: jobs that
@@ -863,7 +882,8 @@ class Daemon:
         if s is None:
             return
         live = {j["jobid"] for j in jobs if j["state"] == "PD"}
-        self.explained = {k: v for k, v in self.explained.items() if k in live}
+        with self.explain_lock:
+            self.explained = {k: v for k, v in self.explained.items() if k in live}
         wait = s.get("ends") is not None
         nf = {n: list(v) for n, v in s["node_free"].items()}
         if s.get("claimed") is not None:
@@ -1077,8 +1097,8 @@ class Daemon:
                 self.act_once()
                 self.sh.clear_error("act")
             except Exception as e:
-                self.sh.note_error("act", e)
-                self.log("error", where="act", detail=repr(e))
+                if self.sh.note_error("act", e):     # log each distinct failure once
+                    self.log("error", where="act", detail=repr(e))
             if self.sh.stop.wait(max(0.0, iv - (time.time() - t0))):
                 return
 
@@ -1089,6 +1109,8 @@ class Daemon:
         with self.sh.lock:
             nodes, parts = dict(self.sh.nodes), dict(self.sh.parts)
             pend = list(self.sh.pending)
+        if self.cfg["limits"]["mode"] == "flex":
+            self.unflex(pend, time.time())       # needs only the queue
         if not nodes:
             return
         total, free = self.shapes(nodes, parts)
@@ -1112,7 +1134,6 @@ class Daemon:
                     for fc, fm, _ in nf.values()))
 
         if self.cfg["limits"]["mode"] == "flex":
-            self.unflex(pend, time.time())
             if idle_frac >= self.cfg["limits"]["min_idle_share"]:
                 later = {n: nodes[n]["later"] for n in nf if nodes[n].get("later")}
                 with self.sh.lock:
@@ -1231,14 +1252,14 @@ class Daemon:
             # "flex" key is what older versions wrote.
             note = slurm.set_mark(note, "qos", f"{j['qos']}>{target}", drop=("flex",))
             argvs.append(slurm.cmd_set_job_qos(jid, target, note))
-            self.intend("flex_job", " && ".join(slurm.cmdline(a) for a in argvs),
+            moved = self.intend("flex_job", " && ".join(slurm.cmdline(a) for a in argvs),
                         f"held by the CPU cap of QOS {j['qos']} ({j['reason']}), and "
                         f"{cpus} CPUs x {mem} MB fit on {node} now"
                         + (f"; no longer waiting for {pinned}" if pinned else ""),
                         self.blocked(("enforce",)),
                         lambda argvs=argvs: all([self.apply_retrying(a) for a in argvs]),
                         jobid=jid, before=j["qos"], after=target, node=node)
-            if self.mode == "enforce":
+            if moved:                    # a move that failed claims nothing
                 self.flexed[jid] = (now, node, cpus, mem, j["user"], j["account"])
 
     def flex_allowed(self, user, account, target) -> bool:

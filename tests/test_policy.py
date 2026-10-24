@@ -306,6 +306,21 @@ check("a dry run only says what it would do", not w["1"]["executed"]
       and w["1"]["cmd"].startswith("scontrol update jobid=1 partition="))
 d.widen_starving(jobs, now)
 check("each job is considered once", d.log_fh.getvalue().count("widen_partitions") == 3)
+# A failed read of a job's marks is tried again a minute later, not forgotten.
+d = daemon.Daemon(cfg); d.log_fh = io.StringIO(); d.snap = dict(total=TOTAL)
+def timed_out(jid):
+    raise slurm.SlurmError("scontrol: timed out")
+slurm.admin_comment = timed_out
+try:
+    d.widen_starving([pjob("1", "slim1", 5)], now)
+    slurm.admin_comment = lambda jid: "sjp:placed"
+    d.widen_starving([pjob("1", "slim1", 5)], now + 10)
+    soon = d.log_fh.getvalue().count("widen_partitions")
+    d.widen_starving([pjob("1", "slim1", 5)], now + 61)
+finally:
+    slurm.admin_comment = real_ac
+check("a job whose marks could not be read is widened a minute later, not forgotten",
+      soon == 0 and d.log_fh.getvalue().count("widen_partitions") == 1)
 
 print("\n10g. the recheck moves pending jobs whose choice changed, as many as fit")
 cfg = config.defaults()
@@ -487,6 +502,21 @@ try:
         check(f"user_nodes = {how}: a --nodelist on a job sjp placed is "
               + ("kept" if how == "follow" else "dropped with the move"),
               [a[2:] for a in ran][:1] == want, str(ran))
+    # A move that failed claims no space and counts nothing against the flex QOS.
+    d = daemon.Daemon(cfg); d.log_fh = io.StringIO(); d.mode = "enforce"
+    notes["40"] = ""
+    slurm.apply = lambda argv, timeout=10.0: (_ for _ in ()).throw(
+        slurm.SlurmError("rc=1 Invalid qos specification"))
+    d.flex([fj("40", 8, 9)], nf10, 5000.0)
+    check("a flex move that failed claims nothing, and is tried again later",
+          d.flexed == {} and "Invalid qos" in d.log_fh.getvalue())
+    # Who is at their cap goes to the plugin in every limits mode, so it pins no
+    # job that would not start on any node.
+    flex_caps["normal"] = (864, None)
+    me = __import__("pwd").getpwuid(os.getuid())
+    room = daemon.Daemon(cfg).user_room([dict(state="R", qos="normal", user=me.pw_name, cpus=800)])
+    check("flex mode: the plugin is told a user has 64 CPUs left under the cap of QOS normal",
+          room and room["by_qos"]["normal"] == {me.pw_uid: 64}, str(room))
 finally:
     slurm.admin_comment, slurm.apply = real_ac, real_apply
     slurm.user_qos, slurm.cluster_name, slurm.qos_cpu_limits = real_uq, real_cn, real_ql
@@ -1015,6 +1045,31 @@ try:
                   str(applied))
     check("a user's own --nodelist (job 8) and a fresh pin (job 9) are left alone",
           all("jobid=8" not in a and "jobid=9" not in a for a in applied))
+    # A pin whose marks could not be read is looked at again at the next poll.
+    d = daemon.Daemon(cfg); d.log_fh = io.StringIO(); applied.clear()
+    reads = []
+    def flaky_ac(jid):
+        reads.append(jid)
+        if len(reads) == 1:
+            raise slurm.SlurmError("scontrol: timed out")
+        return comments[jid]
+    slurm.admin_comment = flaky_ac
+    d.release_pins(jobs[:1], now)
+    d.release_pins(jobs[:1], now + 5)
+    check("a pin whose marks could not be read is released at the next poll, not forgotten",
+          any("jobid=7" in a for a in applied), str(applied))
+    slurm.admin_comment = lambda jid: comments[jid]
+    # Released, then pinned again later (the recheck's wait for room): a new pin,
+    # so past the job's starvation budget it is released too.
+    cfg["pin"]["wait_for_room"] = True
+    d = daemon.Daemon(cfg); d.log_fh = io.StringIO(); applied.clear()
+    j7 = dict(jobs[0], cpus=4, mem=16384, req_mem=16384, eligible=now - 9 * 3600)
+    d.release_pins([j7], now)
+    d.release_pins([dict(j7, req_nodes="")], now + 5)
+    comments["7"] = "sjp:pin=n05;from=slim1,slim2;job=4c,16G,4.0G/c;v=3;room=no;eta=3.0h"
+    d.release_pins([dict(j7, req_nodes="n05")], now + 10)
+    check("a job sjp pinned again after a release is released again past its budget",
+          sum(a[-1] == "reqnodelist=" and "jobid=7" in a for a in applied) == 2, str(applied))
     tries = []
     def flaky(argv, timeout=10.0):
         tries.append(argv)
