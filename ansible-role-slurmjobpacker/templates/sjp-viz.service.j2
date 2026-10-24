@@ -9,7 +9,7 @@ User={{ sjp_user }}
 Group={{ sjp_user }}
 WorkingDirectory={{ sjp_install_dir }}
 Environment=PYTHONPATH={{ sjp_install_dir }}
-ExecStart={{ sjp_python }} -m sjp.viz -c {{ sjp_config_dir }}/sjp.toml --bind {{ sjp_viz_bind }} --port {{ sjp_viz_port }} --usage-interval {{ sjp_viz_usage_interval }}
+ExecStart={{ sjp_python }} -m sjp.viz -c {{ sjp_config_dir }}/sjp.toml --bind {{ sjp_viz_bind }} --port {{ sjp_viz_port }} --usage-interval {{ sjp_viz_usage_interval }}{{ '' if sjp_packer_enabled | bool else ' --no-packer' }}
 Restart=always
 RestartSec=5
 NoNewPrivileges=yes

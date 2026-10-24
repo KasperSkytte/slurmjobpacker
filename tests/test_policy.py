@@ -753,6 +753,12 @@ check("a partition over the whole cluster does not group the nodes sjp does not 
 check("with a node's GPUs and those a job holds there",
       next(n for n in vs["nodes"] if n["name"] == "g1")["gpus"] == 4
       and next(j for j in vs["running"] if j["id"] == "8")["gpus"] == 2)
+alone = viz.without_packer(vs)
+check("sjp-viz on its own (--no-packer): no node or job is set apart as not managed",
+      alone["packer"] is False and all(x["managed"] for k in ("nodes", "running", "pending")
+                                       for x in alone[k])
+      and [n["name"] for n in alone["nodes"]] == [n["name"] for n in vs["nodes"]]
+      and any(not n["managed"] for n in vs["nodes"]))
 check("GPUs counted from CfgTRES, else from Gres, with their type",
       slurm._gpus("gpu:a10:4(S:0-1)", "cpu=64") == dict(gpus=4, gpu_type="a10")
       and slurm._gpus("(null)", "cpu=64,gres/gpu=2,gres/gpu:a10=2") == dict(gpus=2, gpu_type="")

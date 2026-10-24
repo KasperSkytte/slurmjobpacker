@@ -320,7 +320,9 @@ function target(v, t) {
 
 let state = null;
 function apply(s) {
+  const packerWas = state && state.packer;
   state = s;
+  if (packerWas !== s.packer) renderOptions();   // the O option, or not
   fillFilters(s);
   for (const n of s.nodes) nodeMpc[n.name] = n.mem / n.cpus;
   if (!W) resize();
@@ -824,7 +826,9 @@ function optionRows() {
     { key: "e", text: "colour jobs by CPU efficiency", get: () => colorMode === "cpu", toggle: toggleEff },
     { key: "p", text: "jobs waiting for one node at that node", get: () => pinAtNode, toggle: togglePinned },
     { key: "a", text: "all waiting jobs (else top 50, 10 per node)", get: () => allWaiting, toggle: toggleAll },
-    { key: "o", text: "partitions not managed by slurmjobpacker", get: () => showOthers, toggle: toggleOthers },
+    // without slurmjobpacker (sjp-viz --no-packer) there are no such partitions
+    ...(state && state.packer === false ? [] :
+      [{ key: "o", text: "partitions not managed by slurmjobpacker", get: () => showOthers, toggle: toggleOthers }]),
     { key: "l", text: "job labels", get: () => showLabels, toggle: () => { showLabels = !showLabels; } },
     { key: "click", text: "a job's or a reservation's details" },
     { key: "h", text: "hide the panels" }, { key: "?", text: "open or close these options" }];

@@ -19,6 +19,11 @@ An example role that installs slurmjobpacker (sjp) on your Slurm controllers:
 - after an upgrade, restarts `sjpd` and, if `sjp_reconfigure_slurm` is true, runs
   `scontrol reconfigure` so `slurmctld` loads the new `sjp.lua`.
 
+Only the visualizer: `sjp_packer_enabled: false` with `sjp_viz_enabled: true` installs the
+checkout, `sjp.toml` and `sjp-viz` (started with `--no-packer`) on `sjp_daemon_host`, and
+nothing of the packer: no `sjpd` (an `sjpd` from before is stopped and disabled), no
+disable file, no `job_submit.lua` checks, no `scontrol reconfigure`.
+
 It never changes `slurm.conf`. If you keep your own `job_submit.lua`, add the
 `sjp.place()` call to it yourself (see the main README) and set
 `sjp_reconfigure_slurm: true`.
@@ -42,6 +47,18 @@ Copy this folder to your roles path as `slurmjobpacker`, then:
             mode: enforce
           limits:
             mode: global
+```
+
+The visualizer on its own:
+
+```yaml
+- hosts: slurm_controllers[0]
+  become: true
+  roles:
+    - role: slurmjobpacker
+      vars:
+        sjp_packer_enabled: false
+        sjp_viz_enabled: true
 ```
 
 All variables and their defaults are in [`defaults/main.yml`](defaults/main.yml).

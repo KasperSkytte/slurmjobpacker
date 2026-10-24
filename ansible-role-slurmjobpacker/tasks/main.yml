@@ -1,4 +1,10 @@
 ---
+- name: Require the packer or the visualizer
+  ansible.builtin.assert:
+    that: (sjp_packer_enabled | bool) or (sjp_viz_enabled | bool)
+    fail_msg: sjp_packer_enabled and sjp_viz_enabled are both false; there is nothing to install.
+    quiet: true
+
 - name: Check that Python is 3.11 or newer
   ansible.builtin.command: "{{ sjp_python }} -c 'import sys; sys.exit(sys.version_info < (3, 11))'"
   changed_when: false
@@ -28,6 +34,7 @@
     mode: "0755"
 
 - name: Set or remove the disable file
+  when: sjp_packer_enabled | bool
   ansible.builtin.file:
     path: "{{ sjp_config_dir }}/disable"
     state: "{{ 'touch' if sjp_disabled else 'absent' }}"
@@ -42,6 +49,7 @@
   changed_when: false
   failed_when: sjp_lua_plugin.rc > 1
   check_mode: false
+  when: sjp_packer_enabled | bool
 
 - name: Require JobSubmitPlugins=lua outside observe mode
   ansible.builtin.assert:
@@ -51,14 +59,16 @@
       runs job_submit.lua and sjp places no jobs. Add it and run scontrol reconfigure.
       (If it is set in a file that slurm.conf includes, set sjp_slurm_conf to that file.)
     quiet: true
-  when: ((sjp_config.general | default({})).mode | default('observe')) != 'observe'
+  when:
+    - sjp_packer_enabled | bool
+    - ((sjp_config.general | default({})).mode | default('observe')) != 'observe'
 
 - name: Warn that sjp will not place jobs without JobSubmitPlugins=lua
   ansible.builtin.debug:
     msg: >-
       {{ sjp_slurm_conf }} has no JobSubmitPlugins=lua line. That is fine in
       observe mode, but add it before switching to advise or enforce.
-  when: sjp_lua_plugin.rc != 0
+  when: sjp_packer_enabled | bool and sjp_lua_plugin.rc != 0
 
 - name: Install the example job_submit.lua
   ansible.builtin.template:
@@ -68,8 +78,8 @@
     group: root
     mode: "0644"
     backup: true
-  when: sjp_job_submit_install | bool
+  when: sjp_packer_enabled | bool and sjp_job_submit_install | bool
 
-- name: Install sjpd
+- name: Install sjpd and sjp-viz
   ansible.builtin.include_tasks: daemon.yml
   when: inventory_hostname == sjp_daemon_host

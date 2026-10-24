@@ -583,7 +583,10 @@ const waitingTitle = s => {
   return total > shown ? `Waiting (top ${shown} by priority)` : allWaiting ? `Waiting (all ${total})` : "Waiting";
 };
 function apply(s) {
-  state = s; horizon = s.horizon || horizon;
+  const packerWas = state && state.packer;
+  state = s;
+  horizon = s.horizon || horizon;
+  if (packerWas !== s.packer) renderOptions();   // the O option, or not
   fillFilters(s);
   for (const n of s.nodes) nodeMpc[n.name] = n.mem / n.cpus;
   layoutNodes(shownNodes(s));
@@ -851,7 +854,9 @@ function optionRows() {
     { key: "e", text: "colour jobs by CPU efficiency", get: () => colorMode === "cpu", toggle: toggleEff },
     { key: "p", text: "jobs waiting for one node at that node", get: () => pinAtNode, toggle: togglePinned },
     { key: "a", text: "all waiting jobs (else top 50, 10 per node)", get: () => allWaiting, toggle: toggleAll },
-    { key: "o", text: "partitions not managed by slurmjobpacker", get: () => showOthers, toggle: toggleOthers },
+    // without slurmjobpacker (sjp-viz --no-packer) there are no such partitions
+    ...(state && state.packer === false ? [] :
+      [{ key: "o", text: "partitions not managed by slurmjobpacker", get: () => showOthers, toggle: toggleOthers }]),
     { key: "l", text: "job labels", get: () => showLabels, toggle: () => { showLabels = !showLabels; } },
     { key: "r", text: "rotate", get: () => controls.autoRotate, toggle: () => { controls.autoRotate = !controls.autoRotate; } },
     { key: "drag", text: "turn" }, { key: "right-drag", text: "move (or Ctrl+drag)" },

@@ -135,6 +135,21 @@ sudo systemctl daemon-reload && sudo systemctl enable --now sjp-viz
 With the Ansible role, set `sjp_viz_enabled: true`. See
 [Visualizer](https://github.com/KasperSkytte/slurmjobpacker/wiki/Visualizer) for more.
 
+### The visualizer on its own
+
+`sjp-viz` also works without the packer: it only reads from Slurm, and needs neither
+`sjpd`, `job_submit.lua` nor `sjp.toml`. Clone the repository (see
+[Installation](#installation)), then run it with `--no-packer`, so no partition is
+marked as not managed by slurmjobpacker:
+
+```sh
+python3 -m sjp.viz --no-packer
+```
+
+As a service, add `--no-packer` to the `ExecStart` line of `systemd/sjp-viz.service`
+before installing it as above. With the Ansible role, set `sjp_packer_enabled: false` and
+`sjp_viz_enabled: true`.
+
 ## Limitations
 
 Currently, sjp places single-node batch jobs only; jobs asking for several nodes, GPUs, node

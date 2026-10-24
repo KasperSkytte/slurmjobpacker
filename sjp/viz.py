@@ -122,6 +122,15 @@ def build_state(cfg, nodes: dict, parts: dict, jobs: list, now: float, mode="liv
                 pending_total=len(pending), queued_total=len(queued), top=TOP)
 
 
+def without_packer(state: dict) -> dict:
+    """The page's state for sjp-viz on its own, without slurmjobpacker: no
+    partition is set apart as one it does not manage."""
+    out = dict(state, packer=False)
+    for key in ("nodes", "running", "pending"):
+        out[key] = [dict(x, managed=True) for x in state.get(key, [])]
+    return out
+
+
 def reservations(shown, nodes, resvs, jobs, now):
     """Each shown node's reservations, now or to come: name, start, end, the CPUs
     reserved there (all of them for a whole node, else its cores x threads),
@@ -255,8 +264,10 @@ class Live:
 
     version = __version__        # the version shown; main() asks git for it
 
-    def __init__(self, cfg, interval: float, use_interval: float = 60.0, use_file: str = ""):
+    def __init__(self, cfg, interval: float, use_interval: float = 60.0, use_file: str = "",
+                 packer: bool = True):
         self.cfg, self.interval, self.use_interval = cfg, interval, use_interval
+        self.packer = packer     # False: sjp-viz on its own; no sjp marks to read
         self.state = dict(mode="live", now=time.time(), horizon=HORIZON, nodes=[],
                           running=[], pending=[], pending_total=0, error="starting")
         self.lock = threading.Lock()
@@ -272,8 +283,8 @@ class Live:
                         accounts, accounts_at = slurm.accounts(), time.time()
                     except slurm.SlurmError:
                         accounts_at = time.time() - 540     # try again in a minute
-                try:
-                    notes = slurm.admin_comments()   # sjp's marks, for a job's details
+                try:                                 # sjp's marks, for a job's details
+                    notes = slurm.admin_comments() if self.packer else {}
                 except slurm.SlurmError:
                     notes = {}
                 s = build_state(self.cfg, slurm.nodes(), slurm.partitions(),
@@ -598,13 +609,14 @@ class Demo:
                         accounts=sorted(set(DEMO_ACCOUNTS.values())))
 
 
-def serve(source, bind: str, port: int):
+def serve(source, bind: str, port: int, packer: bool = True):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             url = urlparse(self.path)
             pages = {"/": HTML, "/index.html": HTML, "/2d": HTML_2D}
             if url.path == "/state.json":
-                body, kind = json.dumps(source.get()).encode(), "application/json"
+                state = source.get() if packer else without_packer(source.get())
+                body, kind = json.dumps(state).encode(), "application/json"
             elif url.path == "/usage.json":      # one running job's samples
                 jid = parse_qs(url.query).get("job", [""])[0]
                 body, kind = json.dumps(source.history(jid)).encode(), "application/json"
@@ -645,6 +657,9 @@ def main(argv=None):
     ap.add_argument("--usage-file", default="/var/lib/sjp-viz/usage.jsonl",
                     help="where the usage history is kept across restarts (default "
                          "/var/lib/sjp-viz/usage.jsonl; empty: in memory only)")
+    ap.add_argument("--no-packer", action="store_true",
+                    help="sjp-viz on its own, without slurmjobpacker placing jobs: every "
+                         "partition is shown alike, none as not managed by slurmjobpacker")
     ap.add_argument("--demo", action="store_true", help="a simulated cluster instead")
     ap.add_argument("--speed", type=float, default=900.0,
                     help="demo: simulated seconds per real second (default 900)")
@@ -666,12 +681,12 @@ def main(argv=None):
     source = (Demo(cfg, a.speed, a.seed, a.load, slim=a.slim, fat=a.fat, pinned=a.pinned,
                    interactive=a.interactive, gpu=a.gpu)
               if a.demo
-              else Live(cfg, a.interval, a.usage_interval, a.usage_file))
+              else Live(cfg, a.interval, a.usage_interval, a.usage_file, packer=not a.no_packer))
     source.version = describe()          # the release, or where a checkout is
     threading.Thread(target=source.run, daemon=True).start()
     if not a.demo:
         threading.Thread(target=source.sample_usage, daemon=True).start()
-    serve(source, a.bind, a.port)
+    serve(source, a.bind, a.port, packer=not a.no_packer)
 
 
 if __name__ == "__main__":

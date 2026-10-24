@@ -16,6 +16,7 @@
     group: root
     mode: "0644"
   notify: Restart sjpd
+  when: sjp_packer_enabled | bool
 
 - name: Enable and start sjpd
   ansible.builtin.systemd:
@@ -23,6 +24,16 @@
     enabled: "{{ sjp_service_enabled }}"
     state: "{{ sjp_service_state }}"
     daemon_reload: true
+  when: sjp_packer_enabled | bool
+
+# The visualizer only: an sjpd from before stops (it would place jobs).
+- name: Stop and disable sjpd, if it was installed
+  ansible.builtin.systemd:
+    name: sjpd
+    enabled: false
+    state: stopped
+  failed_when: false
+  when: not sjp_packer_enabled | bool
 
 - name: Install the sjp-viz systemd unit
   ansible.builtin.template:
