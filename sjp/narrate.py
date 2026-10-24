@@ -172,6 +172,8 @@ def render(r) -> str | None:
         return action(r)
     if ev == "preflight":
         return preflight(r)
+    if ev == "waiting":
+        return f"{_clock(r['ts'])}  job {r['jobid']}: {r['why']}"
     if ev == "error":
         return f"{_clock(r['ts'])}  ERROR in {r.get('where')}: {r.get('detail')}"
     if ev == "start":

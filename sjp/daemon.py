@@ -68,6 +68,7 @@ class Daemon:
         self.flexed: dict = {}       # jobid -> (when, node, cpus, mem): moved to the flex
                                      # QOS this run, not seen running yet
         self.flex_seen: dict = {}    # jobid -> when flex mode last moved it either way
+        self.explained: dict = {}    # jobid -> why sjp leaves it as it is, last logged
         self.pin_from: dict = {}     # (jobid, pinned node) -> sjp's partitions before
                                      # its pin, or None for the user's own --nodelist
         self.flex_users = None       # (read at, {(user, account): {qos}}), a cache
@@ -835,6 +836,14 @@ class Daemon:
         return "pin" in marks or (self.cfg["policy"]["user_nodes"] == "ignore" and bool(
             marks.keys() & {"placed", "released"} or marks.get("skipped") in self.TAKE_OVER))
 
+    def explain(self, j, why: str):
+        """Log why sjp leaves a pending job as it is, when that changes: every
+        pending job sjp looks at is accounted for, without a line per job each
+        minute."""
+        if self.explained.get(j["jobid"]) != why:
+            self.explained[j["jobid"]] = why
+            self.log("waiting", jobid=j["jobid"], reason=j.get("reason", ""), why=why)
+
     def recheck(self, jobs, now):
         """Make sjp's choice again for every pending job it placed: jobs that
         started, ended or were cancelled since have changed what fits where. A
@@ -844,10 +853,17 @@ class Daemon:
         for it first. Highest priority first; each move is counted against a
         node's free space, so the moves never add up to more than the cluster
         can start. Jobs past their starvation budget are left to the
-        starvation guard."""
+        starvation guard.
+
+        A job held by a limit (a QOS or association CPU cap) is not waiting for
+        room, so a pin sjp gave it to wait for room is released, back to its
+        partitions: when the limit lets it go, it starts wherever there is room
+        then, or waits pinned again from the next recheck."""
         s = self.snap
         if s is None:
             return
+        live = {j["jobid"] for j in jobs if j["state"] == "PD"}
+        self.explained = {k: v for k, v in self.explained.items() if k in live}
         wait = s.get("ends") is not None
         nf = {n: list(v) for n, v in s["node_free"].items()}
         if s.get("claimed") is not None:
@@ -861,7 +877,8 @@ class Daemon:
         notes = None
         for j in sorted(jobs, key=lambda j: -j.get("priority", 0)):
             jid = j["jobid"]
-            if (j["state"] != "PD" or j["reason"] not in self.RECHECK_REASONS
+            held = j["reason"] in slurm.LIMIT_REASONS
+            if (j["state"] != "PD" or (j["reason"] not in self.RECHECK_REASONS and not held)
                     or j.get("gpu") or j.get("features") or j.get("reservation")
                     or j.get("nnodes", 1) > 1 or jid in self.widened
                     or self.past_budget(j, now)):
@@ -884,6 +901,19 @@ class Daemon:
             if not ours and marks.get("skipped") not in self.TAKE_OVER:
                 continue
             pinned = j.get("req_nodes") or ""
+            if held:
+                if pinned and "pin" in marks:
+                    base = [p for p in marks.get("from", "").split(",") if p] or current
+                    note2 = slurm.rename_mark(note, "pin", "released", drop=("eta",))
+                    argvs = slurm.cmd_release_pin(jid, ",".join(base), note2)
+                    self.intend("release_pin", " && ".join(slurm.cmdline(a) for a in argvs),
+                                f"held by {j['reason']}, not waiting for room: pinned, it would "
+                                f"wait for {pinned} even where another node has room once the "
+                                f"limit lets it go",
+                                self.blocked(("enforce",)),
+                                lambda argvs=argvs: all([self.apply_retrying(a) for a in argvs]),
+                                jobid=jid, node=pinned, parts=",".join(base))
+                continue                 # the limit decides; flex mode may move it
             if pinned and "eta" not in marks and ("pin" in marks or not self.nodes_ours(marks)):
                 continue                 # a pin release_pins handles, or the user's own --nodelist
             # sjp's own choice, before any pin narrowed it to one node's partitions
@@ -956,6 +986,16 @@ class Daemon:
                 if pinned in nf:         # stays where it waits
                     nf[pinned][0] -= cpus
                     nf[pinned][1] -= mem
+                if fits:
+                    self.explain(j, f"left in {','.join(current)}: it fits there, on "
+                                    f"{', '.join(sorted(fits)[:3])}, when its turn comes")
+                elif target:
+                    self.explain(j, f"still waiting for {pinned}: no node in {','.join(base)} "
+                                    f"has room for {cpus} CPUs x {mem} MB now, and none is "
+                                    f"expected to have room sooner")
+                else:
+                    self.explain(j, f"no node in {','.join(base)} has room for {cpus} CPUs x "
+                                    f"{mem} MB now" + ("" if wait else "; it waits in its partitions"))
                 continue
             nf[target][0] -= cpus
             nf[target][1] -= mem
@@ -1078,6 +1118,13 @@ class Daemon:
                 with self.sh.lock:
                     jobs = list(self.sh.jobs)
                 self.flex(pend, nf, time.time(), later, jobs)
+            else:
+                for j in pend:
+                    if j["reason"] in slurm.CAP_REASONS:
+                        self.explain(j, f"held by {j['reason']}; not moved to QOS "
+                                        f"{self.cfg['limits']['flex_qos_name']} while only "
+                                        f"{idle_frac:.0%} of the cluster is idle (min_idle_share "
+                                        f"{self.cfg['limits']['min_idle_share']:.0%})")
         if self.cfg["limits"]["mode"] == "global":
             for qos in set(held) | set(self.limiters):
                 lim = self.limiter(qos)
@@ -1129,12 +1176,18 @@ class Daemon:
             jid = j["jobid"]
             if (j["reason"] not in slurm.CAP_REASONS or j["qos"] == target
                     or j.get("gpu") or j.get("nnodes", 1) > 1
-                    or now - self.flex_seen.get(jid, float("-inf")) < c["cooldown_seconds"]):
+                    or now - self.flex_seen.get(jid, float("-inf")) < c["flex_retry_after"]):
                 continue
             cpus, mem = max(1, j["cpus"]), j.get("req_mem") or j["mem"]
             if ((cap_u is not None and in_u[j["user"]] + cpus > cap_u)
                     or (cap_a is not None and in_a[j["account"]] + cpus > cap_a)):
-                continue                 # the flex QOS is full for them: it would only wait there
+                # the flex QOS is full for them: it would only wait there
+                over = (f"user {j['user']} has {in_u[j['user']]:.0f} CPUs in it (cap {cap_u})"
+                        if cap_u is not None and in_u[j["user"]] + cpus > cap_u else
+                        f"account {j['account']} has {in_a[j['account']]:.0f} CPUs in it (cap {cap_a})")
+                self.explain(j, f"held by {j['reason']}; not moved to QOS {target}: {over}, "
+                                f"no room there for {cpus} more")
+                continue
             pinned = j.get("req_nodes") or ""
             if pinned and (jid, pinned) not in self.pin_from:
                 try:
@@ -1153,8 +1206,12 @@ class Daemon:
             fits = [n for n, (fc, fm, ps) in free.items()
                     if fc - soon.get(n, (0, 0))[0] >= cpus
                     and fm - soon.get(n, (0, 0))[1] >= mem and ps & parts]
-            if not fits or not self.flex_allowed(j["user"], j["account"], target):
+            if not fits:
+                self.explain(j, f"held by {j['reason']}; not moved to QOS {target}: no node in "
+                                f"{','.join(sorted(parts))} has room for {cpus} CPUs x {mem} MB now")
                 continue
+            if not self.flex_allowed(j["user"], j["account"], target):
+                continue                 # logged once per user by flex_allowed
             node = min(fits, key=lambda n: free[n][0])      # the tightest fit
             free[node][0] -= cpus
             free[node][1] -= mem
@@ -1242,7 +1299,7 @@ class Daemon:
         self.flexed = {k: v for k, v in self.flexed.items() if k in live}
         self.pin_from = {k: v for k, v in self.pin_from.items() if k[0] in live}
         self.flex_seen = {k: v for k, v in self.flex_seen.items()
-                          if now - v < c["cooldown_seconds"]}
+                          if now - v < c["flex_retry_after"]}
 
     def follow_admin(self, qos, lim, change, before):
         """Caps an admin set by hand win. Before a pulse, its base is re-read from

@@ -116,7 +116,8 @@ DEFAULTS: dict = {
         #            with the caps you want on top of the normal ones, and allow
         #            it for every user (sacctmgr ... set qos+=flex); jobs of users
         #            who may not use it are not moved, and the log names them. A
-        #            moved job that has not started within flex_revert_after goes back.
+        #            moved job that has not started within flex_revert_after goes back,
+        #            and is tried again flex_retry_after later.
         "mode": "off",
         # While a pulse is on, the real caps are kept here, so that if sjpd stops
         # mid-pulse the next start restores them rather than taking the raised
@@ -135,6 +136,7 @@ DEFAULTS: dict = {
         "cooldown_seconds": 300.0,    # minimum time at base between pulses
         "flex_qos_name": "flex",      # flex mode moves held jobs into this QOS
         "flex_revert_after": 60.0,    # seconds a moved job may stay pending there
+        "flex_retry_after": 60.0,     # seconds after a job went back before it is tried again
     },
 }
 

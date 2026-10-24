@@ -404,6 +404,15 @@ try:
     ran.clear()
     d.flex(pend, nf10, 110.0)
     check("a moved job is not moved again during the cooldown", ran == [])
+    # Moved back, still held: tried again once flex_retry_after (60 s) has passed.
+    d2 = daemon.Daemon(cfg); d2.log_fh = io.StringIO(); d2.mode = "enforce"
+    d2.flex_seen = {"1": 100.0}
+    d2.flex([fj("1", 48, 9)], nf10, 130.0)
+    tried = [a[2] for a in ran]
+    d2.flex([fj("1", 48, 9)], nf10, 100.0 + cfg["limits"]["flex_retry_after"] + 1)
+    check("a job moved back is tried again after flex_retry_after (60 s), not before",
+          tried == [] and [a[2] for a in ran] == ["jobid=1"], str([a[2] for a in ran]))
+    ran.clear()
     pend2 = [fj("1", 48, 9, qos="flex"), fj("5", 8, 9, qos="flex")]
     notes["1"] = "sjp:placed;qos=normal>flex"
     d.unflex(pend2, 120.0)
@@ -436,6 +445,11 @@ try:
     d.flex([fj("20", 16, 9), fj("21", 8, 8), fj("22", 4, 7)], nf10, 2000.0, None, running)
     check("only what the flex QOS's per-user cap still has room for moves",
           [a[2] for a in ran] == ["jobid=21"], str([a[2] for a in ran]))
+    check("and the log says why the others stay",
+          "job 20: held by QOSMaxCpuPerUserLimit; not moved to QOS flex: user u has 32 CPUs "
+          "in it (cap 40), no room there for 16 more" in d.log_fh.getvalue()
+          or '"jobid":"20"' in d.log_fh.getvalue() and "user u has 32 CPUs in it (cap 40)"
+          in d.log_fh.getvalue(), d.log_fh.getvalue()[-600:])
     d.qos_caps.clear(); flex_caps["flex"] = (80, None); ran.clear()
     d.flex([fj("20", 16, 9), fj("22", 4, 7)], nf10, 2001.0, None, running)
     check("raise the flex caps and the waiting jobs move, counting the one moved before",
@@ -911,6 +925,25 @@ try:
     check("and none can hold it: it keeps waiting",
           policy.room_elsewhere(8, 32768, {"slim1": (64, 256000), "fat1": (4, 1024000)},
                                 d.snap["node_free"]) == [])
+    # Held by a QOS cap while pinned to wait for room: not waiting for room, so
+    # the pin goes and the job is back in its partitions.
+    d.snap["cap"] = {}
+    d.log_fh = io.StringIO(); applied.clear()
+    d.recheck([dict(wjob("2", "a", 20), reason="QOSMaxCpuPerUserLimit")], now)
+    check("a job held by a QOS cap loses the pin it waited for room on",
+          [a[2:] for a in applied] == [
+              ["jobid=2", "reqnodelist="],
+              ["jobid=2", "partition=slim1",
+               "admincomment=sjp:released=a;from=slim1;job=8c,32G,4.0G/c;v=3;room=no"]],
+          str(applied))
+    # Every pending job sjp leaves as it is is accounted for in the log, once.
+    d.log_fh = io.StringIO(); applied.clear()
+    for _ in range(3):                    # job 1 takes b, so job 2 stays waiting for a
+        d.recheck([wjob("1", "", 30), wjob("2", "a", 20)], now)
+    said = [json.loads(l) for l in d.log_fh.getvalue().splitlines()
+            if '"waiting"' in l and '"jobid":"2"' in l]
+    check("why a job keeps waiting is logged when it changes, not every recheck",
+          len(said) == 1 and said[0]["why"].startswith("still waiting for a"), str(said))
 finally:
     slurm.admin_comments, policy.plugin_lookup, slurm.apply = real_acs, real_lookup, real_apply
 
