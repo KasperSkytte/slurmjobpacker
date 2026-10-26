@@ -571,6 +571,13 @@ document.getElementById("busy-ramp").style.background = "linear-gradient(90deg,"
 const byQueue = (a, b) => (b.priority || 0) - (a.priority || 0)
   || (parseInt(a.id) || 0) - (parseInt(b.id) || 0) || String(a.id).localeCompare(String(b.id));
 
+// Running jobs on a node: the longest running first, then by job ID; an array
+// task by its array's ID, then its task number ("12_3": 12, then 3).
+const idKey = id => String(id).split("_").map(x => parseInt(x) || 0);
+const started = j => j.start != null ? j.start : j.end - j.minutes * 60;
+const byStart = (a, b) => started(a) - started(b)
+  || idKey(a.id)[0] - idKey(b.id)[0] || (idKey(a.id)[1] || 0) - (idKey(b.id)[1] || 0);
+
 // "Waiting", or which part of a longer queue is shown.
 const queued = s => shownPending(s).filter(j => !(pinAtNode && j.pinned) && matches(j)).sort(byQueue);
 // The top 50 (s.top) of the queue and the top 10 waiting at each node, or all (a).
@@ -598,7 +605,7 @@ function apply(s) {
   const fresh = new Map(s.nodes.map(n => [n.name, n]));
   for (const [name, nv] of nodeViews) {
     if (fresh.has(name)) nodeState(nv, fresh.get(name));
-    const js = (byNode.get(name) || []).sort((a, b) => (+a.id || 0) - (+b.id || 0) || String(a.id).localeCompare(String(b.id)));
+    const js = (byNode.get(name) || []).sort(byStart);
     let cx = 0, cy = 0, cg = 0;
     for (const j of js) {
       const key = "r:" + j.id + "@" + name;
@@ -613,7 +620,7 @@ function apply(s) {
       }
       v.job = j;
       const w = sx(j.cpus), h = sy(j.mem), d = sz(j.minutes * 60);
-      v.tran = Math.min(1, sz(s.now - (j.end - j.minutes * 60)) / Math.max(d, 1e-9));
+      v.tran = Math.min(1, sz(s.now - started(j)) / Math.max(d, 1e-9));
       if (v.opacity === 0) v.ran = v.tran;           // new: no fill animation
       const o = nv.group.getWorldPosition(new THREE.Vector3());
       place(v, o.x + sx(cx), o.y + sy(cy), o.z - d, w, h, d);
@@ -780,7 +787,7 @@ function select(v) {
                      : j.pinned ? `waiting for ${j.pinned} (${j.reason})` : `waiting (${j.reason})`],
     ["CPUs", (+j.cpus).toFixed(j.cpus % 1 ? 1 : 0)], ["Memory", gb(j.mem)], ["Memory / CPU", gbc(mpc)],
     ...(j.gpus ? [["GPUs", (+j.gpus).toFixed(j.gpus % 1 ? 1 : 0)]] : []),
-    running ? ["Time", `${dur(state.now - j.end + j.minutes * 60)} of ${dur(j.minutes * 60)}, ${dur(j.end - state.now)} left`]
+    running ? ["Time", `${dur(state.now - started(j))} of ${dur(j.minutes * 60)}, ${dur(j.end - state.now)} left`]
             : ["Time limit", dur(j.minutes * 60)],
     ...(running ? [] : [["Priority", j.priority == null ? "–" : Math.round(j.priority)]]),
     ["Partition", j.partition || "–"], ["QOS", j.qos],

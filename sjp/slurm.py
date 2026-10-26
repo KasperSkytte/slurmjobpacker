@@ -160,7 +160,7 @@ PENDING_FMT = ("JobID:|,UserName:|,Account:|,NumCPUs:|,MinMemory:|,"
 # or array task ("12", "12_3").
 QUEUE_FMT = PENDING_FMT + (",StateCompact:|,tres-alloc:|,ReqNodes:|,NodeList:|,"
                            "SubmitTime:|,NumTasks:|,EligibleTime:|,Feature:|,EndTime:|,Reservation:|,"
-                           "ExcNodes:|,JobArrayID:|,LastSchedEval:|")
+                           "ExcNodes:|,JobArrayID:|,LastSchedEval:|,StartTime:|")
 
 
 def queue(states: str = "PD,R,CF") -> list[dict]:
@@ -200,7 +200,9 @@ def queue(states: str = "PD,R,CF") -> list[dict]:
                             reservation="" if f[20] == "(null)" else f[20],
                             exc_nodes="" if f[21] == "(null)" else f[21],
                             # when Slurm's scheduler last looked at it (None: not yet)
-                            last_eval=_epoch(f[23]) if len(f) > 23 else None))
+                            last_eval=_epoch(f[23]) if len(f) > 23 else None,
+                            # a running job's start (a waiting one's is Slurm's guess)
+                            start=_epoch(f[24]) if len(f) > 24 else None))
         except ValueError:
             continue
     if txt.strip() and not out:

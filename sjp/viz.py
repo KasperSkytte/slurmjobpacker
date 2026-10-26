@@ -102,9 +102,10 @@ def build_state(cfg, nodes: dict, parts: dict, jobs: list, now: float, mode="liv
             nn = max(len(slurm.expand_hostlist(j["nodelist"])), 1)
             mem = j.get("req_mem") or j["mem"]
             end = j.get("end") or now + j["timelimit"] * 60
+            start = j.get("start") or end - j["timelimit"] * 60
             for n in on:
                 running.append(dict(info, node=n, cpus=j["cpus"] / nn, mem=mem,
-                                    gpus=j.get("gpus", 0) / nn, end=end, nodes=nn))
+                                    gpus=j.get("gpus", 0) / nn, start=start, end=end, nodes=nn))
         elif j["state"] == "PD":
             # pinned: waiting for one node (sjp's pin, or the user's --nodelist)
             req = slurm.expand_hostlist(j.get("req_nodes") or "")
@@ -315,7 +316,7 @@ class Live:
         while self.use_interval:
             with self.lock:
                 running = self.state.get("running", [])
-            starts = {r["id"]: r["end"] - r["minutes"] * 60 for r in running}
+            starts = {r["id"]: r["start"] for r in running}
             try:
                 if starts:
                     self.use.add(time.time(), slurm.usage(sorted(starts)), starts)
@@ -367,7 +368,7 @@ def demo_use(j: dict, now: float, points: int = 0):
     its start to now, (time, CPUs busy, memory MB). Smooth wiggles from its
     seed, so every look at it agrees."""
     cpu_share, mem_share, seed = j["use"]
-    start = j["end"] - j["minutes"] * 60
+    start = j.get("start", j["end"] - j["minutes"] * 60)
     def at(t):
         x = (t - start) / max(j.get("runtime", j["minutes"] * 60), 1)
         wig = 0.6 * math.sin(t / 2900 + seed) + 0.4 * math.sin(t / 830 + 3 * seed)
@@ -508,7 +509,8 @@ class Demo:
                          if j["target"] in ps and fc >= j["cpus"] and fm >= j["mem"] and fg >= j["gpus"]), None)
             if node:
                 self.pending.remove(j)
-                self.running.append(dict(j, node=node, nodes=1, end=self.now + j["minutes"] * 60,
+                self.running.append(dict(j, node=node, nodes=1, start=self.now,
+                                         end=self.now + j["minutes"] * 60,
                                          done=self.now + j["runtime"], pinned=""))
         for j in [j for j in self.pending if not j.get("target")]:
             free = self._free()
@@ -536,7 +538,7 @@ class Demo:
                                                             self.demand), n))
             self.pending.remove(j)
             self.running.append(dict(j, node=node, nodes=1, partition=",".join(allowed),
-                                     end=self.now + j["minutes"] * 60,
+                                     start=self.now, end=self.now + j["minutes"] * 60,
                                      done=self.now + j["runtime"], pinned=""))
         self._pin(tiers)
 

@@ -217,6 +217,12 @@ document.getElementById("busy-ramp").style.background = "linear-gradient(90deg,"
 // The top 50 (state.top) of the queue and the top 10 waiting at each node, or all (a).
 const cap = s => allWaiting ? Infinity : (s.top || 50);
 const PER_NODE = 10;
+// Running jobs on a node: the longest running first, then by job ID; an array
+// task by its array's ID, then its task number ("12_3": 12, then 3).
+const idKey = id => String(id).split("_").map(x => parseInt(x) || 0);
+const started = j => j.start != null ? j.start : j.end - j.minutes * 60;
+const byStart = (a, b) => started(a) - started(b)
+  || idKey(a.id)[0] - idKey(b.id)[0] || (idKey(a.id)[1] || 0) - (idKey(b.id)[1] || 0);
 // squeue's order, for the queue when it holds pinned jobs too: priority, then job ID.
 const byQueue = (a, b) => (b.priority || 0) - (a.priority || 0)
   || (parseInt(a.id) || 0) - (parseInt(b.id) || 0) || String(a.id).localeCompare(String(b.id));
@@ -339,8 +345,7 @@ function apply(s) {
     // reservation's unused cores: the reservation is one block on the CPU bar.
     const held = (n.resv || []).filter(v => v.active).map(v => v.name);
     const group = j => j.reservation ? 1 + Math.max(held.indexOf(j.reservation), 0) : 0;
-    const js = (byNode.get(name) || []).sort((a, b) => group(a) - group(b)
-      || (+a.id || 0) - (+b.id || 0) || String(a.id).localeCompare(String(b.id)));
+    const js = (byNode.get(name) || []).sort((a, b) => group(a) - group(b) || byStart(a, b));
     let cx = 0, cm = 0, cg = 0;
     const block = {};                  // reservation -> [first CPU of its jobs, their CPUs]
     for (const j of js) {
@@ -754,7 +759,7 @@ function select(v) {
                      : j.pinned ? `waiting for ${j.pinned} (${j.reason})` : `waiting (${j.reason})`],
     ["CPUs", (+j.cpus).toFixed(j.cpus % 1 ? 1 : 0)], ["Memory", gb(j.mem)], ["Memory / CPU", gbc(mpc)],
     ...(j.gpus ? [["GPUs", (+j.gpus).toFixed(j.gpus % 1 ? 1 : 0)]] : []),
-    running ? ["Time", `${dur(state.now - j.end + j.minutes * 60)} of ${dur(j.minutes * 60)}, ${dur(j.end - state.now)} left`]
+    running ? ["Time", `${dur(state.now - started(j))} of ${dur(j.minutes * 60)}, ${dur(j.end - state.now)} left`]
             : ["Time limit", dur(j.minutes * 60)],
     ...(running ? [] : [["Priority", j.priority == null ? "–" : Math.round(j.priority)]]),
     ["Partition", j.partition || "–"], ["QOS", j.qos],
