@@ -71,6 +71,7 @@ class Daemon:
         self.flex_seen: dict = {}    # jobid -> when flex mode last moved it either way
         self.explained: dict = {}    # jobid -> why sjp leaves it as it is, last logged
         self.touched: dict = {}      # jobid -> when sjpd last changed it
+        self.room_seen: dict = {}    # jobid -> (node it waits for, when that had room first)
         self.explain_lock = threading.Lock()   # the queue and act threads both explain
         self.pin_from: dict = {}     # (jobid, pinned node) -> sjp's partitions before
                                      # its pin, or None for the user's own --nodelist
@@ -163,6 +164,15 @@ class Daemon:
         if (executed or "error" in extra) and kw.get("jobid"):
             self.touched[kw["jobid"]] = time.time()     # see settled()
         return None if "error" in extra else executed
+
+    @staticmethod
+    def queue_order(j):
+        """Highest priority first, and among equal ones the lowest job ID (an
+        array's tasks by task number): the same order every time, so jobs that
+        are alike are not given the same room by turns."""
+        head, _, task = str(j["jobid"]).partition("_")
+        return (-j.get("priority", 0), int(head) if head.isdigit() else 0,
+                int(task) if task.isdigit() else 0)
 
     def settled(self, j, now) -> bool:
         """Whether Slurm's scheduler has looked at a job since sjpd last changed
@@ -924,6 +934,7 @@ class Daemon:
         with self.explain_lock:
             self.explained = {k: v for k, v in self.explained.items() if k in live}
         self.touched = {k: v for k, v in self.touched.items() if k in live}
+        self.room_seen = {k: v for k, v in self.room_seen.items() if k in live}
         wait = s.get("ends") is not None
         nf = {n: list(v) for n, v in s["node_free"].items()}
         if s.get("claimed") is not None:
@@ -935,7 +946,7 @@ class Daemon:
                 nf[n][0] -= d["alloc_cpus"]
                 nf[n][1] -= d["alloc_mem"]
         notes = None
-        for j in sorted(jobs, key=lambda j: -j.get("priority", 0)):
+        for j in sorted(jobs, key=self.queue_order):
             jid = j["jobid"]
             held = j["reason"] in slurm.LIMIT_REASONS
             if (j["state"] != "PD" or (j["reason"] not in self.RECHECK_REASONS and not held)
@@ -1011,6 +1022,26 @@ class Daemon:
                 fits = [n for n, (fc, fm, ps) in free.items()
                         if fc >= cpus and fm >= mem and set(ps) & set(would)]
             waited = now - (j.get("eligible") or now)
+            passed = False               # Slurm let it pass on a pinned node with room
+            if pinned in fits:
+                # The node it waits for has room for it now: Slurm starts it there.
+                # Dropping the pin would only let a job like it take the room. Until
+                # Slurm has looked at it once: if it then still waits, Slurm holds
+                # the room for another job or counts it differently, and the job
+                # moves on as below.
+                seen = self.room_seen.get(jid)
+                if not seen or seen[0] != pinned:
+                    seen = self.room_seen[jid] = (pinned, now)
+                ev = j.get("last_eval")
+                passed = (ev is not None and ev > seen[1]) \
+                    or now - seen[1] >= self.cfg["recheck"]["settle_max"]
+                if not passed:
+                    nf[pinned][0] -= cpus
+                    nf[pinned][1] -= mem
+                    self.explain(j, f"waits for {pinned}, which has room for it now")
+                    continue
+            else:
+                self.room_seen.pop(jid, None)
             if fits and (pinned or set(would) != set(current)):
                 node = min(fits, key=lambda n: free[n][0])      # the tightest fit
                 nf[node][0] -= cpus
@@ -1029,7 +1060,8 @@ class Daemon:
                 self.intend("move_partitions", " && ".join(slurm.cmdline(a) for a in argvs),
                             f"pending {waited / 60:.0f} min ({j['reason']}); sjp now chooses "
                             f"{','.join(would)}, and {cpus} CPUs x {mem} MB fit on {node} now"
-                            + (f"; no longer waiting for {pinned}" if pinned else ""),
+                            + (f"; Slurm did not start it on {pinned}, which has room"
+                               if passed else f"; no longer waiting for {pinned}" if pinned else ""),
                             self.blocked(("enforce",)),
                             lambda argvs=argvs: all([self.apply_retrying(a) for a in argvs]),
                             jobid=jid, before=",".join(base), after=",".join(would), node=node)
@@ -1241,7 +1273,7 @@ class Daemon:
         for _, _, cpus, _, user, account in (v for v in self.flexed.values() if len(v) == 6):
             in_u[user] += cpus
             in_a[account] += cpus
-        for j in sorted(pend, key=lambda j: -j["priority"]):
+        for j in sorted(pend, key=self.queue_order):
             jid = j["jobid"]
             if (j["reason"] not in slurm.CAP_REASONS or j["qos"] == target
                     or j.get("gpu") or j.get("nnodes", 1) > 1

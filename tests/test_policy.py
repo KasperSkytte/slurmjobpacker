@@ -973,6 +973,47 @@ try:
     mv = [r for r in recs if r.get("action") == "move_partitions"]
     check("a job waiting where the table chose moves to any partition with room for it now",
           len(mv) == 1 and mv[0]["after"] == "fat1" and mv[0]["node"] == "f", str(recs))
+    # Jobs alike, of equal priority: room for one of them on f. The same one
+    # gets it whatever order squeue lists them in, the lowest job ID.
+    notes.update({k: "sjp:pin=a;from=slim1;job=12c,32G,2.7G/c;v=3;room=no;eta=2.0h"
+                  for k in ("40", "41")})
+    cur["would"] = ["fat1"]
+    first = []
+    def fresh():                 # a daemon of its own: d's state is the next tests'
+        d2 = daemon.Daemon(cfg); d2.log_fh = io.StringIO(); d2.snap = d.snap
+        return d2
+    for order in (("41", "40"), ("40", "41")):
+        d2 = fresh(); applied.clear()
+        d2.recheck([dict(wjob(k, "a", 7), cpus=12) for k in order], now)
+        recs = [json.loads(l) for l in d2.log_fh.getvalue().splitlines()]
+        first.append([r["jobid"] for r in recs if r.get("action") == "move_partitions"])
+    check("jobs alike take room in the same order every time, the lowest job ID first",
+          first == [["40"], ["40"]], str(first))
+    # A job waiting for f, which now has room for it: it stays pinned there.
+    notes["42"] = "sjp:pin=f;from=fat1;job=8c,32G,4.0G/c;v=3;room=no;eta=0.5h"
+    d2 = fresh(); applied.clear()
+    d2.recheck([dict(wjob("42", "f", 9), partition="fat1")], now)
+    recs = [json.loads(l) for l in d2.log_fh.getvalue().splitlines()]
+    check("a job whose pinned node has room for it keeps its pin, for Slurm to start it there",
+          applied == [] and not [r for r in recs if r.get("event") == "action"]
+          and "has room for it now" in str(d2.explained.get("42")),
+          str(recs) + str(d2.explained.get("42")))
+    d2.recheck([dict(wjob("42", "f", 9), partition="fat1", last_eval=now - 1)], now + 60)
+    check("and keeps it while Slurm has not looked at it since",
+          applied == [], str(applied))
+    d2.log_fh = io.StringIO()
+    d2.recheck([dict(wjob("42", "f", 9), partition="fat1", last_eval=now + 30)], now + 60)
+    recs = [json.loads(l) for l in d2.log_fh.getvalue().splitlines()]
+    mv = [r for r in recs if r.get("action") == "move_partitions"]
+    check("once Slurm has looked at it and not started it there, the pin goes",
+          len(mv) == 1 and "did not start it on f" in mv[0]["why"], str(recs))
+    d2 = fresh(); applied.clear()
+    d2.recheck([dict(wjob("42", "f", 9), partition="fat1")], now)
+    d2.recheck([dict(wjob("42", "f", 9), partition="fat1")],
+               now + cfg["recheck"]["settle_max"])
+    check("and goes after settle_max if Slurm never says it looked",
+          ["scontrol", "update", "jobid=42", "reqnodelist="] in applied, str(applied))
+    applied.clear(); cur["would"] = ["slim1"]         # as the tests below expect
     check("and none can hold it: it keeps waiting",
           policy.room_elsewhere(8, 32768, {"slim1": (64, 256000), "fat1": (4, 1024000)},
                                 d.snap["node_free"]) == [])
