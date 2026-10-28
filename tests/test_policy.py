@@ -818,16 +818,32 @@ real_run = slurm._run
 sstat_out = ("7.extern|energy=0|energy=0\n"
              "7.batch|cpu=00:01:40,energy=0,mem=1073741824,pages=0|cpu=00:01:40,mem=2147483648\n"
              "7.0|cpu=1-00:00:00,mem=1073741824|cpu=1-00:00:00,mem=1610612736\n"
-             "12_3.batch|cpu=02:03.5,mem=524288000|cpu=02:03.5,mem=524288000\n")
+             "13.batch|cpu=02:03.5,mem=524288000|cpu=02:03.5,mem=524288000\n"
+             "7.0|cpu=1-00:00:00,mem=1073741824|cpu=1-00:00:00,mem=1610612736\n")
 asked = []
 slurm._run = lambda args, timeout=10.0: asked.append(args) or sstat_out
 try:
-    use = slurm.usage(["7", "12_3", "99"])
+    use = slurm.usage(["7", "13", "99"])
 finally:
     slurm._run = real_run
-check("sstat: CPU time and memory summed over a job's steps, the peak its largest step's",
-      use == {"7": (86500.0, 2048, 2048), "12_3": (123.5, 500, 500)}
-      and asked[0][:2] == ["sstat", "-a"] and "7,12_3,99" in asked[0], str(use))
+check("sstat: CPU time and memory summed over a job's steps, the peak its largest step's,"
+      " a step listed twice counted once",
+      use == {"7": (86500.0, 2048, 2048), "13": (123.5, 500, 500)}
+      and asked[0][:2] == ["sstat", "-a"] and "7,13,99" in asked[0], str(use))
+# An array task is shown as 12_3, sampled by its own job ID, 13.
+lv = viz.Live(cfg, 5.0, use_interval=60.0)
+lv.state = dict(lv.state, running=[dict(id="12_3", rec="13", start=900.0),
+                                   dict(id="7", rec="7", start=900.0)])
+real_usage, slurm.usage = slurm.usage, lambda ids: asked.append(ids) or {
+    "7": (100.0, 512, 600), "13": (50.0, 256, 300), "14": (1.0, 1, 1)}
+try:
+    lv.sample_once()
+finally:
+    slurm.usage = real_usage
+check("an array task's use is read by its own job ID and shown as the task",
+      asked[-1] == ["13", "7"] and lv.use.summary("12_3")["mem"] == 256
+      and lv.use.summary("7")["mem"] == 512 and set(lv.use.jobs) == {"12_3", "7"},
+      str(asked[-1]) + str(lv.use.jobs.keys()))
 check("sstat is a read-only command, allowed in a dry run", slurm._read_only(["sstat", "-j", "1"]))
 ul = viz.UsageLog()
 ul.add(1000.0, {"7": (100.0, 512, 600)}, {"7": 900.0})

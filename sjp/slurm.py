@@ -404,8 +404,11 @@ def _seconds(s: str) -> float:
 def usage(jobids: list[str], chunk: int = 200) -> dict:
     """job ID -> (CPU seconds used so far, memory in use MB, peak memory MB),
     over its running steps (the peak is its largest step's), from sstat. Needs
-    JobAcctGatherType other than none; jobs without a running step are missing."""
-    out = {}
+    JobAcctGatherType other than none; jobs without a running step are missing.
+    Job IDs are the jobs' own (queue()'s id): sstat names an array task by
+    one, never as "12_3". An array's job ID lists all its tasks, so a step
+    may be listed twice; it counts once."""
+    out, seen = {}, set()
     for i in range(0, len(jobids), chunk):
         txt = _run(["sstat", "-a", "-n", "-P", "--noconvert", "-j", ",".join(jobids[i:i + chunk]),
                     "-o", "JobID,TRESUsageInTot,TRESUsageInMax"], timeout=30.0)
@@ -413,8 +416,9 @@ def usage(jobids: list[str], chunk: int = 200) -> dict:
             step, _, rest = line.partition("|")
             tot, _, top = rest.partition("|")
             t = dict(kv.split("=", 1) for kv in tot.split(",") if "=" in kv)
-            if "cpu" not in t:
+            if "cpu" not in t or step in seen:
                 continue                 # the extern step: nothing measured
+            seen.add(step)
             m = dict(kv.split("=", 1) for kv in top.split(",") if "=" in kv)
             jid = step.rpartition(".")[0] or step
             cpu, mem, peak = out.get(jid, (0.0, 0, 0))

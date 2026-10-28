@@ -105,7 +105,8 @@ def build_state(cfg, nodes: dict, parts: dict, jobs: list, now: float, mode="liv
             start = j.get("start") or end - j["timelimit"] * 60
             for n in on:
                 running.append(dict(info, node=n, cpus=j["cpus"] / nn, mem=mem,
-                                    gpus=j.get("gpus", 0) / nn, start=start, end=end, nodes=nn))
+                                    gpus=j.get("gpus", 0) / nn, start=start, end=end, nodes=nn,
+                                    rec=j.get("id", j["jobid"])))
         elif j["state"] == "PD":
             # pinned: waiting for one node (sjp's pin, or the user's --nodelist)
             req = slurm.expand_hostlist(j.get("req_nodes") or "")
@@ -314,16 +315,22 @@ class Live:
         all of them). sstat asks the nodes, so this is kept apart from the
         cluster reads, and less often."""
         while self.use_interval:
-            with self.lock:
-                running = self.state.get("running", [])
-            starts = {r["id"]: r["start"] for r in running}
-            try:
-                if starts:
-                    self.use.add(time.time(), slurm.usage(sorted(starts)), starts)
-                self.use_error = ""
-            except slurm.SlurmError as e:
-                self.use_error = str(e)
+            self.sample_once()
             time.sleep(self.use_interval)
+
+    def sample_once(self):
+        with self.lock:
+            running = self.state.get("running", [])
+        starts = {r["id"]: r["start"] for r in running}
+        shown = {r.get("rec", r["id"]): r["id"] for r in running}   # "13" -> "12_3"
+        try:
+            if starts:
+                used = slurm.usage(sorted(shown))
+                self.use.add(time.time(), {shown[k]: v for k, v in used.items() if k in shown},
+                             starts)
+            self.use_error = ""
+        except slurm.SlurmError as e:
+            self.use_error = str(e)
 
     def history(self, jid: str) -> list:
         return self.use.history(jid)
