@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.20.0](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.19.1...v1.20.0) (2026-10-28)
+
+
+### Features
+
+* an option to colour jobs by their CPU efficiency ([5b604a7](https://github.com/KasperSkytte/slurmjobpacker/commit/5b604a7b017b6b25815b1a0252cec4d6eade2d87))
+* install the visualizer on its own, without the packer ([5f171be](https://github.com/KasperSkytte/slurmjobpacker/commit/5f171be182fc3bb2d3e11b64552f367d8cff7bba))
+* keep jobs' utilization history across sjp-viz restarts ([c83602f](https://github.com/KasperSkytte/slurmjobpacker/commit/c83602fffd3f25f6d073b654b9c2eb97431b625e))
+* name the reservation that keeps a job off a node with room ([71b3824](https://github.com/KasperSkytte/slurmjobpacker/commit/71b38246cd9395eefad9c83e3988cda5db9d1a5b))
+* show partitions slurmjobpacker does not manage, and GPUs, in sjp-viz ([e3ccd7b](https://github.com/KasperSkytte/slurmjobpacker/commit/e3ccd7bfa4ee510f13e146411245cf00899a9336))
+
+
+### Bug Fixes
+
+* group sjp-viz's other nodes without a partition over the whole cluster; set partition names apart in 2D ([d9703d2](https://github.com/KasperSkytte/slurmjobpacker/commit/d9703d2d2d79ce754e0f515633904a10614cad68))
+* leave a job alone after changing it until Slurm has looked at it ([b0dc378](https://github.com/KasperSkytte/slurmjobpacker/commit/b0dc37838fdeaa8100f0c610ac15dd925fb2f694))
+* never forget a job after a failed read or a second pin; failed flex moves claim nothing ([a30a6a3](https://github.com/KasperSkytte/slurmjobpacker/commit/a30a6a3f24baf3baf194089ff58e4e8f529078a2))
+* order running jobs by their start time, read from squeue ([044f02e](https://github.com/KasperSkytte/slurmjobpacker/commit/044f02edd0a3581e0bc0abf92ffd2dc044687fd4))
+* recheck jobs held by a limit, retry flex every minute, and log why a job waits ([58b8dac](https://github.com/KasperSkytte/slurmjobpacker/commit/58b8dac4df60a30c7efa2a1c985def329a211742))
+* show utilization for array tasks, read from sstat by their own job IDs ([bce8b78](https://github.com/KasperSkytte/slurmjobpacker/commit/bce8b781e3123c1262d6bb867cbcce522e3b6005))
+* stop jobs alike from swapping pins at every recheck ([b177bc4](https://github.com/KasperSkytte/slurmjobpacker/commit/b177bc406ae196544e6b38cc25a4e961f0dd3ef5))
+
 ## [1.19.1](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.19.0...v1.19.1) (2026-10-23)
 
 
