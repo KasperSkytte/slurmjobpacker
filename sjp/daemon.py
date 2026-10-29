@@ -1094,14 +1094,19 @@ class Daemon:
                                                s["ends"], now, s["tiers"])
                     if stay[0] and stay[2] <= eta:
                         target = pinned
-            if not target and pinned and pinned not in nf and "eta" in marks:
-                # the node it waits for is gone (down, drained, no longer sjp's)
-                # and none is expected to have room: back to its partitions
+            if not target and pinned and "eta" in marks:
+                # No node is expected to have room for it (reservations in the
+                # way of its time limit, say, or its node gone): a pin would only
+                # claim it waits for that one. Back to its partitions, to start
+                # wherever room opens.
+                gone = "" if pinned in nf else ", which is down, drained or not sjp's"
                 note2 = slurm.rename_mark(note, "pin", "released", drop=("eta",))
                 argvs = slurm.cmd_release_pin(jid, ",".join(base), note2)
                 self.intend("release_pin", " && ".join(slurm.cmdline(a) for a in argvs),
-                            f"waits for {pinned}, which is down, drained or not sjp's, and "
-                            f"no node in {','.join(base)} is expected to have room for it",
+                            f"waits for {pinned}{gone}, but no node in {','.join(base)} is "
+                            f"expected to have room for {cpus} CPUs x {mem} MB"
+                            + self.resv_note(cpus, mem, base, mine, s.get("resv"), now,
+                                             j["timelimit"]),
                             self.blocked(("enforce",)),
                             lambda argvs=argvs: all([self.apply_retrying(a) for a in argvs]),
                             jobid=jid, node=pinned, parts=",".join(base))

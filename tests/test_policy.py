@@ -1063,6 +1063,19 @@ try:
     d2.recheck([dict(wjob("45", "gone", 7), cpus=999)], now)
     check("a job waiting for a node that went away, with none to wait for instead, is released",
           ["scontrol", "update", "jobid=45", "reqnodelist="] in applied, str(applied))
+    # A reservation on every node, before a 14-day job would end: none is
+    # expected to have room for it, so it waits in its partitions, not for a.
+    notes["48"] = notes["43"]
+    d2 = fresh(); applied.clear()
+    d2.snap = dict(d.snap, node_free=dict(d.snap["node_free"], b=(16, 200000, ("slim1",))),
+                   later={n: [(now + 3600, 1000, 10 ** 7)] for n in ("a", "b", "f")},
+                   resv={n: [(now + 3600, "maint")] for n in ("a", "b", "f")})
+    d2.recheck([dict(wjob("48", "a", 7), timelimit=14 * 24 * 60)], now)
+    recs = [json.loads(l) for l in d2.log_fh.getvalue().splitlines()]
+    rel = [r for r in recs if r.get("action") == "release_pin"]
+    check("a job no node is expected to have room for loses its wait pin, the reservation named",
+          ["scontrol", "update", "jobid=48", "reqnodelist="] in applied and len(rel) == 1
+          and "b has room now, but reservation maint starts there" in rel[0]["why"], str(recs))
     applied.clear(); cur["would"] = ["slim1"]         # as the tests below expect
     check("and none can hold it: it keeps waiting",
           policy.room_elsewhere(8, 32768, {"slim1": (64, 256000), "fat1": (4, 1024000)},
