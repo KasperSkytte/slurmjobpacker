@@ -216,6 +216,14 @@ check("a pulse ends early when the cluster fills up",
       lp.observe(0.05, 3, now=500 + H + 5) == (864, 1760), lp.why)
 check("the pulse is released by the reasons squeue really prints",
       slurm.CAP_REASONS == {"QOSMaxCpuPerUserLimit", "MaxCpuPerAccount"})
+lim = ["QOSMaxCpuPerUserLimit", "MaxCpuPerAccount", "AssocGrpMemLimit", "QOSMaxMemoryPerUser",
+       "AssociationJobLimit", "MaxGRESRunMinsPerUser", "AccountingPolicy", "JobArrayTaskLimit"]
+not_lim = ["Resources", "Priority", "ReqNodeNotAvail, UnavailableNodes:a", "Dependency",
+           "JobHeldUser", "QOSNotAllowed", "MaxMemPerLimit", "MaxPoweredUpNodes", ""]
+check("every usage limit Slurm names holds a job, and nothing else does",
+      all(map(slurm.held_by_limit, lim)) and not any(map(slurm.held_by_limit, not_lim)),
+      str([r for r in lim if not slurm.held_by_limit(r)] + [r for r in not_lim
+                                                           if slurm.held_by_limit(r)]))
 
 print("\n10c. each QOS pulses from its own caps, and an interrupted pulse is undone")
 cfg = config.defaults()

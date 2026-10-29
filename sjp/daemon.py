@@ -823,7 +823,7 @@ class Daemon:
         total = s["total"]
         for j in jobs:
             jid = j["jobid"]
-            if (j["state"] != "PD" or j["reason"] in slurm.LIMIT_REASONS
+            if (j["state"] != "PD" or slurm.held_by_limit(j["reason"])
                     or now < self.widened.get(jid, 0) or j.get("gpu")
                     or j.get("nnodes", 1) > 1
                     or j.get("req_nodes") or not j.get("eligible")):
@@ -963,7 +963,7 @@ class Daemon:
         notes = None
         for j in sorted(jobs, key=self.queue_order):
             jid = j["jobid"]
-            held = j["reason"] in slurm.LIMIT_REASONS
+            held = slurm.held_by_limit(j["reason"])
             if j["state"] != "PD":
                 continue
             skip = self.recheck_skip(j, now)
@@ -1232,7 +1232,7 @@ class Daemon:
         waiting = sum(j["cpus"] for j in pend if j["reason"] in self.WAITING_REASONS
                       and not j.get("req_nodes")) if self.cfg["limits"]["count_pending"] else 0
         idle_frac = max(0.0, phi - waiting) / total_cpu
-        capped = [j for j in pend if j["reason"] in slurm.LIMIT_REASONS]
+        capped = [j for j in pend if slurm.held_by_limit(j["reason"])]
         # Jobs a pulse could release, per QOS: held by a CPU cap of their QOS,
         # and small enough for some node's free space right now.
         nf = self.node_free(nodes, parts)

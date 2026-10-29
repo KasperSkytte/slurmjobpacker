@@ -331,8 +331,17 @@ def admin_comments() -> dict:
 # 26.05 sources). CAP_REASONS are the holds the per-user/per-account CPU caps
 # cause -- MaxTRESPU and MaxTRESPA -- which are the ones a limit pulse releases.
 CAP_REASONS = {"QOSMaxCpuPerUserLimit", "MaxCpuPerAccount"}
-LIMIT_REASONS = CAP_REASONS | {"AssocGrpCpuLimit", "QOSGrpCpuLimit",
-                               "AssocMaxJobsLimit", "QOSMaxJobsPerUserLimit"}
+# Every usage limit of a QOS or association (Slurm's JSR_QOS_ASSOC reasons:
+# QOS*, Assoc*, Max*PerAccount, Max*PerUser), its catch-all AccountingPolicy,
+# and an array's own task limit (%N). QOSNotAllowed is a job Slurm will
+# never run under that QOS, not a limit.
+_LIMIT = re.compile(r"(QOS(?!NotAllowed$)|Assoc)\w+|Max\w+Per(Account|User)"
+                    r"|AccountingPolicy|JobArrayTaskLimit")
+
+
+def held_by_limit(reason: str) -> bool:
+    """Whether a pending job waits for a usage limit, not for room."""
+    return bool(_LIMIT.fullmatch(reason or ""))
 
 
 def _mem_mb(s: str) -> int:
