@@ -809,15 +809,13 @@ class Daemon:
             else "slim"
         return now - j["eligible"] >= c["budget_hours"][kind] * 3600
 
-    # Pending reasons a wider partition list can help with.
-    WIDEN_REASONS = ("Resources", "Priority")
-
     def widen_starving(self, jobs, now):
         """The starvation guard. sjp may give a job fewer partitions than a static
         rule would, and a pending job keeps them. So a job sjp placed, pending
-        for Resources or Priority longer than its class's budget, is widened to
-        every batch partition that can hold it. Slurm's priority and backfill then decide as
-        usual, now across all those partitions."""
+        longer than its class's budget, is widened to every batch partition
+        that can hold it. Slurm's priority and backfill then decide as usual,
+        now across all those partitions. Whatever its pending reason, unless a
+        usage limit holds it: more partitions do not lift a limit."""
         s = self.snap
         if s is None:
             return
@@ -825,7 +823,7 @@ class Daemon:
         total = s["total"]
         for j in jobs:
             jid = j["jobid"]
-            if (j["state"] != "PD" or j["reason"] not in self.WIDEN_REASONS
+            if (j["state"] != "PD" or j["reason"] in slurm.LIMIT_REASONS
                     or now < self.widened.get(jid, 0) or j.get("gpu")
                     or j.get("nnodes", 1) > 1
                     or j.get("req_nodes") or not j.get("eligible")):
@@ -873,8 +871,24 @@ class Daemon:
         live = {j["jobid"] for j in jobs}
         self.widened = {k: v for k, v in self.widened.items() if k in live}
 
-    # Pending reasons a recheck can help with: the job could start somewhere.
-    RECHECK_REASONS = ("None", "Resources", "Priority", BUSY_NODE)
+    def recheck_skip(self, j, now) -> str | None:
+        """Why the recheck leaves a pending job alone, before reading its marks;
+        None if it looks at it. Slurm's pending reason plays no part: whatever
+        keeps a job off its node (busy, drained, down, reserved), it may start
+        elsewhere now."""
+        if j.get("gpu"):
+            return "it asks for GPUs"
+        if j.get("features"):
+            return f"it asks for features ({j['features']})"
+        if j.get("reservation"):
+            return f"it runs in reservation {j['reservation']}"
+        if j.get("nnodes", 1) > 1:
+            return "it spans several nodes"
+        if j["jobid"] in self.widened:
+            return "the starvation guard has had it"
+        if self.past_budget(j, now):
+            return "past its starvation budget: the starvation guard releases and widens it"
+        return None
     # The plugin's reasons for skipping a job that sjp places once room opens.
     TAKE_OVER = ("no room", "stale")
 
@@ -913,7 +927,8 @@ class Daemon:
         return "".join("; " + h for h in hits[:3])
 
     def recheck(self, jobs, now):
-        """Make sjp's choice again for every pending job it placed: jobs that
+        """Make sjp's choice again for every pending job it placed, whatever
+        Slurm gives as its pending reason: jobs that
         started, ended or were cancelled since have changed what fits where. A
         job whose choice changed moves there if a node there has room for it
         now, dropping any pin it waited on. With [pin] wait_for_room, a job
@@ -949,10 +964,12 @@ class Daemon:
         for j in sorted(jobs, key=self.queue_order):
             jid = j["jobid"]
             held = j["reason"] in slurm.LIMIT_REASONS
-            if (j["state"] != "PD" or (j["reason"] not in self.RECHECK_REASONS and not held)
-                    or j.get("gpu") or j.get("features") or j.get("reservation")
-                    or j.get("nnodes", 1) > 1 or jid in self.widened
-                    or self.past_budget(j, now)):
+            if j["state"] != "PD":
+                continue
+            skip = self.recheck_skip(j, now)
+            if skip:
+                if j.get("req_nodes"):   # a pinned job is never left without a word
+                    self.explain(j, f"not rechecked: {skip}")
                 continue
             current = [p for p in j["partition"].split(",") if p]
             if not current or not set(current) <= set(s["total"]):
@@ -1077,6 +1094,18 @@ class Daemon:
                                                s["ends"], now, s["tiers"])
                     if stay[0] and stay[2] <= eta:
                         target = pinned
+            if not target and pinned and pinned not in nf and "eta" in marks:
+                # the node it waits for is gone (down, drained, no longer sjp's)
+                # and none is expected to have room: back to its partitions
+                note2 = slurm.rename_mark(note, "pin", "released", drop=("eta",))
+                argvs = slurm.cmd_release_pin(jid, ",".join(base), note2)
+                self.intend("release_pin", " && ".join(slurm.cmdline(a) for a in argvs),
+                            f"waits for {pinned}, which is down, drained or not sjp's, and "
+                            f"no node in {','.join(base)} is expected to have room for it",
+                            self.blocked(("enforce",)),
+                            lambda argvs=argvs: all([self.apply_retrying(a) for a in argvs]),
+                            jobid=jid, node=pinned, parts=",".join(base))
+                continue
             if not target or target == pinned:
                 if pinned in nf:         # stays where it waits
                     nf[pinned][0] -= cpus

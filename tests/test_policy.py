@@ -1029,6 +1029,32 @@ try:
                now + cfg["recheck"]["settle_max"])
     check("and goes after settle_max if Slurm never says it looked",
           ["scontrol", "update", "jobid=42", "reqnodelist="] in applied, str(applied))
+    # Whatever keeps a pinned job off its node, Slurm says ReqNodeNotAvail.
+    for k, why in (("43", "ReqNodeNotAvail, UnavailableNodes:a"),
+                   ("46", "ReqNodeNotAvail, Reserved for maintenance")):
+        notes[k] = "sjp:pin=a;from=slim1;job=12c,32G,2.7G/c;v=3;room=no;eta=2.0h"
+        d2 = fresh(); applied.clear()
+        d2.recheck([dict(wjob(k, "a", 7), cpus=12, reason=why)], now)
+        recs = [json.loads(l) for l in d2.log_fh.getvalue().splitlines()]
+        check(f"a job pinned to a node that is not available ({why.split(', ')[1]}) moves "
+              f"where there is room",
+              [r["jobid"] for r in recs if r.get("action") == "move_partitions"] == [k], str(recs))
+    notes["47"] = notes["43"]
+    d2 = fresh(); applied.clear()
+    d2.recheck([dict(wjob("47", "a", 7), cpus=12, reason="JobHeldUser")], now)
+    recs = [json.loads(l) for l in d2.log_fh.getvalue().splitlines()]
+    check("Slurm's pending reason plays no part, only a usage limit's",
+          [r["jobid"] for r in recs if r.get("action") == "move_partitions"] == ["47"], str(recs))
+    d2 = fresh(); applied.clear()
+    d2.recheck([dict(wjob("44", "a", 7), features="avx512")], now)
+    check("a pinned job the recheck leaves alone says why",
+          d2.explained.get("44") == "not rechecked: it asks for features (avx512)"
+          and applied == [], str(d2.explained))
+    notes["45"] = "sjp:pin=gone;from=slim1;job=999c,32G,0.0G/c;v=3;room=no;eta=2.0h"
+    d2 = fresh(); applied.clear()
+    d2.recheck([dict(wjob("45", "gone", 7), cpus=999)], now)
+    check("a job waiting for a node that went away, with none to wait for instead, is released",
+          ["scontrol", "update", "jobid=45", "reqnodelist="] in applied, str(applied))
     applied.clear(); cur["would"] = ["slim1"]         # as the tests below expect
     check("and none can hold it: it keeps waiting",
           policy.room_elsewhere(8, 32768, {"slim1": (64, 256000), "fat1": (4, 1024000)},
