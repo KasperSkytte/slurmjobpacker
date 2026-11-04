@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.21.0](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.20.0...v1.21.0) (2026-11-04)
+
+
+### Features
+
+* install sjpd and sjp-viz with python3 -m sjp.install, logs rotated ([be03c67](https://github.com/KasperSkytte/slurmjobpacker/commit/be03c6720ff492ea49ad1f083853b5574d8b17aa))
+
+
+### Bug Fixes
+
+* recheck every pending job, whatever Slurm gives as its reason ([8df5a06](https://github.com/KasperSkytte/slurmjobpacker/commit/8df5a068422abe208261edcc203b067a0836f421))
+* release a wait pin when no node is expected to have room for the job ([ee55cfb](https://github.com/KasperSkytte/slurmjobpacker/commit/ee55cfb97ecd0253c5b487c89f3d245b3802987c))
+* treat every Slurm usage limit as a hold, not a wait for room ([07d9954](https://github.com/KasperSkytte/slurmjobpacker/commit/07d9954db63c8b7ab1d0e5b82df7d833aa53837a))
+
 ## [1.20.0](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.19.1...v1.20.0) (2026-10-28)
 
 
