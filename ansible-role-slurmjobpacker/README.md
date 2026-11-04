@@ -4,7 +4,8 @@ An example role that installs slurmjobpacker (sjp) on your Slurm controllers:
 
 - checks out sjp on every host in the play, so any controller's `job_submit.lua`
   can load `lua/sjp.lua`;
-- installs `sjp.toml` and the `sjpd` service on one of them (`sjp_daemon_host`);
+- installs `sjp.toml` and the `sjpd` service on one of them (`sjp_daemon_host`), with
+  logrotate for its logs (`sjp_log_rotate: daily`, `sjp_log_keep: 30`);
 - sets or removes the disable file (`sjp_disabled`);
 - checks that `slurm.conf` has `JobSubmitPlugins=lua`: a warning in `observe` mode, an
   error in `advise` and `enforce`;
@@ -13,13 +14,13 @@ An example role that installs slurmjobpacker (sjp) on your Slurm controllers:
   interactive jobs to an interactive partition, GPU jobs to a GPU partition, every other
   batch job to sjp, and a fixed memory-per-CPU fallback rule when sjp does not place it
   (`sjp_verbose_log: true` adds each job's shape and node to the `slurmctld` log);
-- optionally (`sjp_viz_enabled: true`) runs the live 3D view, `sjp-viz`, on
+- runs the live 3D view, `sjp-viz` (`sjp_viz_enabled: false` leaves it out), on
   `sjp_viz_bind:sjp_viz_port` (default `127.0.0.1:8650`), reading what running jobs use
   every `sjp_viz_usage_interval` seconds (60; 0: off);
 - after an upgrade, restarts `sjpd` and, if `sjp_reconfigure_slurm` is true, runs
   `scontrol reconfigure` so `slurmctld` loads the new `sjp.lua`.
 
-Only the visualizer: `sjp_packer_enabled: false` with `sjp_viz_enabled: true` installs the
+Only the visualizer: `sjp_packer_enabled: false` installs the
 checkout, `sjp.toml` and `sjp-viz` (started with `--no-packer`) on `sjp_daemon_host`, and
 nothing of the packer: no `sjpd` (an `sjpd` from before is stopped and disabled), no
 disable file, no `job_submit.lua` checks, no `scontrol reconfigure`.
@@ -58,7 +59,6 @@ The visualizer on its own:
     - role: slurmjobpacker
       vars:
         sjp_packer_enabled: false
-        sjp_viz_enabled: true
 ```
 
 All variables and their defaults are in [`defaults/main.yml`](defaults/main.yml).

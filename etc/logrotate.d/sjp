@@ -1,0 +1,11 @@
+# sjpd's logs, rotated daily; sjp.install puts it in /etc/logrotate.d. sjpd
+# notices a rotated log and writes to a new one: no signal or restart needed.
+/var/log/sjp/decisions.jsonl /var/log/sjp/sjp.log {
+    su slurm slurm
+    daily
+    rotate 30
+    compress
+    delaycompress
+    missingok
+    notifempty
+}

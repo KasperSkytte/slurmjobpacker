@@ -18,6 +18,15 @@
   notify: Restart sjpd
   when: sjp_packer_enabled | bool
 
+- name: Rotate sjpd's logs
+  ansible.builtin.template:
+    src: logrotate.j2
+    dest: /etc/logrotate.d/sjp
+    owner: root
+    group: root
+    mode: "0644"
+  when: sjp_packer_enabled | bool
+
 - name: Enable and start sjpd
   ansible.builtin.systemd:
     name: sjpd

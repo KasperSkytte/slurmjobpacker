@@ -108,17 +108,38 @@ class Daemon:
                    event=event, mode=self.mode, **kw)
         line = json.dumps(rec, separators=(",", ":"))
         if self.log_fh:
-            try:
-                self.log_fh.write(line + "\n"); self.log_fh.flush()
-            except OSError:
-                pass
+            self.write_log("log_file", "log_fh", line)
         else:
             print(line, flush=True)
         if self.text_fh and (text := narrate.render(rec)):
+            self.write_log("text_log", "text_fh", text)
+
+    def write_log(self, key, attr, line):
+        """Append a line to a log, reopening it first if logrotate (or anyone)
+        moved it away: no signal or restart needed."""
+        fh, path = getattr(self, attr), self.cfg["general"].get(key)
+        try:
+            ino = os.fstat(fh.fileno()).st_ino
+        except (OSError, ValueError):
+            ino = None                   # not a file of its own (a test's buffer)
+        if ino is not None and path:
             try:
-                self.text_fh.write(text + "\n"); self.text_fh.flush()
+                moved = os.stat(path).st_ino != ino
             except OSError:
-                pass
+                moved = True
+            if moved:
+                try:
+                    new = open(path, "a")
+                except OSError:
+                    pass                 # keep writing where it was
+                else:
+                    fh.close()
+                    fh = new
+                    setattr(self, attr, fh)
+        try:
+            fh.write(line + "\n"); fh.flush()
+        except OSError:
+            pass
 
     def open_logs(self):
         for key, attr in (("log_file", "log_fh"), ("text_log", "text_fh")):

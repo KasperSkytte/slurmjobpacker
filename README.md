@@ -46,16 +46,17 @@ tail -f ~/sjp-dry/sjp.log                                      # in another term
 
 The log shows, for each new job, where Slurm put it and where sjp would have, and why.
 
-**Run the service.**
+**Install the service.**
 
 ```sh
-sudo mkdir -p /etc/sjp
-python3 -m sjp.daemon --print-config | sudo tee /etc/sjp/sjp.toml
-sudo cp systemd/sjpd.service /etc/systemd/system/
-sudo systemctl daemon-reload && sudo systemctl enable --now sjpd
+sudo python3 -m sjp.install                                    # --no-viz: without the visualizer
 ```
 
-It starts in `observe` mode: it only reads the cluster and logs what it would do.
+This writes `/etc/sjp/sjp.toml` with the defaults (an existing one is kept), installs and
+starts `sjpd` and the visualizer `sjp-viz`, and rotates `sjpd`'s logs daily. `sjpd` starts in `observe` mode: it only reads the
+cluster and logs what it would do. To upgrade, check out the new version and run the same
+command again; it restarts the services. `--uninstall` removes them, keeping configuration
+and logs. The units are in [`systemd/`](systemd/) if you install by hand.
 
 ## Configuration
 
@@ -124,15 +125,10 @@ hide them. A node with GPUs gets a GPU lane next to its CPUs and memory: a bar u
 in 2D, and a strip beside the node in 3D where each job's GPUs run as deep as its time limit.
 
 To try it, run `python3 -m sjp.viz` (or `python3 -m sjp.viz --demo` for a simulated
-cluster, with `--interactive 1 --gpu 1` to add those nodes), and open `http://127.0.0.1:8650`. To keep it running, install it as a service
-next to `sjpd`:
+cluster, with `--interactive 1 --gpu 1` to add those nodes), and open `http://127.0.0.1:8650`. `sjp.install` runs it as a service
+next to `sjpd`, answering on `127.0.0.1:8650` (`--viz-bind`, `--viz-port` to change).
 
-```sh
-sudo cp systemd/sjp-viz.service /etc/systemd/system/
-sudo systemctl daemon-reload && sudo systemctl enable --now sjp-viz
-```
-
-With the Ansible role, set `sjp_viz_enabled: true`. See
+The Ansible role runs it too (`sjp_viz_enabled: false` leaves it out). See
 [Visualizer](https://github.com/KasperSkytte/slurmjobpacker/wiki/Visualizer) for more.
 
 ### The visualizer on its own
@@ -146,9 +142,7 @@ marked as not managed by slurmjobpacker:
 python3 -m sjp.viz --no-packer
 ```
 
-As a service, add `--no-packer` to the `ExecStart` line of `systemd/sjp-viz.service`
-before installing it as above. With the Ansible role, set `sjp_packer_enabled: false` and
-`sjp_viz_enabled: true`.
+As a service: `sudo python3 -m sjp.install --no-packer`. With the Ansible role, set `sjp_packer_enabled: false`.
 
 ## Limitations
 

@@ -1423,6 +1423,88 @@ check("an array is shadowed once, as the one submission the plugin saw; it pins 
       [r["jobid"] for r in pl] == ["5_2", "9"] and pl[0]["pin_why"].startswith("an array"),
       str([(r["jobid"], r["pin_why"]) for r in pl]))
 
+print("\n17. logs: rotated away, they are reopened")
+cfg = config.defaults()
+ld = tempfile.mkdtemp()
+cfg["general"]["log_file"], cfg["general"]["text_log"] = f"{ld}/decisions.jsonl", f"{ld}/sjp.log"
+d = daemon.Daemon(cfg); d.open_logs()
+d.log("error", where="test", detail="one")
+os.rename(f"{ld}/decisions.jsonl", f"{ld}/decisions.jsonl.1")
+os.rename(f"{ld}/sjp.log", f"{ld}/sjp.log.1")
+d.log("error", where="test", detail="two")
+check("after logrotate moves the logs, the next record goes to new ones, no restart needed",
+      [json.loads(l)["detail"] for l in open(f"{ld}/decisions.jsonl")] == ["two"]
+      and [json.loads(l)["detail"] for l in open(f"{ld}/decisions.jsonl.1")] == ["one"]
+      and os.path.getsize(f"{ld}/sjp.log") > 0, str(os.listdir(ld)))
+os.remove(f"{ld}/decisions.jsonl"); os.chmod(ld, 0o500)    # gone, and cannot be made again
+d.log("error", where="test", detail="three")
+os.chmod(ld, 0o700)
+check("a log that cannot be made again is written where it was, not dropped silently",
+      d.log_fh.closed is False)
+
+print("\n18. sjp.install: services, config and log rotation, from this checkout")
+import contextlib
+from sjp import install
+import pwd
+me = pwd.getpwuid(os.getuid()).pw_name
+root = tempfile.mkdtemp(); os.makedirs(f"{root}/etc/logrotate.d")
+cmds = []
+inst = install.Installer(root, run_=lambda a: cmds.append(a) or True, python="/usr/bin/python3.12")
+quiet = io.StringIO()
+with contextlib.redirect_stdout(quiet):
+    inst.install(user=me)
+unit = open(f"{root}/etc/systemd/system/sjpd.service").read()
+rot = open(f"{root}/etc/logrotate.d/sjp").read()
+check("a first install writes the default config, sjpd's unit for this checkout and its "
+      "log rotation, and sjp-viz's, and starts both",
+      os.path.exists(f"{root}/etc/sjp/sjp.toml") and f"WorkingDirectory={install.TOP}\n" in unit
+      and f"User={me}\n" in unit and "ExecStart=/usr/bin/python3.12 -m sjp.daemon" in unit
+      and f"su {me} " in rot and "/var/log/sjp/decisions.jsonl /var/log/sjp/sjp.log" in rot
+      and "--no-packer" not in open(f"{root}/etc/systemd/system/sjp-viz.service").read()
+      and cmds == [["systemctl", "daemon-reload"], ["systemctl", "enable", "sjpd.service"],
+                   ["systemctl", "restart", "sjpd.service"],
+                   ["systemctl", "enable", "sjp-viz.service"],
+                   ["systemctl", "restart", "sjp-viz.service"]], str(cmds) + unit)
+with open(f"{root}/etc/sjp/sjp.toml", "w") as f:
+    f.write('[general]\nmode = "enforce"\nlog_file = "/srv/sjp/d.jsonl"\ntext_log = ""\n')
+cmds.clear()
+with contextlib.redirect_stdout(quiet):
+    inst.install(user=me, viz_bind="0.0.0.0")
+unit = open(f"{root}/etc/systemd/system/sjpd.service").read()
+viz_unit = open(f"{root}/etc/systemd/system/sjp-viz.service").read()
+check("run again, it keeps the config and follows its log paths, and takes a new address",
+      'mode = "enforce"' in open(f"{root}/etc/sjp/sjp.toml").read()
+      and "ReadWritePaths=/run/sjp /var/log/sjp /srv/sjp" in unit
+      and "/srv/sjp/d.jsonl {" in open(f"{root}/etc/logrotate.d/sjp").read()
+      and "--bind 0.0.0.0 --port 8650" in viz_unit
+      and ["systemctl", "restart", "sjp-viz.service"] in cmds, viz_unit)
+cmds.clear()
+with contextlib.redirect_stdout(quiet):
+    inst.install(viz=False, user=me)
+check("--no-viz: sjpd only, and an sjp-viz from before is stopped and removed",
+      not os.path.exists(f"{root}/etc/systemd/system/sjp-viz.service")
+      and ["systemctl", "disable", "--now", "sjp-viz.service"] in cmds, str(cmds))
+with contextlib.redirect_stdout(quiet):
+    inst.install(user=me)
+check("after an upgrade, the plain command keeps the choices made before",
+      not os.path.exists(f"{root}/etc/systemd/system/sjp-viz.service"))
+with contextlib.redirect_stdout(quiet):
+    inst.install(viz=True, user=me)
+check("and --viz brings the visualizer back, at the default address",
+      "--bind 0.0.0.0" not in open(f"{root}/etc/systemd/system/sjp-viz.service").read())
+cmds.clear()
+with contextlib.redirect_stdout(quiet):
+    inst.install(packer=False, user=me)
+check("--no-packer: the visualizer only, and an sjpd from before is stopped and removed",
+      not os.path.exists(f"{root}/etc/systemd/system/sjpd.service")
+      and not os.path.exists(f"{root}/etc/logrotate.d/sjp")
+      and "--no-packer" in open(f"{root}/etc/systemd/system/sjp-viz.service").read()
+      and ["systemctl", "disable", "--now", "sjpd.service"] in cmds, str(cmds))
+with contextlib.redirect_stdout(quiet):
+    inst.uninstall()
+check("--uninstall removes the services and keeps the config",
+      not os.listdir(f"{root}/etc/systemd/system") and os.path.exists(f"{root}/etc/sjp/sjp.toml"))
+
 check("no test started a process", subprocess.run is _no_processes)
 
 print(f"\n{'ALL PASS' if not fails else 'FAILURES: ' + ', '.join(fails)}")

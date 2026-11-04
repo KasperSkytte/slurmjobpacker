@@ -43,6 +43,11 @@ sjp_config:
   starvation:
     enabled: true                  # widen jobs that wait past their budget to every partition that fits
 
+# How often logrotate rotates sjpd's logs (daily, weekly, monthly), and how
+# many rotated logs it keeps, compressed.
+sjp_log_rotate: daily
+sjp_log_keep: 30
+
 sjp_service_enabled: true
 sjp_service_state: started
 
@@ -77,8 +82,9 @@ sjp_reconfigure_slurm: "{{ sjp_job_submit_install and sjp_packer_enabled }}"
 
 # The live 3D view of the cluster (python3 -m sjp.viz), as a service next to
 # sjpd (on sjp_daemon_host). It answers only on sjp_viz_bind; the page shows
-# users and job names. With sjp_packer_enabled: false it is all that is installed.
-sjp_viz_enabled: false
+# users and job names; false leaves it out. With sjp_packer_enabled: false it is
+# all that is installed.
+sjp_viz_enabled: true
 sjp_viz_bind: 127.0.0.1
 sjp_viz_port: 8650
 # Seconds between reads of what running jobs use (sstat), for the utilization

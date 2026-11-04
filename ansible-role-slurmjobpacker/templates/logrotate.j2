@@ -1,0 +1,12 @@
+{% set g = sjp_config.general | default({}) %}
+# {{ ansible_managed }}
+# sjpd's logs. sjpd notices a rotated log and writes to a new one.
+{{ g.log_file | default('/var/log/sjp/decisions.jsonl') }}{% if g.text_log | default('/var/log/sjp/sjp.log') %} {{ g.text_log | default('/var/log/sjp/sjp.log') }}{% endif %} {
+    su {{ sjp_user }} {{ sjp_user }}
+    {{ sjp_log_rotate }}
+    rotate {{ sjp_log_keep }}
+    compress
+    delaycompress
+    missingok
+    notifempty
+}
