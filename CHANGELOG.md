@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.22.0](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.21.0...v1.22.0) (2026-11-06)
+
+
+### Features
+
+* 2D queue on the right as an option, waiting chips sized per node ([0faf4e8](https://github.com/KasperSkytte/slurmjobpacker/commit/0faf4e8e37522873bc2531ed8e70e947e9a3b4f8))
+
 ## [1.21.0](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.20.0...v1.21.0) (2026-11-04)
 
 
