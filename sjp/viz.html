@@ -100,7 +100,7 @@
   </div>
 </div>
 <div id="info" class="panel"><span class="close" id="close">✕</span><h2 id="info-title"></h2><table><tbody id="info-body"></tbody><tbody id="info-use"></tbody></table></div>
-<div id="help" class="panel"><div id="opt-head" title="Click, or press ?, to open or close">options</div><table id="keys"></table></div>
+<div id="help" class="panel"><div id="opt-head" title="Click, or press ?, to open or close">Options</div><table id="keys"></table></div>
 <div id="err" class="panel"></div>
 
 <script src="usage.js"></script>
@@ -192,9 +192,12 @@ addEventListener("keydown", e => {
 });
 drawLegend();
 const nodeMpc = {};                // node name -> its memory per CPU
+// A job's colour on the scale shown; a waiting job pinned to a node is compared
+// with that one; grey when there is nothing to compare with.
 function jobColor(job) {
+  const node = job.node || job.pinned;
   const h = colorMode === "cpu" ? effHue(job)
-    : hueOf(job.mem / Math.max(job.cpus, 1e-9), job.node && nodeMpc[job.node]);
+    : hueOf(job.mem / Math.max(job.cpus, 1e-9), node && nodeMpc[node]);
   const c = new THREE.Color();
   return h === null ? c.setHSL(0, 0, 0.45) : c.setHSL(h / 360, 0.62, 0.52);
 }
@@ -481,7 +484,6 @@ function layoutNodes(nodes) {
 // ------------------------------------------------------------------ jobs
 const views = new Map();       // key -> {mesh, label, target{pos,scale}, job, dying}
 const unit = new THREE.BoxGeometry(1, 1, 1);
-let showLabels = params.get("labels") === "1";   // off unless ?labels=1; L toggles
 
 // A job is a box as deep as its time limit, filled up to how long it has run;
 // a line marks where it is now.
@@ -538,7 +540,9 @@ const remembered = (key, param, on, dflt) => {
   catch (e) { return dflt; }
 };
 const remember = (key, v) => { try { localStorage.setItem("sjp-" + key, v ? "1" : "0"); } catch (e) { /* fine */ } };
-let busyMode = remembered("busy", "busy", "1", true);
+let showLabels = remembered("labels", "labels", "1", true);   // L toggles; ?labels=0 starts without
+function toggleLabels() { showLabels = !showLabels; remember("labels", showLabels); renderOptions(); }
+let busyMode = remembered("busy", "busy", "1", false);
 let allWaiting = remembered("all", "waiting", "all", false);
 document.body.classList.toggle("busy", busyMode);
 // O: also the partitions slurmjobpacker does not manage (an interactive one, GPU
@@ -785,7 +789,8 @@ function select(v) {
     ["User", j.user], ...(j.account ? [["Account", j.account]] : []), ["Name", j.name],
     ["State", running ? `running on ${j.node}` + (j.nodes > 1 ? ` (+${j.nodes - 1} nodes)` : "")
                      : j.pinned ? `waiting for ${j.pinned} (${j.reason})` : `waiting (${j.reason})`],
-    ["CPUs", (+j.cpus).toFixed(j.cpus % 1 ? 1 : 0)], ["Memory", gb(j.mem)], ["Memory / CPU", gbc(mpc)],
+    ["CPUs", (+j.cpus).toFixed(j.cpus % 1 ? 1 : 0) + (j.nodes > 1 ? ` per node, ${j.nodes} nodes` : "")],
+    ["Memory", gb(j.mem) + (j.nodes > 1 ? " per node" : "")], ["Memory / CPU", gbc(mpc)],
     ...(j.gpus ? [["GPUs", (+j.gpus).toFixed(j.gpus % 1 ? 1 : 0)]] : []),
     running ? ["Time", `${dur(state.now - started(j))} of ${dur(j.minutes * 60)}, ${dur(j.end - state.now)} left`]
             : ["Time limit", dur(j.minutes * 60)],
@@ -805,7 +810,7 @@ function select(v) {
 
 addEventListener("keydown", e => {
   if (e.key === "r" || e.key === "R") controls.autoRotate = !controls.autoRotate;
-  if (e.key === "l" || e.key === "L") showLabels = !showLabels;
+  if (e.key === "l" || e.key === "L") toggleLabels();
   if (e.key === "h" || e.key === "H") document.body.classList.toggle("bare");
   if (e.key === "?") toggleOptions();
   renderOptions();
@@ -856,20 +861,20 @@ function filterCount(s) {
 // move around. Open or closed is remembered.
 function optionRows() {
   return [
-    { key: "b", text: "colour nodes by how busy they are", get: () => busyMode, toggle: toggleBusy },
-    { key: "c", text: "colour jobs by memory per CPU (else fit)", get: () => colorMode === "mpc", toggle: switchScale },
-    { key: "e", text: "colour jobs by CPU efficiency", get: () => colorMode === "cpu", toggle: toggleEff },
-    { key: "p", text: "jobs waiting for one node at that node", get: () => pinAtNode, toggle: togglePinned },
-    { key: "a", text: "all waiting jobs (else top 50, 10 per node)", get: () => allWaiting, toggle: toggleAll },
+    { key: "b", text: "Colour nodes by how busy they are", get: () => busyMode, toggle: toggleBusy },
+    { key: "c", text: "Colour jobs by memory per CPU (else fit)", get: () => colorMode === "mpc", toggle: switchScale },
+    { key: "e", text: "Colour jobs by CPU efficiency", get: () => colorMode === "cpu", toggle: toggleEff },
+    { key: "p", text: "Show job node pins at each node", get: () => pinAtNode, toggle: togglePinned },
+    { key: "a", text: "All waiting jobs (else top 50, 10 per node)", get: () => allWaiting, toggle: toggleAll },
     // without slurmjobpacker (sjp-viz --no-packer) there are no such partitions
     ...(state && state.packer === false ? [] :
-      [{ key: "o", text: "partitions not managed by slurmjobpacker", get: () => showOthers, toggle: toggleOthers }]),
-    { key: "l", text: "job labels", get: () => showLabels, toggle: () => { showLabels = !showLabels; } },
-    { key: "r", text: "rotate", get: () => controls.autoRotate, toggle: () => { controls.autoRotate = !controls.autoRotate; } },
-    { key: "drag", text: "turn" }, { key: "right-drag", text: "move (or Ctrl+drag)" },
-    { key: "scroll", text: "zoom" },
-    { key: "click", text: "a job's details" },
-    { key: "h", text: "hide the panels" }, { key: "?", text: "open or close these options" }];
+      [{ key: "o", text: "Partitions not managed by slurmjobpacker", get: () => showOthers, toggle: toggleOthers }]),
+    { key: "l", text: "Job labels", get: () => showLabels, toggle: toggleLabels },
+    { key: "r", text: "Rotate", get: () => controls.autoRotate, toggle: () => { controls.autoRotate = !controls.autoRotate; } },
+    { key: "drag", text: "Turn" }, { key: "right-drag", text: "Move (or Ctrl+drag)" },
+    { key: "scroll", text: "Zoom" },
+    { key: "click", text: "Show job details" },
+    { key: "h", text: "Hide the panels" }, { key: "?", text: "Open or close these options" }];
 }
 function renderOptions() {
   document.getElementById("keys").innerHTML = optionRows().map((r, i) => r.get

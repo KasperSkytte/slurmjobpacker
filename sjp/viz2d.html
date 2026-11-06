@@ -15,6 +15,11 @@
   .panel { position: absolute; background: var(--panel); border: 1px solid var(--line);
     border-radius: 10px; padding: 12px 14px; }
   #head { top: 16px; left: 16px; max-width: 420px; }
+  /* the queue on the right: the panels change sides with it */
+  body.qright #head { left: auto; right: 16px; }
+  body.qright #legend { left: auto; right: 16px; }
+  body.qright #info { right: auto; left: 16px; }
+  body.qright #help { right: auto; left: 16px; }
   #head h1 { margin: 0 0 2px; font-size: 18px; font-weight: 650; letter-spacing: .2px; }
   #head h1 a { color: inherit; text-decoration: none; }
   #head h1 a:hover { text-decoration: underline; }
@@ -97,7 +102,7 @@
     <div class="ticks"><span>idle</span><span>50%</span><span>full</span></div>
   </div>
 </div>
-<div id="help" class="panel"><div id="opt-head" title="Click, or press ?, to open or close">options</div><table id="keys"></table></div>
+<div id="help" class="panel"><div id="opt-head" title="Click, or press ?, to open or close">Options</div><table id="keys"></table></div>
 <div id="info" class="panel"><span class="close" id="close">✕</span><h2 id="info-title"></h2><table><tbody id="info-body"></tbody><tbody id="info-use"></tbody></table></div>
 <div id="err" class="panel"></div>
 
@@ -189,8 +194,18 @@ const remembered = (key, param, on, dflt) => {
   catch (e) { return dflt; }
 };
 const remember = (key, v) => { try { localStorage.setItem("sjp-" + key, v ? "1" : "0"); } catch (e) { /* fine */ } };
-let busyMode = remembered("busy", "busy", "1", true);
+let busyMode = remembered("busy", "busy", "1", false);
 let allWaiting = remembered("all", "waiting", "all", false);
+// Q: on wide screens, the queue right of the nodes (?queue=right), jobs moving
+// left into them; else left of them.
+let queueRight = remembered("queue", "queue", "right", false);
+document.body.classList.toggle("qright", queueRight);
+function toggleQueue() {
+  queueRight = !queueRight; remember("queue", queueRight);
+  document.body.classList.toggle("qright", queueRight);
+  renderOptions(); if (state) apply(state);
+}
+addEventListener("keydown", e => { if (e.key === "q" || e.key === "Q") toggleQueue(); });
 // O: also the partitions slurmjobpacker does not manage (an interactive one, GPU
 // nodes), set apart as such; on unless turned off (?others=0).
 let showOthers = remembered("others", "others", "1", true);
@@ -229,9 +244,12 @@ const byQueue = (a, b) => (b.priority || 0) - (a.priority || 0)
 
 drawLegend();
 const nodeMpc = {};                // node name -> its memory per CPU
+// A job's colour on the scale shown; a waiting job pinned to a node is compared
+// with that one; grey when there is nothing to compare with.
 function color(job, a = 1) {
+  const node = job.node || job.pinned;
   const h = colorMode === "cpu" ? effHue(job)
-    : hueOf(job.mem / Math.max(job.cpus, 1e-9), job.node && nodeMpc[job.node]);
+    : hueOf(job.mem / Math.max(job.cpus, 1e-9), node && nodeMpc[node]);
   return h === null ? `hsla(0, 0%, 45%, ${a})` : `hsla(${h}, 62%, 52%, ${a})`;
 }
 function recolor() {}                 // 2D colours are computed while drawing
@@ -252,14 +270,18 @@ addEventListener("resize", resize);
 let layoutKey = "", L = null;
 const panelBox = id => {          // in page coordinates, whatever the scroll
   const r = document.getElementById(id).getBoundingClientRect();
-  return { top: r.top + scrollY, bottom: r.bottom + scrollY, right: r.right, height: r.height };
+  return { top: r.top + scrollY, bottom: r.bottom + scrollY, left: r.left, right: r.right,
+           height: r.height };
 };
 let CH = 0;                       // the canvas height: the page scrolls when it is taller
 
 function layout(nodes) {
   // The queue goes under the panel, so a panel that grows (a row more) moves it.
   const head = panelBox("head");
-  const key = W + "x" + H + ":" + pinAtNode + ":" + Math.round(head.bottom) + ":" + nodes.map(n => n.name).join();
+  // the legend, under the queue on wide screens: the queue ends above it
+  const leg = document.getElementById("legend").getBoundingClientRect();
+  const key = W + "x" + H + ":" + pinAtNode + ":" + queueRight + ":" + Math.round(head.bottom) + ":"
+    + Math.round(leg.height) + ":" + nodes.map(n => n.name).join();
   if (key === layoutKey) return;
   layoutKey = key;
   const tall = W / H < 0.9;
@@ -279,9 +301,11 @@ function layout(nodes) {
     queue = { x: pad, y: qTop + font * 1.8, w: W - 2 * pad, h: qH };
     x = pad; y = qTop + qH + font * 2; w = W - 2 * pad;
   } else {
-    const qW = Math.max(head.right - pad, 300);
-    queue = { x: pad, y: head.bottom + pad + font * 1.8, w: qW, h: H - head.bottom - 3 * pad - font * 1.8 - 90 };
-    x = pad * 2 + qW + 20; y = pad; w = W - (pad * 3 + qW + 20);
+    const qW = Math.max((queueRight ? W - head.left : head.right) - pad, 300);
+    const qy = head.bottom + pad + font * 1.8;
+    queue = { x: queueRight ? W - pad - qW : pad, y: qy, w: qW,
+              h: (leg.height ? leg.top - pad : H - 90) - qy };
+    x = queueRight ? pad + 20 : pad * 2 + qW + 20; y = pad; w = W - (pad * 3 + qW + 20);
   }
   // Room for what is free left of the bars, and used / total right of them.
   g.font = `400 ${font * 0.95}px system-ui`;
@@ -374,8 +398,8 @@ function apply(s) {
     r.used = [cx, cm, cg];
     r.blocks = block;
   }
-  // The queue: chips as wide as their CPUs (on the scale of the biggest node),
-  // highest priority first, flowing in rows.
+  // The queue: chips as wide as their CPUs per node (on the scale of the biggest
+  // node; never wider than the queue), highest priority first, flowing in rows.
   const maxCpus = Math.max(...shownNodes(s).map(n => n.cpus), 1), Q = L.queue;
   const unit = Math.min(Q.w / maxCpus * 1.6, 9 * Math.max(1, ui * 0.8));
   const chipH = L.font * 2.3, gap = 6;
@@ -409,7 +433,7 @@ function apply(s) {
     if (j.pinned && L.rows.has(j.pinned) && L.rows.get(j.pinned).pin) continue;   // at its node
     if (!matches(j)) continue;                                                     // filtered out
     if (++nq > cap(s)) break;
-    const w = Math.max(j.cpus * unit, L.font * 3.2);
+    const w = Math.min(Math.max(j.cpus * unit, L.font * 3.2), Q.w);
     if (qx + w > Q.x + Q.w && qx > Q.x) { qx = Q.x; qy += chipH + gap; }
     if (qy + chipH > Q.y + Q.h && !allWaiting) break;   // all (A): the page grows instead
     chip(j, { cx: qx, cw: w, mx: qx, mw: w, cy: qy, my: qy, h: chipH, a: 1 });
@@ -532,7 +556,7 @@ function draw() {
   // Each node's column of jobs waiting for it, when it has any.
   for (const r of L.rows.values()) {
     if (!r.pin || !r.pinTotal) continue;
-    text(`waiting here: ${r.pinTotal}`, r.pin.x + 2, r.label + f * 0.7, f * 0.85, 500,
+    text(`pinned to this node: ${r.pinTotal}`, r.pin.x + 2, r.label + f * 0.7, f * 0.85, 500,
          "#8b949e");
     g.strokeStyle = "#30363d"; g.lineWidth = 1; g.setLineDash([4, 4]);
     roundRect(r.pin.x, r.pin.y, r.pin.w, r.pin.h, 8); g.stroke(); g.setLineDash([]);
@@ -643,6 +667,9 @@ function draw() {
       g.fillStyle = color(j); roundRect(x + 0.5, y, Math.max(w - 1, 0.8), c.h, 3); g.fill();
       g.strokeStyle = sel ? "#ffffff" : "rgba(13,17,23,0.7)"; g.lineWidth = sel ? 2 : 1; g.stroke();
     }
+    // A waiting job that asks for several nodes: how many, at the chip's end.
+    if (!v.key.startsWith("r:") && j.nodes > 1 && c.cw > f * 2.2)
+      text(`×${j.nodes}`, c.cx + c.cw - 5, c.cy + c.h / 2, f * 0.8, 700, "rgba(255,255,255,0.9)", "right");
     // Job id and memory per CPU, on the CPU segment (or chip) if there is room.
     if (showLabels) {
       const both = `${j.id} · ${gbc(mpc)}`;
@@ -671,7 +698,8 @@ function draw() {
 }
 
 // ------------------------------------------------------------------ animation
-let showLabels = params.get("labels") === "1";   // off unless ?labels=1; L toggles
+let showLabels = remembered("labels", "labels", "1", true);   // L toggles; ?labels=0 starts without
+function toggleLabels() { showLabels = !showLabels; remember("labels", showLabels); renderOptions(); }
 function step(dt) {
   const k = 1 - Math.exp(-dt * 6);
   for (const [key, v] of views) {
@@ -757,7 +785,8 @@ function select(v) {
     ["User", j.user], ...(j.account ? [["Account", j.account]] : []), ["Name", j.name],
     ["State", running ? `running on ${j.node}` + (j.nodes > 1 ? ` (+${j.nodes - 1} nodes)` : "")
                      : j.pinned ? `waiting for ${j.pinned} (${j.reason})` : `waiting (${j.reason})`],
-    ["CPUs", (+j.cpus).toFixed(j.cpus % 1 ? 1 : 0)], ["Memory", gb(j.mem)], ["Memory / CPU", gbc(mpc)],
+    ["CPUs", (+j.cpus).toFixed(j.cpus % 1 ? 1 : 0) + (j.nodes > 1 ? ` per node, ${j.nodes} nodes` : "")],
+    ["Memory", gb(j.mem) + (j.nodes > 1 ? " per node" : "")], ["Memory / CPU", gbc(mpc)],
     ...(j.gpus ? [["GPUs", (+j.gpus).toFixed(j.gpus % 1 ? 1 : 0)]] : []),
     running ? ["Time", `${dur(state.now - started(j))} of ${dur(j.minutes * 60)}, ${dur(j.end - state.now)} left`]
             : ["Time limit", dur(j.minutes * 60)],
@@ -775,7 +804,7 @@ function select(v) {
   if (running && state.usage) sjpUse.panel(use, j, () => state.running.find(r => r.id === j.id));
 }
 addEventListener("keydown", e => {
-  if (e.key === "l" || e.key === "L") showLabels = !showLabels;
+  if (e.key === "l" || e.key === "L") toggleLabels();
   if (e.key === "h" || e.key === "H") document.body.classList.toggle("bare");
   if (e.key === "?") toggleOptions();
   renderOptions();
@@ -826,17 +855,18 @@ function filterCount(s) {
 // move around. Open or closed is remembered.
 function optionRows() {
   return [
-    { key: "b", text: "colour nodes by how busy they are", get: () => busyMode, toggle: toggleBusy },
-    { key: "c", text: "colour jobs by memory per CPU (else fit)", get: () => colorMode === "mpc", toggle: switchScale },
-    { key: "e", text: "colour jobs by CPU efficiency", get: () => colorMode === "cpu", toggle: toggleEff },
-    { key: "p", text: "jobs waiting for one node at that node", get: () => pinAtNode, toggle: togglePinned },
-    { key: "a", text: "all waiting jobs (else top 50, 10 per node)", get: () => allWaiting, toggle: toggleAll },
+    { key: "b", text: "Colour nodes by how busy they are", get: () => busyMode, toggle: toggleBusy },
+    { key: "c", text: "Colour jobs by memory per CPU (else fit)", get: () => colorMode === "mpc", toggle: switchScale },
+    { key: "e", text: "Colour jobs by CPU efficiency", get: () => colorMode === "cpu", toggle: toggleEff },
+    { key: "p", text: "Show job node pins at each node", get: () => pinAtNode, toggle: togglePinned },
+    { key: "a", text: "All waiting jobs (else top 50, 10 per node)", get: () => allWaiting, toggle: toggleAll },
+    { key: "q", text: "Queue on the right (wide screens)", get: () => queueRight, toggle: toggleQueue },
     // without slurmjobpacker (sjp-viz --no-packer) there are no such partitions
     ...(state && state.packer === false ? [] :
-      [{ key: "o", text: "partitions not managed by slurmjobpacker", get: () => showOthers, toggle: toggleOthers }]),
-    { key: "l", text: "job labels", get: () => showLabels, toggle: () => { showLabels = !showLabels; } },
-    { key: "click", text: "a job's or a reservation's details" },
-    { key: "h", text: "hide the panels" }, { key: "?", text: "open or close these options" }];
+      [{ key: "o", text: "Partitions not managed by slurmjobpacker", get: () => showOthers, toggle: toggleOthers }]),
+    { key: "l", text: "Job labels", get: () => showLabels, toggle: toggleLabels },
+    { key: "click", text: "Show job or reservation details" },
+    { key: "h", text: "Hide the panels" }, { key: "?", text: "Open or close these options" }];
 }
 function renderOptions() {
   document.getElementById("keys").innerHTML = optionRows().map((r, i) => r.get

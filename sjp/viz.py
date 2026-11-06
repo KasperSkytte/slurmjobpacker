@@ -110,8 +110,10 @@ def build_state(cfg, nodes: dict, parts: dict, jobs: list, now: float, mode="liv
         elif j["state"] == "PD":
             # pinned: waiting for one node (sjp's pin, or the user's --nodelist)
             req = slurm.expand_hostlist(j.get("req_nodes") or "")
-            pending.append(dict(info, cpus=j["cpus"], mem=j.get("req_mem") or j["mem"],
-                                gpus=j.get("gpus", 0) / max(j.get("nnodes", 1), 1),
+            # per node, as running jobs are, with how many nodes it asks for
+            nn = max(j.get("nnodes", 1), 1)
+            pending.append(dict(info, cpus=j["cpus"] / nn, mem=j.get("req_mem") or j["mem"],
+                                gpus=j.get("gpus", 0) / nn, nodes=nn,
                                 reason=j["reason"], priority=j["priority"],
                                 pinned=req[0] if len(req) == 1 and req[0] in shown else ""))
     pending.sort(key=queue_order)
