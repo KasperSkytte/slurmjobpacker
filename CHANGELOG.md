@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.23.0](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.22.0...v1.23.0) (2026-11-13)
+
+
+### Features
+
+* GPU memory as a share, from the GPU type; cluster name and GPU use in the panel ([9053756](https://github.com/KasperSkytte/slurmjobpacker/commit/9053756c15fe30a0f20eb56ba93da8618a2e752b))
+* GPU utilization in job details, where Slurm measures it ([32f1154](https://github.com/KasperSkytte/slurmjobpacker/commit/32f1154d7ca22a0a98c7e42753755b4a838247ba))
+
 ## [1.22.0](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.21.0...v1.22.0) (2026-11-06)
 
 
