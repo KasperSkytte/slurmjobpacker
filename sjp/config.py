@@ -143,6 +143,12 @@ DEFAULTS: dict = {
         "flex_revert_after": 60.0,    # seconds a moved job may stay pending there
         "flex_retry_after": 60.0,     # seconds after a job went back before it is tried again
     },
+    "viz": {
+        # GB of memory per GPU, by the GPU type Slurm names in a node's Gres
+        # (gpu:a100:4 -> a100 = 80). sjp-viz shows a job's GPU memory as a share
+        # of it; Slurm does not report it. Types not listed: shown in GB only.
+        "gpu_memory": {},
+    },
 }
 
 

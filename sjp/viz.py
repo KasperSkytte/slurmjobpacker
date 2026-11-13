@@ -105,6 +105,7 @@ def build_state(cfg, nodes: dict, parts: dict, jobs: list, now: float, mode="liv
             start = j.get("start") or end - j["timelimit"] * 60
             for n in on:
                 running.append(dict(info, node=n, cpus=j["cpus"] / nn, mem=mem,
+                                    **gpu_mem(cfg, nodes[n]) if j.get("gpus") else {},
                                     gpus=j.get("gpus", 0) / nn, start=start, end=end, nodes=nn,
                                     rec=j.get("id", j["jobid"])))
         elif j["state"] == "PD":
@@ -163,10 +164,20 @@ def reservations(shown, nodes, resvs, jobs, now):
                 **{k: r.get(k, "") for k in ("users", "accounts", "flags", "partition")}))
 
 
+def gpu_mem(cfg, node: dict) -> dict:
+    """{gpu_mem: MB per GPU} for a node whose GPU type [viz] gpu_memory lists;
+    else {}."""
+    sizes = {k.lower(): v for k, v in cfg.get("viz", {}).get("gpu_memory", {}).items()}
+    gb = sizes.get((node.get("gpu_type") or "").lower())
+    return dict(gpu_mem=int(gb * 1024)) if gb else {}
+
+
 class UsageLog:
     """What each running job uses, from samples of its CPU time and memory:
     per job, (time, CPUs busy, memory in use MB) since the last sample, its
-    peak memory, and the CPUs it kept busy on average since it started.
+    peak memory, and the CPUs it kept busy on average since it started. For a
+    job whose GPUs Slurm measures, also how busy they are (percent, summed
+    over them) and the GPU memory it uses, at each sample.
 
     With a path, every reading is appended to that file as one JSON line, and
     read back at the start, so the history outlives a restart. Once a day the
@@ -191,19 +202,26 @@ class UsageLog:
         print(f"sjp-viz: usage history kept in memory only: {why}", file=sys.stderr, flush=True)
 
     def add(self, now: float, used: dict, starts: dict, save: bool = True):
-        """used: job ID -> (CPU seconds so far, memory MB, peak MB), as
-        slurm.usage() reads it; starts: job ID -> start time, for every job
-        running. Jobs no longer running are forgotten."""
+        """used: job ID -> (CPU seconds so far, memory MB, peak MB[, GPU
+        percent, GPU memory MB]), as slurm.usage() reads it; starts: job ID ->
+        start time, for every job running. Jobs no longer running are forgotten."""
         with self.lock:
-            for jid, (cpu_s, mem, peak) in used.items():
+            for jid, (cpu_s, mem, peak, *g) in used.items():
                 r = self.jobs.get(jid)
                 if r is None:
                     r = self.jobs[jid] = dict(last=None, t=array("d"), cpu=array("f"),
                                               mem=array("q"), peak=0)
+                    if g:                # measured from its first sample, or not shown
+                        r.update(gpu=array("f"), gmem=array("q"), gpeak=0)
                 if r["last"] and now > r["last"][0]:
                     r["t"].append(now)
                     r["cpu"].append(max(0.0, (cpu_s - r["last"][1]) / (now - r["last"][0])))
                     r["mem"].append(int(mem))
+                    if "gpu" in r:       # a sample without them: as the last one
+                        r["gpu"].append(g[0] if g else r["now_gpu"])
+                        r["gmem"].append(int(g[1]) if g else r["now_gmem"])
+                if "gpu" in r and g:
+                    r.update(now_gpu=g[0], now_gmem=int(g[1]), gpeak=max(r["gpeak"], int(g[1])))
                 start = starts.get(jid)
                 r.update(last=(now, cpu_s), now_mem=mem, peak=max(r["peak"], peak),
                          avg=round(cpu_s / (now - start), 2) if start and now > start else None)
@@ -235,30 +253,40 @@ class UsageLog:
 
     def summary(self, jid: str):
         """CPUs busy now and on average, memory in use and its peak; None if
-        not sampled yet."""
+        not sampled yet. With measured GPUs: gpu, how busy they are now and
+        over its samples (percent, summed over them), and its GPU memory."""
         with self.lock:
             r = self.jobs.get(jid)
             if not r:
                 return None
-            return dict(now=round(r["cpu"][-1], 2) if r["cpu"] else None, avg=r["avg"],
-                        mem=r["now_mem"], peak=r["peak"])
+            out = dict(now=round(r["cpu"][-1], 2) if r["cpu"] else None, avg=r["avg"],
+                       mem=r["now_mem"], peak=r["peak"])
+            if "now_gpu" in r:
+                seen = list(r["gpu"]) or [r["now_gpu"]]
+                out["gpu"] = dict(now=round(r["now_gpu"], 1), avg=round(sum(seen) / len(seen), 1),
+                                  mem=r["now_gmem"], peak=r["gpeak"])
+            return out
 
     def history(self, jid: str, points: int = USE_POINTS) -> list:
-        """The job's samples, (time, CPUs busy, memory MB); averaged into at
-        most `points` of them for a long job."""
+        """The job's samples, (time, CPUs busy, memory MB), and with measured
+        GPUs (..., GPU percent, GPU memory MB); averaged into at most `points`
+        of them for a long job."""
         with self.lock:
             r = self.jobs.get(jid)
             if not r:
                 return []
-            t, c, m = list(r["t"]), list(r["cpu"]), list(r["mem"])
+            t = list(r["t"])
+            cols = [(list(r["cpu"]), 2), (list(r["mem"]), 0)]
+            if "gpu" in r:
+                cols += [(list(r["gpu"]), 1), (list(r["gmem"]), 0)]
         n = len(t)
+        num = lambda x, d: round(x, d) if d else round(x)
         if n <= points:
-            return [(round(t[i]), round(c[i], 2), m[i]) for i in range(n)]
+            return [(round(t[i]), *(num(c[i], d) for c, d in cols)) for i in range(n)]
         out = []
         for k in range(points):
             a, b = k * n // points, (k + 1) * n // points
-            out.append((round(t[b - 1]), round(sum(c[a:b]) / (b - a), 2),
-                        round(sum(m[a:b]) / (b - a))))
+            out.append((round(t[b - 1]), *(num(sum(c[a:b]) / (b - a), d) for c, d in cols)))
         return out
 
 
@@ -386,16 +414,26 @@ def demo_use(j: dict, now: float, points: int = 0):
         swing = 0.12 * math.sin(t / 1700 + 2 * seed) + 0.06 * math.sin(t / 470 + seed)
         mem = j["mem"] * mem_share * min(1.0, 0.3 + 2.5 * x) * (1 + swing)
         return min(busy, j["cpus"]), int(min(mem, j["mem"]))
+    gpus = j.get("gpus", 0)
+    def gpu_at(t):                       # its GPUs: busy in long bursts; 24 GB each
+        x = (t - start) / max(j.get("runtime", j["minutes"] * 60), 1)
+        share = 0.25 + 0.7 * (0.5 + 0.5 * math.sin(seed)) * (0.75 + 0.25 * math.sin(t / 1300 + seed))
+        fill = (0.3 + 0.6 * (0.5 + 0.5 * math.cos(2 * seed))) * min(1.0, 0.2 + 5 * x)
+        return round(100 * gpus * min(1.0, share), 1), int(gpus * 24576 * fill)
     if points:
         step = max(60.0, (now - start) / points)
         ts = [start + step * (i + 1) for i in range(int((now - start) / step))]
-        return [(round(t), round(at(t)[0], 2), at(t)[1]) for t in ts]
+        return [(round(t), round(at(t)[0], 2), at(t)[1], *(gpu_at(t) if gpus else ())) for t in ts]
     busy, mem = at(now)
     if now < start + 60:
         return dict(now=None, avg=None, mem=mem, peak=mem)
     ts = [start + (now - start) * (i + 0.5) / 60 for i in range(60)]
-    return dict(now=round(busy, 2), avg=round(sum(at(t)[0] for t in ts) / 60, 2), mem=mem,
-                peak=max(at(t)[1] for t in ts + [now]))
+    out = dict(now=round(busy, 2), avg=round(sum(at(t)[0] for t in ts) / 60, 2), mem=mem,
+               peak=max(at(t)[1] for t in ts + [now]))
+    if gpus:
+        out["gpu"] = dict(now=gpu_at(now)[0], avg=round(sum(gpu_at(t)[0] for t in ts) / 60, 1),
+                          mem=gpu_at(now)[1], peak=max(gpu_at(t)[1] for t in ts + [now]))
+    return out
 
 
 class Demo:
@@ -486,6 +524,7 @@ class Demo:
         return dict(j, cpus=cpus, mem=int(cpus * self.rng.uniform(*d["gbc"])) * 1024,
                     minutes=minutes, runtime=minutes * 60 * self.rng.uniform(0.3, 0.95),
                     name=self.rng.choice(d["names"]), gpus=self._pick(d["gpus"]),
+                    gpu_mem=24576,               # the demo's GPUs: 24 GB each
                     target=part, partition=part, managed=False, waits=False,
                     qos="interactive" if part == "interactive" else "normal")
 

@@ -2,7 +2,9 @@
 // of CPU and memory over time as shares of its allocation, its averages and
 // peak below, and a rough verdict. sjp-viz samples jobs with sstat; the state
 // gives each running job's latest figures as `use`, /usage.json?job= its
-// samples.
+// samples. A job whose GPUs Slurm measures has them too (`use.gpu`): how busy
+// they are, as a share of the GPUs it was given, and its GPU memory, as a
+// share of theirs where sjp.toml says how much a GPU has (`gpu_mem`).
 const sjpUse = (() => {
   const pct = x => x == null ? "–" : Math.round(100 * x) + "%";
   const gb = mb => (mb >= 10240 ? (mb / 1024).toFixed(0) : (mb / 1024).toFixed(1)) + " GB";
@@ -40,9 +42,14 @@ const sjpUse = (() => {
     const u = j.use;
     if (!u) return null;
     const cpus = j.cpus * (j.nodes || 1), mem = j.mem * (j.nodes || 1);
+    // GPUs: percent summed over them, so of 100 % for each GPU it was given
+    const gpus = (j.gpus || 0) * (j.nodes || 1), gu = gpus && u.gpu;
     return { cpus, memAlloc: mem, cpu: u.avg != null ? u.avg / cpus : null,
              now: u.now != null ? u.now / cpus : null, mem: u.mem / mem, peak: u.peak / mem,
-             memMb: u.mem, peakMb: u.peak };
+             memMb: u.mem, peakMb: u.peak,
+             gpus: gu ? gpus : 0, gpu: gu ? gu.avg / (100 * gpus) : null,
+             gpuNow: gu ? gu.now / (100 * gpus) : null, gpuMb: gu ? gu.mem : 0,
+             gpuPeakMb: gu ? gu.peak : 0, gpuMemAlloc: gu && j.gpu_mem ? j.gpu_mem * gpus : 0 };
   }
 
   // Rough verdicts, for users to see whether a job runs as intended; not for
@@ -55,7 +62,9 @@ const sjpUse = (() => {
     const mem = [s.peak > 0.95 ? "near its limit" : s.peak >= 0.7 ? "fits well"
       : s.peak >= 0.25 ? "less than allocated" : "far less than allocated",
       colour((s.peak - 0.25) / 0.65)];
-    return { cpu, mem };
+    const gpu = s.gpu == null ? null
+      : [s.gpu < 0.25 ? "mostly idle" : s.gpu < 0.6 ? "partly utilized" : "well utilized", colour(s.gpu)];
+    return { cpu, mem, gpu };
   }
   const tag = ([text, colour]) => colour
     ? `<span style="color:${colour}">● ${text}</span>` : `<span style="opacity:.7">${text}</span>`;
@@ -69,33 +78,57 @@ const sjpUse = (() => {
       `<tr><td>Memory use</td><td>${gb(s.memMb)} of ${gb(s.memAlloc)} (${pct(s.mem)}), ` +
       `peak ${pct(s.peak)}<br>${tag(v.mem)}</td></tr>`;
   }
+  function gpuRows(j) {
+    const s = shares(j), v = s && verdict(s);
+    if (!v || !v.gpu) return "";
+    const a = s.gpuMemAlloc;             // 0: how much a GPU has is not set
+    return `<tr><td>GPU use</td><td>${pct(s.gpu)} of ${+s.gpus.toFixed(1)} GPU${s.gpus === 1 ? "" : "s"} ` +
+      `on average, ${pct(s.gpuNow)} now<br>${tag(v.gpu)}</td></tr>` +
+      `<tr><td>GPU memory</td><td>` + (a
+        ? `${gb(s.gpuMb)} of ${gb(a)} (${pct(s.gpuMb / a)}), peak ${pct(s.gpuPeakMb / a)}`
+        : `${gb(s.gpuMb)} in use, peak ${gb(s.gpuPeakMb)}`) + `</td></tr>`;
+  }
 
-  function svg(pts, cpus, mem, w, h) {
+  // A graph of samples over time: lines [column, divisor, colour, name], each
+  // sample's column divided by its divisor, 1 at the dashed line (100%).
+  // right: [label at the dashed line] for a second scale on the right.
+  function chart(pts, lines, w, h, right) {
     if (pts.length < 2)
       return `<div style="font-size:12px;opacity:.7">The graph starts after two samples.</div>`;
-    const t0 = pts[0][0], t1 = pts[pts.length - 1][0], pad = 32;
-    const top = Math.max(1.1, ...pts.map(p => Math.max(p[1] / cpus, p[2] / mem))) * 1.05;
-    const X = t => pad + (w - pad - 4) * (t - t0) / Math.max(t1 - t0, 1);
+    const t0 = pts[0][0], t1 = pts[pts.length - 1][0], pad = 32, rpad = right ? 40 : 4;
+    const top = Math.max(1.1, ...pts.map(p => Math.max(...lines.map(([k, d]) => p[k] / d)))) * 1.05;
+    const X = t => pad + (w - pad - rpad) * (t - t0) / Math.max(t1 - t0, 1);
     const Y = f => 4 + (h - 20) * (1 - f / top);
-    const line = (k, div) => pts.map((p, i) =>
+    const path = (k, div) => pts.map((p, i) =>
       `${i ? "L" : "M"}${X(p[0]).toFixed(1)},${Y(p[k] / div).toFixed(1)}`).join("");
     const span = t1 - t0, ago = span >= 86400 ? (span / 86400).toFixed(1) + " d"
       : span >= 3600 ? (span / 3600).toFixed(1) + " h" : Math.round(span / 60) + " min";
+    const rx = w - rpad + 4;
     return `<svg width="${w}" height="${h}" style="display:block;overflow:visible">
-      <line x1="${pad}" x2="${w - 4}" y1="${Y(1)}" y2="${Y(1)}" stroke="#8b949e" stroke-dasharray="3 3"/>
+      <line x1="${pad}" x2="${w - rpad}" y1="${Y(1)}" y2="${Y(1)}" stroke="#8b949e" stroke-dasharray="3 3"/>
       <text x="${pad - 4}" y="${Y(1) + 3}" fill="#8b949e" font-size="10" text-anchor="end">100%</text>
       <text x="${pad - 4}" y="${Y(0) + 3}" fill="#8b949e" font-size="10" text-anchor="end">0</text>
-      <line x1="${pad}" x2="${w - 4}" y1="${Y(0)}" y2="${Y(0)}" stroke="#30363d"/>
-      <path d="${line(2, mem)}" fill="none" stroke="#f0883e" stroke-width="1.5"/>
-      <path d="${line(1, cpus)}" fill="none" stroke="#58a6ff" stroke-width="1.5"/>
+      ${right ? `<text x="${rx}" y="${Y(1) + 3}" fill="#8b949e" font-size="10">${right}</text>
+      <text x="${rx}" y="${Y(0) + 3}" fill="#8b949e" font-size="10">0</text>` : ""}
+      <line x1="${pad}" x2="${w - rpad}" y1="${Y(0)}" y2="${Y(0)}" stroke="#30363d"/>
+      ${[...lines].reverse().map(([k, d, c]) =>
+        `<path d="${path(k, d)}" fill="none" stroke="${c}" stroke-width="1.5"/>`).join("")}
       <text x="${pad}" y="${h - 2}" fill="#8b949e" font-size="10">${ago} ago</text>
-      <text x="${w - 4}" y="${h - 2}" fill="#8b949e" font-size="10" text-anchor="end">now</text>
+      <text x="${w - rpad}" y="${h - 2}" fill="#8b949e" font-size="10" text-anchor="end">now</text>
     </svg>
-    <div style="font-size:11px;color:#8b949e;margin-top:2px">
-      <span style="color:#58a6ff">━</span> CPU &nbsp; <span style="color:#f0883e">━</span> memory</div>`;
+    <div style="font-size:11px;color:#8b949e;margin-top:2px">` +
+      lines.map(([, , c, name]) => `<span style="color:${c}">━</span> ${name}`).join(" &nbsp; ") + `</div>`;
+  }
+  // A round amount of GPU memory (MB) above the most a job used: the right
+  // scale's top. Slurm does not say how much a GPU has, so the job's own use sets it.
+  function gpuMemTop(pts) {
+    const most = Math.max(1024, ...pts.map(p => p[4]));
+    const step = 2 ** Math.ceil(Math.log2(most / 1024)) * 1024 / 4;
+    return Math.ceil(most * 1.1 / step) * step;
   }
 
-  // The job's part of the details: title, graph, then its use in figures.
+  // The job's part of the details: title, graph, then its use in figures; for
+  // a job with measured GPUs, a second graph and rows for them.
   // latest() gives the job as the newest state has it; the part is refreshed
   // from it every 15 s while it stays on screen.
   async function panel(el, j, latest = () => j, w = 232, h = 96) {
@@ -106,10 +139,24 @@ const sjpUse = (() => {
     catch (e) { pts = []; }
     if (el.dataset.job !== id) return;              // another job was picked meanwhile
     j = latest() || j;
+    const title = t => `<div style="font-weight:600;margin-bottom:4px">${t}</div>`;
+    const n = j.nodes || 1, gpus = j.use && j.use.gpu ? (j.gpus || 0) * n : 0;
     // el is a tbody of the details table, so the rows line up with the others
-    el.innerHTML = `<tr><td colspan="2" style="color:inherit;padding-top:8px">` +
-      `<div style="font-weight:600;margin-bottom:4px">Job utilization vs allocated</div>` +
-      svg(pts, j.cpus * (j.nodes || 1), j.mem * (j.nodes || 1), w, h) + `</td></tr>` + rows(j);
+    let html = `<tr><td colspan="2" style="color:inherit;padding-top:8px">` +
+      title("Job utilization") +
+      chart(pts, [[1, j.cpus * n, "#58a6ff", "CPU"], [2, j.mem * n, "#f0883e", "memory"]], w, h) +
+      `</td></tr>` + rows(j);
+    if (gpus) {
+      // GPU memory as a share of the GPUs' own, on the same scale; where how
+      // much a GPU has is not set, in GB on a scale of its own (right)
+      const g = pts.filter(p => p.length > 4), alloc = j.gpu_mem ? j.gpu_mem * gpus : 0;
+      const top = alloc || (g.length ? gpuMemTop(g) : 0);
+      html += `<tr><td colspan="2" style="color:inherit;padding-top:8px">` + title("GPU utilization") +
+        chart(g, [[3, 100 * gpus, "#3fb950", "GPU"],
+                  [4, top, "#d2a8ff", alloc ? "GPU memory" : "GPU memory (right)"]],
+              w, h, alloc ? "" : gb(top)) + `</td></tr>` + gpuRows(j);
+    }
+    el.innerHTML = html;
     setTimeout(() => {
       if (el.dataset.job === id && el.isConnected && el.offsetParent) panel(el, j, latest, w, h);
     }, 15000);

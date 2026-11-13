@@ -895,8 +895,35 @@ dj = next(j for j in ds["running"] if j["use"]["avg"] is not None)
 hist = demo.history(dj["id"])
 check("the demo makes up usage within each job's allocation, the same at every look",
       0 <= dj["use"]["avg"] <= dj["cpus"] and dj["use"]["peak"] <= dj["mem"]
-      and len(hist) > 1 and all(0 <= c <= dj["cpus"] and m <= dj["mem"] for _, c, m in hist)
+      and len(hist) > 1 and all(0 <= c <= dj["cpus"] and m <= dj["mem"] for _, c, m, *_ in hist)
       and demo.history(dj["id"]) == hist)
+# GPUs, where Slurm measures them: busy in percent summed over them, and their memory.
+gpu_out = ("9.batch|cpu=00:00:00,gres/gpumem=0,gres/gpuutil=0,mem=1048576|cpu=00:00:00,mem=1048576\n"
+           "9.0|cpu=00:01:00,gres/gpumem=3221225472,gres/gpuutil=150,mem=1048576|cpu=00:01:00,mem=1048576\n"
+           "7.0|cpu=00:01:00,mem=1048576|cpu=00:01:00,mem=1048576\n")
+slurm._run = lambda args, timeout=10.0: gpu_out
+try:
+    use = slurm.usage(["9", "7"])
+finally:
+    slurm._run = real_run
+check("sstat: a job's GPU use and GPU memory are read where Slurm measures them, summed over steps",
+      use == {"9": (60.0, 2, 1, 150.0, 3072), "7": (60.0, 1, 1)}, str(use))
+ul = viz.UsageLog()
+for t, util, gm in ((1000.0, 150.0, 3072), (1060.0, 50.0, 4096), (1120.0, 100.0, 2048)):
+    ul.add(t, {"9": (t / 10, 512, 600, util, gm), "7": (t / 10, 512, 600)}, {"9": 900.0, "7": 900.0})
+check("GPU samples are kept beside CPU and memory: now, the average, memory and its peak",
+      ul.summary("9")["gpu"] == dict(now=100.0, avg=75.0, mem=2048, peak=4096)
+      and ul.history("9") == [(1060, 0.1, 512, 50.0, 4096), (1120, 0.1, 512, 100.0, 2048)]
+      and "gpu" not in ul.summary("7") and ul.history("7") == [(1060, 0.1, 512), (1120, 0.1, 512)],
+      str(ul.summary("9")) + str(ul.history("9")))
+vc = config.defaults(); vc["viz"]["gpu_memory"] = {"A100": 80}
+check("a GPU's memory comes from [viz] gpu_memory, by the type in the node's Gres, any case",
+      viz.gpu_mem(vc, {"gpu_type": "a100"}) == {"gpu_mem": 81920}
+      and viz.gpu_mem(vc, {"gpu_type": "l40s"}) == {} and viz.gpu_mem(config.defaults(), {}) == {})
+gj = next((j for j in ds["running"] if j.get("gpus") and j["use"]["avg"] is not None), None)
+check("the demo's GPU jobs have GPU usage too, within what they were given",
+      gj is None or (0 <= gj["use"]["gpu"]["avg"] <= 100 * gj["gpus"]
+                     and len(demo.history(gj["id"])[0]) == 5), str(gj))
 check("the page's usage panel is shipped and loaded by both views",
       os.path.exists(viz.USE_JS) and all('src="usage.js"' in open(p).read()
                                           for p in (viz.HTML, viz.HTML_2D)))

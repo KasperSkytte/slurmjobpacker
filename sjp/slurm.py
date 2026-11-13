@@ -416,8 +416,13 @@ def usage(jobids: list[str], chunk: int = 200) -> dict:
     JobAcctGatherType other than none; jobs without a running step are missing.
     Job IDs are the jobs' own (queue()'s id): sstat names an array task by
     one, never as "12_3". An array's job ID lists all its tasks, so a step
-    may be listed twice; it counts once."""
-    out, seen = {}, set()
+    may be listed twice; it counts once.
+
+    A job whose GPUs Slurm measures (gres/gpu in AccountingStorageTRES, and a
+    GPU plugin that reads them, such as AutoDetect=nvml) gets two more: how
+    busy its GPUs are now, in percent summed over them (two GPUs, both busy:
+    200), and the GPU memory it uses, MB."""
+    out, seen, gpu = {}, set(), {}
     for i in range(0, len(jobids), chunk):
         txt = _run(["sstat", "-a", "-n", "-P", "--noconvert", "-j", ",".join(jobids[i:i + chunk]),
                     "-o", "JobID,TRESUsageInTot,TRESUsageInMax"], timeout=30.0)
@@ -433,7 +438,11 @@ def usage(jobids: list[str], chunk: int = 200) -> dict:
             cpu, mem, peak = out.get(jid, (0.0, 0, 0))
             out[jid] = (cpu + _seconds(t["cpu"]), mem + int(t.get("mem", 0)) // 2**20,
                         max(peak, int(m.get("mem", 0)) // 2**20))
-    return out
+            if "gres/gpuutil" in t:
+                util, gmem = gpu.get(jid, (0.0, 0))
+                gpu[jid] = (util + float(t["gres/gpuutil"]),
+                            gmem + int(t.get("gres/gpumem", 0)) // 2**20)
+    return {jid: v + gpu.get(jid, ()) for jid, v in out.items()}
 
 
 def qos_cpu_limits(qos: str) -> tuple[int | None, int | None]:

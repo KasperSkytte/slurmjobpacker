@@ -84,7 +84,7 @@
   <div class="stats">
     <span>CPUs</span><div class="bar"><i id="cpubar"><b id="cpuutil"></b></i></div><span id="cpu">–</span>
     <span>Memory</span><div class="bar"><i id="membar"><b id="memutil"></b></i></div><span id="mem">–</span>
-    <span class="gpurow" title="GPUs allocated to jobs; how much they are used is not measured">GPUs</span><div class="bar gpurow"><i id="gpubar"></i></div><span class="gpurow" id="gpu">–</span>
+    <span class="gpurow" title="GPUs allocated to jobs; how busy each job keeps them is in its details">GPUs</span><div class="bar gpurow"><i id="gpubar"></i></div><span class="gpurow" id="gpu">–</span>
     <span class="util">Utilization</span><span class="util" id="util" style="grid-column: span 2">–</span>
     <span>Jobs</span><span id="jobs" style="grid-column: span 2">–</span>
     <span>Time</span><span id="clock" style="grid-column: span 2">–</span>
@@ -455,7 +455,7 @@ function updatePanel(s) {
   const cap = s.nodes.reduce((a, n) => [a[0] + n.cpus, a[1] + n.mem, a[2] + (n.gpus || 0)], [0, 0, 0]);
   const use = s.running.reduce((a, j) => [a[0] + j.cpus, a[1] + j.mem, a[2] + (j.gpus || 0)], [0, 0, 0]);
   const pc = 100 * use[0] / Math.max(cap[0], 1), pm = 100 * use[1] / Math.max(cap[1], 1);
-  // GPUs allocated, when the cluster has some (what they are used for is not measured)
+  // GPUs allocated, when the cluster has some (how busy they are: in each job's details)
   document.body.classList.toggle("gpus", cap[2] > 0);
   const pg = 100 * use[2] / Math.max(cap[2], 1);
   document.getElementById("gpubar").style.width = pg + "%";
