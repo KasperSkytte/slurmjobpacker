@@ -144,9 +144,11 @@ DEFAULTS: dict = {
         "flex_retry_after": 60.0,     # seconds after a job went back before it is tried again
     },
     "viz": {
-        # GB of memory per GPU, by the GPU type Slurm names in a node's Gres
-        # (gpu:a100:4 -> a100 = 80). sjp-viz shows a job's GPU memory as a share
-        # of it; Slurm does not report it. Types not listed: shown in GB only.
+        # GB of memory per GPU, by the GPU type in a node's Gres (gpu:a100:4 ->
+        # a100 = 80), for sjp-viz to show a job's GPU memory as a share of it.
+        # Slurm does not report it; sjp-viz knows it for most types without this
+        # (sjp/viz.py GPU_MEMORY, or a size in the name: a100_80gb). For others,
+        # GPU memory is shown in GB only.
         "gpu_memory": {},
     },
 }

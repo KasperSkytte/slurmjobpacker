@@ -916,10 +916,19 @@ check("GPU samples are kept beside CPU and memory: now, the average, memory and 
       and ul.history("9") == [(1060, 0.1, 512, 50.0, 4096), (1120, 0.1, 512, 100.0, 2048)]
       and "gpu" not in ul.summary("7") and ul.history("7") == [(1060, 0.1, 512), (1120, 0.1, 512)],
       str(ul.summary("9")) + str(ul.history("9")))
-vc = config.defaults(); vc["viz"]["gpu_memory"] = {"A100": 80}
-check("a GPU's memory comes from [viz] gpu_memory, by the type in the node's Gres, any case",
-      viz.gpu_mem(vc, {"gpu_type": "a100"}) == {"gpu_mem": 81920}
-      and viz.gpu_mem(vc, {"gpu_type": "l40s"}) == {} and viz.gpu_mem(config.defaults(), {}) == {})
+names = {"nvidia_a10": 24, "a10": 24, "nvidia_geforce_rtx_4090": 24, "nvidia_a100_80gb_pcie": 80,
+         "nvidia_a100-sxm4-40gb": 40, "tesla_v100-sxm2-32gb": 32, "nvidia_h100_nvl": 94,
+         "nvidia_rtx_6000_ada_generation": 48, "a100": None, "nvidia_gh200_480gb": None, "": None}
+got = {t: viz.gpu_size(t) for t in names}
+check("a GPU's memory from its type as Slurm names it: the size in the name, else by model",
+      got == names, str(got))
+vc = config.defaults(); vc["viz"]["gpu_memory"] = {"A100": 40, "a10": 23}
+check("[viz] gpu_memory sets it for types not known, or overrides it, any case",
+      viz.gpu_mem(vc, {"gpu_type": "a100"}) == {"gpu_mem": 40960}
+      and viz.gpu_mem(vc, {"gpu_type": "nvidia_a10"}) == {"gpu_mem": 23552}
+      and viz.gpu_mem(config.defaults(), {"gpu_type": "weird"}) == {}
+      and viz.gpu_mem(config.defaults(), {}) == {})
+check("the demo names its cluster, for the page's panel", ds.get("cluster") == "demo")
 gj = next((j for j in ds["running"] if j.get("gpus") and j["use"]["avg"] is not None), None)
 check("the demo's GPU jobs have GPU usage too, within what they were given",
       gj is None or (0 <= gj["use"]["gpu"]["avg"] <= 100 * gj["gpus"]

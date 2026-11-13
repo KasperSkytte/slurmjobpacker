@@ -17,7 +17,7 @@ see it from your own machine, use an SSH tunnel:
     ssh -L 8650:localhost:8650 <controller>      # then open http://localhost:8650
 """
 from __future__ import annotations
-import argparse, json, math, os, random, sys, threading, time
+import argparse, json, math, os, random, re, sys, threading, time
 from array import array
 from urllib.parse import parse_qs, urlparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -164,11 +164,57 @@ def reservations(shown, nodes, resvs, jobs, now):
                 **{k: r.get(k, "") for k in ("users", "accounts", "flags", "partition")}))
 
 
+# GB of memory per GPU, by model, for the GPU types Slurm names after them.
+# With AutoDetect=nvml (or rsmi), slurmd names a GPU type after the model the
+# driver reports, lower case with underscores: "NVIDIA A10" -> nvidia_a10. A
+# model made with more than one size has it in the name (nvidia_a100_80gb_pcie),
+# so only models made in one size are listed here.
+GPU_MEMORY = {
+    "a2": 16, "a10": 24, "a10g": 24, "a16": 16, "a30": 24, "a40": 48,
+    "h100_pcie": 80, "h100_nvl": 94, "h200": 141, "h200_nvl": 141,
+    "l4": 24, "l40": 48, "l40s": 48, "t4": 16, "p40": 24, "p4": 8,
+    "rtx_a2000": 6, "rtx_a4000": 16, "rtx_a4500": 20, "rtx_a5000": 24, "rtx_a5500": 24,
+    "rtx_a6000": 48, "rtx_2000_ada_generation": 16, "rtx_4000_ada_generation": 20,
+    "rtx_4500_ada_generation": 24, "rtx_5000_ada_generation": 32,
+    "rtx_6000_ada_generation": 48, "rtx_pro_6000_blackwell": 96,
+    "titan_rtx": 24, "titan_v": 12, "rtx_2080_ti": 11, "gtx_1080_ti": 11,
+    "rtx_3090": 24, "rtx_3090_ti": 24, "rtx_4080": 16, "rtx_4090": 24, "rtx_5080": 16,
+    "rtx_5090": 32,
+    "mi100": 32, "mi210": 64, "mi250": 64, "mi250x": 64, "mi300x": 192,
+}
+_VENDOR = re.compile(r"^(nvidia|tesla|geforce|quadro|amd|instinct|radeon)_")
+
+
+def gpu_size(gpu_type: str, sizes: dict | None = None) -> float | None:
+    """GB of memory per GPU of a GPU type as Slurm names it (nvidia_a10,
+    a100_80gb, geforce_rtx_4090): from sizes ([viz] gpu_memory) if it lists
+    the type, else from the size in its name, else from GPU_MEMORY by model.
+    None if unknown, or the type is not given (Gres=gpu:4)."""
+    t = (gpu_type or "").lower().replace("-", "_").replace(" ", "_")
+    if not t:
+        return None
+    given = {k.lower(): v for k, v in (sizes or {}).items()}
+    if t in given:
+        return given[t]
+    while _VENDOR.match(t):              # nvidia_geforce_rtx_4090 -> rtx_4090
+        t = _VENDOR.sub("", t, count=1)
+    if t in given:
+        return given[t]
+    m = re.search(r"(?:^|_)(\d+)gb(?:_|$)", t)
+    if m and int(m.group(1)) <= 200:     # a GPU's own; GH200 480GB counts its CPU's too
+        return int(m.group(1))
+    parts = t.split("_")                 # the model, less what follows it: h100_pcie_..., a10_...
+    for k in range(len(parts), 0, -1):
+        gb = GPU_MEMORY.get("_".join(parts[:k]))
+        if gb:
+            return gb
+    return None
+
+
 def gpu_mem(cfg, node: dict) -> dict:
-    """{gpu_mem: MB per GPU} for a node whose GPU type [viz] gpu_memory lists;
+    """{gpu_mem: MB per GPU} for a node whose GPU size is known (gpu_size());
     else {}."""
-    sizes = {k.lower(): v for k, v in cfg.get("viz", {}).get("gpu_memory", {}).items()}
-    gb = sizes.get((node.get("gpu_type") or "").lower())
+    gb = gpu_size(node.get("gpu_type"), cfg.get("viz", {}).get("gpu_memory"))
     return dict(gpu_mem=int(gb * 1024)) if gb else {}
 
 
@@ -307,9 +353,14 @@ class Live:
         self.use_error = ""
 
     def run(self):
-        accounts, accounts_at = [], 0.0
+        accounts, accounts_at, cluster = [], 0.0, ""
         while True:
             try:
+                if not cluster:                      # its name, for the page's panel
+                    try:
+                        cluster = slurm.cluster_name()
+                    except slurm.SlurmError:
+                        pass                         # read again at the next poll
                 if time.time() - accounts_at > 600:  # the accounts, for the filter
                     try:
                         accounts, accounts_at = slurm.accounts(), time.time()
@@ -323,7 +374,7 @@ class Live:
                                 slurm.queue(), time.time(), resvs=slurm.reservations(),
                                 notes=notes, version=self.version)
                 s["poll_ms"] = int(self.interval * 1000)
-                s["accounts"] = accounts
+                s["accounts"], s["cluster"] = accounts, cluster
                 if self.use_interval:
                     for r in s["running"]:
                         r["use"] = self.use.summary(r["id"])
@@ -656,7 +707,7 @@ class Demo:
                                  for j in pending[:MAX_WAITING]],
                         usage=dict(interval=60, error=""),
                         pending_total=len(pending), queued_total=len(queued), top=TOP,
-                        accounts=sorted(set(DEMO_ACCOUNTS.values())))
+                        accounts=sorted(set(DEMO_ACCOUNTS.values())), cluster="demo")
 
 
 def serve(source, bind: str, port: int, packer: bool = True):

@@ -16,16 +16,20 @@ const sjpUse = (() => {
 
   // The share of their allocation that running jobs utilize together, CPUs
   // now and memory in use, over the jobs measured so far; null before any is.
+  // gpu: how busy their GPUs are now, over the jobs whose GPUs Slurm measures;
+  // null if none.
   function totals(running) {
     const jobs = new Map();
     for (const r of running) if (r.use && !jobs.has(r.id)) jobs.set(r.id, r);
-    let cpus = 0, busy = 0, mem = 0, used = 0;
+    let cpus = 0, busy = 0, mem = 0, used = 0, gpus = 0, gbusy = 0;
     for (const j of jobs.values()) {
       const n = j.nodes || 1, b = j.use.now != null ? j.use.now : j.use.avg;
+      if (j.use.gpu && j.gpus) { gpus += j.gpus * n; gbusy += j.use.gpu.now / 100; }
       if (b == null) continue;
       cpus += j.cpus * n; busy += b; mem += j.mem * n; used += j.use.mem;
     }
-    return cpus ? { cpu: busy / cpus, mem: used / mem } : null;
+    return cpus || gpus ? { cpu: cpus ? busy / cpus : null, mem: cpus ? used / mem : null,
+                            gpu: gpus ? gbusy / gpus : null } : null;
   }
 
   // The panel's CPU or memory bar: allocated as before, and within it the part

@@ -79,9 +79,10 @@
   <h1><a id="title" href="https://github.com/KasperSkytte/slurmjobpacker" target="_blank" rel="noopener">slurmjobpacker</a><span id="version"></span></h1>
   <div class="sub" id="subtitle">Live view of the cluster in CPUs × memory × time space. Click a job for details and live utilization.</div>
   <div class="stats">
+    <span>Cluster</span><span id="cluster" style="grid-column: span 2">–</span>
     <span>CPUs</span><div class="bar"><i id="cpubar"><b id="cpuutil"></b></i></div><span id="cpu">–</span>
     <span>Memory</span><div class="bar"><i id="membar"><b id="memutil"></b></i></div><span id="mem">–</span>
-    <span class="gpurow" title="GPUs allocated to jobs; how busy each job keeps them is in its details">GPUs</span><div class="bar gpurow"><i id="gpubar"></i></div><span class="gpurow" id="gpu">–</span>
+    <span class="gpurow" title="GPUs allocated to jobs, and how busy they are where Slurm measures it">GPUs</span><div class="bar gpurow"><i id="gpubar"><b id="gpuutil"></b></i></div><span class="gpurow" id="gpu">–</span>
     <span class="util">Utilization</span><span class="util" id="util" style="grid-column: span 2">–</span>
     <span>Jobs</span><span id="jobs" style="grid-column: span 2">–</span>
     <span>Time</span><span id="clock" style="grid-column: span 2">–</span>
@@ -723,7 +724,8 @@ function updatePanel(s) {
   const cap = s.nodes.reduce((a, n) => [a[0] + n.cpus, a[1] + n.mem, a[2] + (n.gpus || 0)], [0, 0, 0]);
   const use = s.running.reduce((a, j) => [a[0] + j.cpus, a[1] + j.mem, a[2] + (j.gpus || 0)], [0, 0, 0]);
   const pc = 100 * use[0] / Math.max(cap[0], 1), pm = 100 * use[1] / Math.max(cap[1], 1);
-  // GPUs allocated, when the cluster has some (how busy they are: in each job's details)
+  if (s.cluster) document.getElementById("cluster").textContent = s.cluster;
+  // GPUs allocated, when the cluster has some
   document.body.classList.toggle("gpus", cap[2] > 0);
   const pg = 100 * use[2] / Math.max(cap[2], 1);
   document.getElementById("gpubar").style.width = pg + "%";
@@ -737,9 +739,11 @@ function updatePanel(s) {
   document.body.classList.toggle("measured", !!ut);
   sjpUse.bar(document.getElementById("cpubar"), document.getElementById("cpuutil"), ut && ut.cpu);
   sjpUse.bar(document.getElementById("membar"), document.getElementById("memutil"), ut && ut.mem);
-  if (ut) document.getElementById("util").innerHTML =
-    `<span style="color:${sjpUse.colour(ut.cpu)}">${sjpUse.pct(ut.cpu)}</span> of allocated CPUs, ` +
-    `<span style="color:${sjpUse.colour(ut.mem)}">${sjpUse.pct(ut.mem)}</span> of memory`;
+  sjpUse.bar(document.getElementById("gpubar"), document.getElementById("gpuutil"), ut && ut.gpu);
+  const of = (x, what) => `<span style="color:${sjpUse.colour(x)}">${sjpUse.pct(x)}</span> of ${what}`;
+  if (ut) document.getElementById("util").innerHTML = [
+    ut.cpu != null ? of(ut.cpu, "allocated CPUs") : "", ut.cpu != null ? of(ut.mem, "memory") : "",
+    ut.gpu != null ? of(ut.gpu, "GPUs") : ""].filter(Boolean).join(", ");
   const running = new Set(s.running.map(j => j.id)).size;
   document.getElementById("jobs").textContent = `${running} running · ${s.pending_total} waiting` + filterCount(s);
   const d = new Date(s.now * 1000);

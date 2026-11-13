@@ -117,7 +117,7 @@ To switch it off, `sudo touch /etc/sjp/disable`: from the next submission
 Click a job for its details, including how much of its CPUs and memory it uses over time
 (read with `sstat`; needs job accounting, `JobAcctGatherType`), and of its GPUs where Slurm
 measures them (`gres/gpu` in `AccountingStorageTRES`, and `AutoDetect=nvml` in `gres.conf`;
-GPU memory as a share needs each GPU type's size in `sjp.toml`, `[viz] gpu_memory`):
+GPU memory as a share also needs the GPU type in the node's `Gres`, e.g. `Gres=gpu:a10:2`):
 
 <img src="docs/img/sjp-job-details.png" width="290" alt="A running job's details: user, account, CPUs, memory and time, then a graph of its CPU and memory use against what it was given, and its average CPU use and memory peak with a verdict">
 
