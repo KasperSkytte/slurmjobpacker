@@ -796,7 +796,7 @@ function select(v) {
     ...(j.total_cpus != null ? [
       ["CPUs", count(j.cpus) + (j.nodes > 1 ? ` on ${j.node}, ${count(j.total_cpus)} on ${j.nodes} nodes` : "")
                + (Math.abs(j.asked - j.total_cpus) > 0.05
-                  ? `\nallocated as whole cores; ${count(j.asked)} asked for` : "")],
+                  ? ` (Requested: ${count(j.asked)})` : "")],
       ["Memory", gb(j.mem) + (j.nodes > 1 ? ` on ${j.node}, ${gb(j.total_mem)} on ${j.nodes} nodes` : "")]]
     : [["CPUs", count(j.cpus) + (j.nodes > 1 ? ` per node, ${j.nodes} nodes` : "")],
        ["Memory", gb(j.mem) + (j.nodes > 1 ? " per node" : "")]]),
