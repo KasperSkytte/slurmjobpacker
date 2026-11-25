@@ -777,6 +777,41 @@ vs = viz.build_state(config.defaults(), vnodes, vparts, pj, 500.0)
 pin = {j["id"]: j["pinned"] for j in vs["pending"]}
 check("a waiting job tied to one node is drawn there; others queue as usual",
       pin == {"20": "s1", "21": "", "22": "g1", "23": ""} and vs["queued_total"] == 2, str(pin))
+# Whole cores: a 1-CPU job allocated both threads of a core is drawn with 2.
+aj = [dict(vjobs[0], jobid="30", id="30", cpus=1, mem=1024, req_mem=1024),
+      dict(vjobs[0], jobid="31", id="31", cpus=3)]
+vs = viz.build_state(config.defaults(), vnodes, vparts, aj, 500.0, alloc={"30": {"s1": (2, 2048)}})
+got = {j["id"]: (j["cpus"], j["mem"], j["asked"]) for j in vs["running"]}
+check("a running job is drawn with what it was allocated, else with what it asked for",
+      got == {"30": (2, 2048, 1), "31": (3, 8192, 3)}, str(got))
+vn3 = {"h1": dict(cpus=64, mem=262144, partitions=["slim"], up=True, threads=2, cores=64),
+       "h2": dict(cpus=128, mem=262144, partitions=["slim"], up=True, threads=2, cores=64)}
+mj = [dict(vjobs[0], jobid="32", id="32", nodelist="h[1-2]", cpus=5, mem=1024, req_mem=1024),
+      dict(vjobs[0], jobid="33", id="33", nodelist="h2", cpus=1, mem=1024, req_mem=1024)]
+vs = viz.build_state(config.defaults(), vn3, vparts, mj,  500.0,
+                     alloc={"32": {"h1": (4, 2048), "h2": (6, 3072)}, "33": {"h2": (999, 0)}})
+got = {(j["id"], j["node"]): (j["cpus"], j["mem"], j["total_cpus"], j["total_mem"])
+       for j in vs["running"]}
+check("a node whose CPUs are cores counts one per core; totals over all nodes; implausible ignored",
+      got == {("32", "h1"): (2, 2048, 8, 5120), ("32", "h2"): (6, 3072, 8, 5120),
+              ("33", "h2"): (1.0, 1024, 1.0, 1024)}, str(got))
+real_run = slurm._run
+slurm._run = lambda args, timeout=10.0: (
+    "JobId=40 AdminComment=sjp:placed=slim NodeList=n[1-2] NumCPUs=3 JOB_GRES=(null) "
+    "Nodes=n1 CPU_IDs=0-1 Mem=2048 GRES= Nodes=n2 CPU_IDs=4-5,8-9 Mem=4096 GRES=gpu:a10:1(IDX:0)\n"
+    "JobId=41 AdminComment= NumCPUs=1 JobState=PENDING\n"
+    "JobId=42 NumCPUs=4 JOB_GRES=(null) Nodes=n[3-4] CPU_IDs=0-1 Mem=0 GRES= "
+    "Comment=Nodes=n3 CPU_IDs=0-63 Mem=1\n"
+    "JobId=43 Nodes=n5 CPU_IDs=(null) Mem=0 GRES= Nodes=n6 CPU_IDs=" + "0," * 64 + " Mem=5 GRES=\n")
+try:
+    notes, alloc = slurm.job_records()
+finally:
+    slurm._run = real_run
+check("scontrol -d gives each started job's CPUs and memory per node (not cut or empty ones, "
+      "nor a Comment's), and every record's AdminComment",
+      notes == {"40": "sjp:placed=slim", "41": "", "42": "", "43": ""}
+      and alloc == {"40": {"n1": (2, 2048), "n2": (4, 4096)}, "42": {"n3": (2, 0), "n4": (2, 0)}},
+      str((notes, alloc)))
 demo = viz.Demo(config.defaults(), speed=900, seed=2)
 for _ in range(300):
     demo.step(0.1)
@@ -807,11 +842,12 @@ viz.reservations(shown, vn, [
     dict(name="course", start=0, end=200, nodes={"b": 16}),
     dict(name="later", start=150, end=300, nodes={"a": None, "c": None}),
     dict(name="over", start=0, end=50, nodes={"b": None})],
-    [dict(state="R", reservation="course", nodelist="b", cpus=8)], 100)
+    [dict(state="R", reservation="course", nodelist="b", cpus=8),
+     dict(state="R", reservation="course", nodelist="b", cpus=1, id="5")], 100, {"5": {"b": (2, 0)}})
 check("the visualizer is told each node's reservations, now or to come, and what they hold free",
       [(r["name"], r["cpus"], r["whole"], r["active"], r["left"]) for r in shown["a"]["resv"]]
       == [("maint", 64, True, True, 64), ("later", 64, True, False, 64)]
-      and [(r["name"], r["cpus"], r["left"]) for r in shown["b"]["resv"]] == [("course", 16, 8)],
+      and [(r["name"], r["cpus"], r["left"]) for r in shown["b"]["resv"]] == [("course", 16, 6)],
       str(shown))
 q = [dict(id="12", priority=900), dict(id="9_[1-4]", priority=1500),
      dict(id="10", priority=900), dict(id="9_7", priority=1500), dict(id="100", priority=900)]

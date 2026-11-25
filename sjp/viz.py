@@ -55,9 +55,12 @@ def shown_partitions(cfg, parts: dict, nodes: dict) -> list[str]:
 
 
 def build_state(cfg, nodes: dict, parts: dict, jobs: list, now: float, mode="live",
-                resvs=(), notes=None, version=__version__) -> dict:
+                resvs=(), notes=None, version=__version__, alloc=None) -> dict:
     """What the page draws, from what Slurm reports. notes: job ID -> AdminComment,
-    of which the page shows sjp's marks.
+    of which the page shows sjp's marks. alloc: job ID -> node -> (CPUs, memory
+    MB) a started job was allocated there (slurm.job_records); a running job
+    is drawn with those, as no other job can use them, and with what it asked
+    for (squeue's figures) where they are not known.
 
     Every node is sent; managed says whether sjp places jobs on it (its
     partitions by the [topology] rules), and the page shows the others too,
@@ -100,11 +103,13 @@ def build_state(cfg, nodes: dict, parts: dict, jobs: list, now: float, mode="liv
             if not on:
                 continue
             nn = max(len(slurm.expand_hostlist(j["nodelist"])), 1)
-            mem = j.get("req_mem") or j["mem"]
             end = j.get("end") or now + j["timelimit"] * 60
             start = j.get("start") or end - j["timelimit"] * 60
+            got = allocated(j, nodes, alloc)
+            total = [sum(x) for x in zip(*got.values())]       # over all its nodes
             for n in on:
-                running.append(dict(info, node=n, cpus=j["cpus"] / nn, mem=mem,
+                running.append(dict(info, node=n, cpus=got[n][0], mem=got[n][1],
+                                    total_cpus=total[0], total_mem=total[1], asked=j["cpus"],
                                     **gpu_mem(cfg, nodes[n]) if j.get("gpus") else {},
                                     gpus=j.get("gpus", 0) / nn, start=start, end=end, nodes=nn,
                                     rec=j.get("id", j["jobid"])))
@@ -118,7 +123,7 @@ def build_state(cfg, nodes: dict, parts: dict, jobs: list, now: float, mode="liv
                                 reason=j["reason"], priority=j["priority"],
                                 pinned=req[0] if len(req) == 1 and req[0] in shown else ""))
     pending.sort(key=queue_order)
-    reservations(shown, nodes, resvs, jobs, now)
+    reservations(shown, nodes, resvs, jobs, now, alloc)
     # The page shows the top TOP of the queue and of those waiting for a node,
     # or all of them; pinned ones are drawn at their node.
     queued = [p for p in pending if not p["pinned"]]
@@ -136,17 +141,39 @@ def without_packer(state: dict) -> dict:
     return out
 
 
-def reservations(shown, nodes, resvs, jobs, now):
+def allocated(j, nodes, alloc) -> dict:
+    """A started job's CPUs and memory on each of its nodes: what it was
+    allocated there (alloc, as for build_state), else an even share of what it
+    asked for. scontrol lists every thread of an allocated core; on a node whose
+    CPUs are its cores, not its threads, that is counted per core."""
+    ns = slurm.expand_hostlist(j.get("nodelist") or "")
+    got = (alloc or {}).get(j.get("id") or j.get("jobid"), {})
+    out = {}
+    for n in ns:
+        d = nodes.get(n, {})
+        cpus, mem = got.get(n, (0, 0))
+        threads, cores = d.get("threads", 1), d.get("cores", 0)
+        if threads > 1 and cores and d.get("cpus", 0) <= cores:
+            cpus //= threads
+        if not 0 < cpus <= d.get("cpus", cpus):   # not read, or not plausible
+            cpus = j["cpus"] / max(len(ns), 1)
+        out[n] = (cpus, mem or j.get("req_mem") or j.get("mem", 0))
+    return out
+
+
+def reservations(shown, nodes, resvs, jobs, now, alloc=None):
     """Each shown node's reservations, now or to come: name, start, end, the CPUs
     reserved there (all of them for a whole node, else its cores x threads),
-    and, for one in effect, how many of them its own jobs leave free."""
+    and, for one in effect, how many of them its own jobs leave free (alloc:
+    as for build_state)."""
     used = {}
     for j in jobs:
         if j["state"] in ("R", "CF") and j.get("reservation"):
             ns = slurm.expand_hostlist(j.get("nodelist") or "")
+            got = allocated(j, nodes, alloc)
             for n in ns:
                 key = (j["reservation"], n)
-                used[key] = used.get(key, 0) + j["cpus"] / max(len(ns), 1)
+                used[key] = used.get(key, 0) + got[n][0]
     for r in resvs:
         if r["end"] <= now:
             continue
@@ -366,13 +393,14 @@ class Live:
                         accounts, accounts_at = slurm.accounts(), time.time()
                     except slurm.SlurmError:
                         accounts_at = time.time() - 540     # try again in a minute
-                try:                                 # sjp's marks, for a job's details
-                    notes = slurm.admin_comments() if self.packer else {}
+                try:          # sjp's marks, and what each running job was allocated
+                    notes, alloc = slurm.job_records()
                 except slurm.SlurmError:
-                    notes = {}
+                    notes, alloc = {}, {}
                 s = build_state(self.cfg, slurm.nodes(), slurm.partitions(),
                                 slurm.queue(), time.time(), resvs=slurm.reservations(),
-                                notes=notes, version=self.version)
+                                notes=notes if self.packer else {}, alloc=alloc,
+                                version=self.version)
                 s["poll_ms"] = int(self.interval * 1000)
                 s["accounts"], s["cluster"] = accounts, cluster
                 if self.use_interval:

@@ -62,6 +62,8 @@ def nodes() -> dict:
             mem = int(d.get("RealMemory", 0)) - int(d.get("MemSpecLimit", 0) or 0)
             out[name] = dict(
                 cpus=cpus, mem=mem, threads=int(d.get("ThreadsPerCore", 1) or 1),
+                # Sockets: all of the node's, over all its boards
+                cores=int(d.get("Sockets", 0) or 0) * int(d.get("CoresPerSocket", 0) or 0),
                 alloc_cpus=int(d.get("CPUAlloc", 0)),
                 alloc_mem=int(d.get("AllocMem", 0)),
                 partitions=[p for p in d.get("Partitions", "").split(",") if p],
@@ -234,7 +236,7 @@ def reservations() -> list[dict]:
 def _count_ids(ids: str) -> int:
     """'0-3,8' -> 5."""
     n = 0
-    for r in ids.split(","):
+    for r in filter(None, ids.split(",")):
         a, _, b = r.partition("-")
         n += int(b or a) - int(a) + 1
     return n
@@ -325,6 +327,37 @@ def admin_comments() -> dict:
         if "JobId" in kv:
             out[kv["JobId"]] = kv.get("AdminComment", "")
     return out
+
+
+# scontrol -d: what a started job was allocated on each node, as CPU IDs.
+_ALLOC = re.compile(r"(?<!\S)Nodes=(\S+) CPU_IDs=(\S*) Mem=(\d+)")
+
+
+def job_records() -> tuple[dict, dict]:
+    """(notes, alloc) by job ID (a queue() job's id), in one call: each record's
+    AdminComment, and for a started job, node -> (CPUs, memory MB) allocated
+    there. Slurm allocates whole cores, so on nodes with more than one thread
+    per core under CR_CPU a job can be allocated more CPUs than it asked for
+    (NumCPUs, and squeue, say what it asked for)."""
+    notes, alloc = {}, {}
+    for line in _run(["scontrol", "show", "jobs", "-d", "--oneliner"], timeout=20.0).splitlines():
+        kv = _kv(line)
+        if "JobId" not in kv:
+            continue
+        jid = kv["JobId"]
+        notes[jid] = kv.get("AdminComment", "")
+        for hosts, ids, mem in _ALLOC.findall(line):
+            # Slurm 24.11 cuts CPU_IDs at 127 characters: not counted then
+            if len(ids) >= 127:
+                continue
+            try:
+                cpus = _count_ids(ids)
+            except ValueError:               # "(null)", or anything unexpected
+                continue
+            # the first for a node, not one a user's Comment= after it imitates
+            for n in expand_hostlist(hosts) if cpus > 0 else ():
+                alloc.setdefault(jid, {}).setdefault(n, (cpus, int(mem)))
+    return notes, alloc
 
 
 # Pending reasons, exactly as squeue prints them (checked against the 24.11 and

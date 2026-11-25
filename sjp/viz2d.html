@@ -785,12 +785,22 @@ function select(v) {
   if (!v) { box.style.display = "none"; return; }
   if (v.resv) { showResv(v.resv, v.node); return; }
   const j = v.job, mpc = j.mem / Math.max(j.cpus, 1e-9), running = v.key.startsWith("r:");
+  const count = x => (+x).toFixed(x % 1 ? 1 : 0);
   const rows = [
     ["User", j.user], ...(j.account ? [["Account", j.account]] : []), ["Name", j.name],
     ["State", running ? `running on ${j.node}` + (j.nodes > 1 ? ` (+${j.nodes - 1} nodes)` : "")
                      : j.pinned ? `waiting for ${j.pinned} (${j.reason})` : `waiting (${j.reason})`],
-    ["CPUs", (+j.cpus).toFixed(j.cpus % 1 ? 1 : 0) + (j.nodes > 1 ? ` per node, ${j.nodes} nodes` : "")],
-    ["Memory", gb(j.mem) + (j.nodes > 1 ? " per node" : "")], ["Memory / CPU", gbc(mpc)],
+    // a running job: what it was allocated on this node and on all of its
+    // nodes; Slurm allocates whole cores, so on nodes with several threads
+    // per core that can be more CPUs than it asked for
+    ...(j.total_cpus != null ? [
+      ["CPUs", count(j.cpus) + (j.nodes > 1 ? ` on ${j.node}, ${count(j.total_cpus)} on ${j.nodes} nodes` : "")
+               + (Math.abs(j.asked - j.total_cpus) > 0.05
+                  ? `\nallocated as whole cores; ${count(j.asked)} asked for` : "")],
+      ["Memory", gb(j.mem) + (j.nodes > 1 ? ` on ${j.node}, ${gb(j.total_mem)} on ${j.nodes} nodes` : "")]]
+    : [["CPUs", count(j.cpus) + (j.nodes > 1 ? ` per node, ${j.nodes} nodes` : "")],
+       ["Memory", gb(j.mem) + (j.nodes > 1 ? " per node" : "")]]),
+    ["Memory / CPU", gbc(mpc)],
     ...(j.gpus ? [["GPUs", (+j.gpus).toFixed(j.gpus % 1 ? 1 : 0)]] : []),
     running ? ["Time", `${dur(state.now - started(j))} of ${dur(j.minutes * 60)}, ${dur(j.end - state.now)} left`]
             : ["Time limit", dur(j.minutes * 60)],

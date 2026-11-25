@@ -14,6 +14,11 @@ const sjpUse = (() => {
   const colour = (f, bar) =>
     `hsl(${120 * Math.min(1, Math.max(0, f))}, ${bar ? "70%, 48%" : "75%, 60%"})`;
 
+  // A running job's CPUs and memory over all its nodes: what it was
+  // allocated, where the state says so, else per node times its nodes.
+  const allocCpus = j => j.total_cpus != null ? j.total_cpus : j.cpus * (j.nodes || 1);
+  const allocMem = j => j.total_mem != null ? j.total_mem : j.mem * (j.nodes || 1);
+
   // The share of their allocation that running jobs utilize together, CPUs
   // now and memory in use, over the jobs measured so far; null before any is.
   // gpu: how busy their GPUs are now, over the jobs whose GPUs Slurm measures;
@@ -26,7 +31,7 @@ const sjpUse = (() => {
       const n = j.nodes || 1, b = j.use.now != null ? j.use.now : j.use.avg;
       if (j.use.gpu && j.gpus) { gpus += j.gpus * n; gbusy += j.use.gpu.now / 100; }
       if (b == null) continue;
-      cpus += j.cpus * n; busy += b; mem += j.mem * n; used += j.use.mem;
+      cpus += allocCpus(j); busy += b; mem += allocMem(j); used += j.use.mem;
     }
     return cpus || gpus ? { cpu: cpus ? busy / cpus : null, mem: cpus ? used / mem : null,
                             gpu: gpus ? gbusy / gpus : null } : null;
@@ -45,7 +50,7 @@ const sjpUse = (() => {
   function shares(j) {
     const u = j.use;
     if (!u) return null;
-    const cpus = j.cpus * (j.nodes || 1), mem = j.mem * (j.nodes || 1);
+    const cpus = allocCpus(j), mem = allocMem(j);
     // GPUs: percent summed over them, so of 100 % for each GPU it was given
     const gpus = (j.gpus || 0) * (j.nodes || 1), gu = gpus && u.gpu;
     return { cpus, memAlloc: mem, cpu: u.avg != null ? u.avg / cpus : null,
@@ -148,7 +153,7 @@ const sjpUse = (() => {
     // el is a tbody of the details table, so the rows line up with the others
     let html = `<tr><td colspan="2" style="color:inherit;padding-top:8px">` +
       title("Job utilization") +
-      chart(pts, [[1, j.cpus * n, "#58a6ff", "CPU"], [2, j.mem * n, "#f0883e", "memory"]], w, h) +
+      chart(pts, [[1, allocCpus(j), "#58a6ff", "CPU"], [2, allocMem(j), "#f0883e", "memory"]], w, h) +
       `</td></tr>` + rows(j);
     if (gpus) {
       // GPU memory as a share of the GPUs' own, on the same scale; where how
