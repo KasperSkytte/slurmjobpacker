@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.23.1](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.23.0...v1.23.1) (2026-11-25)
+
+
+### Bug Fixes
+
+* draw running jobs with the CPUs and memory Slurm allocated them ([c00ad00](https://github.com/KasperSkytte/slurmjobpacker/commit/c00ad00b600edc4d7079116ab8dbe5fa61a18b85))
+
 ## [1.23.0](https://github.com/KasperSkytte/slurmjobpacker/compare/v1.22.0...v1.23.0) (2026-11-13)
 
 
